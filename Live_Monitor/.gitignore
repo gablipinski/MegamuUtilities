@@ -37,3 +37,4 @@ configs/config.json
 *.swo
 *~
 .DS_Store
+wins.log
