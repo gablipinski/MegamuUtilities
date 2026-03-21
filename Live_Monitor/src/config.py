@@ -31,8 +31,7 @@ class ChannelConfig:
     delay_ms: tuple[int, int]
     won_triggers: list[str]
     won_prefix: str
-    repeat_enter_condition: int   # how many trigger hits before entering giveaway
-    break_chain_condition: str    # message that resets the counter; empty = disabled
+    activity_monitor: dict[str, float | int] | None = None
 
 
 def parse_delay_range_ms(value) -> tuple[int, int]:
@@ -64,8 +63,15 @@ class NotificationConfig:
 @dataclass
 class RuntimeConfig:
     won_cooldown_s: float = 600.0
-    trigger_timeout_s: float = 600.0
-    trigger_threshold_increment: int = 15
+
+
+@dataclass
+class ActivityMonitorConfig:
+    baseline_window_s: float = 300.0
+    monitor_window_s: float = 25.0
+    min_messages_in_window: int = 8
+    min_unique_chatters: int = 4
+    enter_score_threshold: float = 1.6
 
 @dataclass
 class BotConfig:
@@ -74,6 +80,19 @@ class BotConfig:
     channels: list[ChannelConfig]
     notification: NotificationConfig
     runtime: RuntimeConfig
+    activity_monitor: ActivityMonitorConfig
+
+
+def parse_activity_monitor_config(value: dict | None, defaults: ActivityMonitorConfig | None = None) -> ActivityMonitorConfig:
+    base = defaults or ActivityMonitorConfig()
+    payload = value if isinstance(value, dict) else {}
+    return ActivityMonitorConfig(
+        baseline_window_s=float(payload.get('baseline_window_s', base.baseline_window_s)),
+        monitor_window_s=float(payload.get('monitor_window_s', base.monitor_window_s)),
+        min_messages_in_window=int(payload.get('min_messages_in_window', base.min_messages_in_window)),
+        min_unique_chatters=int(payload.get('min_unique_chatters', base.min_unique_chatters)),
+        enter_score_threshold=float(payload.get('enter_score_threshold', base.enter_score_threshold)),
+    )
 
 
 def resolve_default_config_path() -> Path:
@@ -125,6 +144,8 @@ def load_config(config_file: str | None = None) -> BotConfig:
         oauth_token=data['twitch']['oauth_token']
     )
 
+    activity_monitor_defaults = parse_activity_monitor_config(data.get('activity_monitor'))
+
     # Parse channels
     channels = []
     for ch in data['channels']:
@@ -147,16 +168,16 @@ def load_config(config_file: str | None = None) -> BotConfig:
             delay_ms=parse_delay_range_ms(ch.get('delay_ms', 2000)),
             won_triggers=[t.lower() for t in format_list(won_triggers, context)],
             won_prefix=format_with_context(ch.get('won_prefix', ch.get('won_message', '')), context),
-            repeat_enter_condition=int(ch.get('repeat_enter_condition', 5)),
-            break_chain_condition=format_with_context(ch.get('break_chain_condition', ''), context).strip().lower(),
+            activity_monitor=parse_activity_monitor_config(
+                ch.get('activity_monitor'),
+                defaults=activity_monitor_defaults,
+            ).__dict__ if ch.get('activity_monitor') else None,
         )
         channels.append(channel)
 
     notification = NotificationConfig()
     runtime = RuntimeConfig(
         won_cooldown_s=float(data.get('won_cooldown_s', 600.0)),
-        trigger_timeout_s=float(data.get('trigger_timeout_s', 600.0)),
-        trigger_threshold_increment=int(data.get('trigger_threshold_increment', 15)),
     )
 
     return BotConfig(
@@ -165,4 +186,5 @@ def load_config(config_file: str | None = None) -> BotConfig:
         channels=channels,
         notification=notification,
         runtime=runtime,
+        activity_monitor=activity_monitor_defaults,
     )

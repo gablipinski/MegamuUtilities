@@ -5,178 +5,149 @@
   },
   "nickname": "TarasaKGL",
   "won_cooldown_s": 300.0,
-  "trigger_timeout_s": 300.0,
-  "trigger_threshold_increment": 15,
+  "activity_monitor": {
+    "baseline_window_s": 300.0,
+    "monitor_window_s": 35.0,
+    "min_messages_in_window": 5,
+    "min_unique_chatters": 2,
+    "enter_score_threshold": 1.25
+  },
   "channels": [
     {
       "name": "tarasak_",
       "giveaway_triggers": [ "!sorteio" ],
       "giveaway_message": "!sorteio",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": ["Congratulations, {username}! You won the giveaway!"],
-      "won_prefix": "&",
-      "repeat_enter_condition": 3,
-      "break_chain_condition": ""
+      "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
+      "won_prefix": "&"
     },
     {
       "name": "diiogofalcao",
       "giveaway_triggers": [ "#sorteio" ],
       "giveaway_message": "#sorteio",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": ["Congratulations, {username}! You won the giveaway!"],
-      "won_prefix": "!",
-      "repeat_enter_condition": 3,
-      "break_chain_condition": ""
+      "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
+      "won_prefix": "!"
     },
     {
       "name": "shamen_",
       "giveaway_triggers": [ "!shamen" ],
       "giveaway_message": "!shamen",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": ["Congratulations, {username}! You won the giveaway!"],
-      "won_prefix": "",
-      "repeat_enter_condition": 1,
-      "break_chain_condition": ""
+      "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
+      "won_prefix": ""
     },
     {
       "name": "jexuslivee",
       "giveaway_triggers": [ "!jxlive" ],
       "giveaway_message": "!jxlive",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": ["@{username} escribe !TuNombreInGame (30 segundos)"],
-      "won_prefix": "!",
-      "repeat_enter_condition": 1,
-      "break_chain_condition": ""
+      "won_triggers": [ "@{username} escribe !TuNombreInGame (30 segundos)" ],
+      "won_prefix": "!"
     },
     {
       "name": "marcusrp_gamers",
       "giveaway_triggers": [ "!garuda" ],
       "giveaway_message": "!garuda",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": ["@{username} PARABÉNS❗ VOCÊ GANHOU 🎁"],
-      "won_prefix": "!",
-      "repeat_enter_condition": 1,
-      "break_chain_condition": ""
+      "won_triggers": [ "@{username} PARABÉNS❗ VOCÊ GANHOU 🎁" ],
+      "won_prefix": "!"
     },
     {
       "name": "angelim92",
       "giveaway_triggers": [ "!panda" ],
       "giveaway_message": "!panda",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": ["@{username} PARABÉNS 🏆ENVIE ⛔ !SEUNICK ⛔"],
-      "won_prefix": "!",
-      "repeat_enter_condition": 1,
-      "break_chain_condition": ""
+      "won_triggers": [ "@{username} PARABÉNS 🏆ENVIE ⛔ !SEUNICK ⛔" ],
+      "won_prefix": "!"
     },
     {
       "name": "rutharzz",
       "giveaway_triggers": [ "!sm" ],
       "giveaway_message": "!sm",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": ["Congratulations, {username}! You won the giveaway!"],
-      "won_prefix": "",
-      "repeat_enter_condition": 2,
-      "break_chain_condition": ""
+      "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
+      "won_prefix": ""
     },
     {
       "name": "anyelo992",
       "giveaway_triggers": [ "!sorteo" ],
       "giveaway_message": "!sorteo",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": ["Congratulations, {username}! You won the giveaway!"],
-      "won_prefix": "",
-      "repeat_enter_condition": 1,
-      "break_chain_condition": ""
+      "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
+      "won_prefix": ""
     },
     {
       "name": "b4ll4ckfps",
       "giveaway_triggers": [ "!mega" ],
       "giveaway_message": "!mega",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": ["Congratulations, {username}! You won the giveaway!"],
-      "won_prefix": "",
-      "repeat_enter_condition": 2,
-      "break_chain_condition": ""
+      "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
+      "won_prefix": ""
     },
     {
       "name": "exxtranho",
       "giveaway_triggers": [ "!exxtranho" ],
       "giveaway_message": "!exxtranho",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": ["Congratulations, {username}! You won the giveaway!"],
-      "won_prefix": "",
-      "repeat_enter_condition": 2,
-      "break_chain_condition": ""
+      "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
+      "won_prefix": ""
     },
     {
       "name": "laranjeira1991",
       "giveaway_triggers": [ "!laranja" ],
       "giveaway_message": "!laranja",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": ["Congratulations, {username}! You won the giveaway!"],
-      "won_prefix": "",
-      "repeat_enter_condition": 5,
-      "break_chain_condition": ""
+      "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
+      "won_prefix": ""
     },
     {
       "name": "smeagolgamess",
       "giveaway_triggers": [ "!precioso" ],
       "giveaway_message": "!precioso",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": ["@{username} PARABÉNS VOCÊ GANHOU"],
-      "won_prefix": "!",
-      "repeat_enter_condition": 3,
-      "break_chain_condition": ""
+      "won_triggers": [ "@{username} PARABÉNS VOCÊ GANHOU" ],
+      "won_prefix": "!"
     },
     {
       "name": "hadabest_gm",
       "giveaway_triggers": [ "!ha" ],
       "giveaway_message": "!ha",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": ["Congratulations @{username} received"],
-      "won_prefix": "",
-      "repeat_enter_condition": 5,
-      "break_chain_condition": ""
+      "won_triggers": [ "Congratulations @{username} received" ],
+      "won_prefix": ""
     },
     {
       "name": "androx111111",
       "giveaway_triggers": [ "!androx1" ],
       "giveaway_message": "!androx1",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": ["Congratulations, {username}! You won the giveaway!"],
-      "won_prefix": "",
-      "repeat_enter_condition": 1,
-      "break_chain_condition": ""
+      "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
+      "won_prefix": ""
     },
     {
       "name": "lucaslr021",
       "giveaway_triggers": [ "!megamu" ],
       "giveaway_message": "!megamu",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": ["Parabéns @{username}, você ganhou"],
-      "won_prefix": "!",
-      "repeat_enter_condition": 3,
-      "break_chain_condition": ""
+      "won_triggers": [ "Parabéns @{username}, você ganhou" ],
+      "won_prefix": "!"
     },
     {
       "name": "srwins",
       "giveaway_triggers": [ "!sm" ],
       "giveaway_message": "!sm",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": [""],
-      "won_prefix": "",
-      "repeat_enter_condition": 5,
-      "break_chain_condition": ""
+      "won_triggers": [],
+      "won_prefix": ""
     },
     {
       "name": "mewing____",
       "giveaway_triggers": [ "!mewing" ],
       "giveaway_message": "!mewing",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": ["Congratulations, {username}! You won the giveaway!"],
-      "won_prefix": "!",
-      "repeat_enter_condition": 3,
-      "break_chain_condition": ""
+      "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
+      "won_prefix": "!"
     },
     {
       "name": "mttzfps",
@@ -184,29 +155,31 @@
       "giveaway_message": "!mttzfps",
       "delay_ms": [ 5000, 25000 ],
       "won_triggers": [],
-      "won_prefix": "!",
-      "repeat_enter_condition": 5,
-      "break_chain_condition": ""
+      "won_prefix": "!"
     },
     {
       "name": "mamedegame",
       "giveaway_triggers": [ "#sorteio" ],
       "giveaway_message": "#sorteio",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": ["Nosso Ganhador | @{username} |"],
-      "won_prefix": "!",
-      "repeat_enter_condition": 3,
-      "break_chain_condition": ""
+      "won_triggers": [ "Nosso Ganhador | @{username} |" ],
+      "won_prefix": "!"
     },
     {
       "name": "lpestevo",
       "giveaway_triggers": [ "!sobora" ],
       "giveaway_message": "!sobora",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": ["Parabéns @{username} 📊 Chance de vitória:"],
-      "won_prefix": "!",
-      "repeat_enter_condition": 3,
-      "break_chain_condition": ""
+      "won_triggers": [ "Parabéns @{username} 📊 Chance de vitória:" ],
+      "won_prefix": "!"
+    },
+    {
+      "name": "ohbrunaoxdrj",
+      "giveaway_triggers": [ "!bruxao" ],
+      "giveaway_message": "!bruxao",
+      "delay_ms": [ 5000, 25000 ],
+      "won_triggers": [ "@{username} PARABÉNS VOCÊ GANHOU" ],
+      "won_prefix": "!"
     }
   ]
 }

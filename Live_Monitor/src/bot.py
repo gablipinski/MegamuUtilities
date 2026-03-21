@@ -10,6 +10,7 @@ from pathlib import Path
 import twitchio
 from twitchio.ext import commands
 
+from activity_monitor import ChatActivityMonitor
 from config import BotConfig
 from windows_notifier import WindowsNotifier
 
@@ -25,20 +26,10 @@ class TwitchBot(commands.Cog):
 
         # Map channel names to their configs
         self.channels_map = {ch.name: ch for ch in config.channels}
-        # Per-channel main trigger counters.
-        self.trigger_counters: dict[str, int] = {ch.name: 0 for ch in config.channels}
-        # Last trigger hit timestamp per channel (monotonic seconds).
-        self.trigger_last_hit: dict[str, float] = {ch.name: 0.0 for ch in config.channels}
-        # Temporary extra repetitions required after each trigger-based entry.
-        self.trigger_threshold_bonus: dict[str, int] = {ch.name: 0 for ch in config.channels}
         # Timestamp of last won-trigger fire per channel and sender bot name (monotonic seconds)
         self.won_last_triggered: dict[tuple[str, str], float] = {}
         # Cooldown between won-trigger responses (seconds)
         self.WON_COOLDOWN_S: float = self.config.runtime.won_cooldown_s
-        # Reset trigger chain if inactive for this duration.
-        self.TRIGGER_TIMEOUT_S: float = self.config.runtime.trigger_timeout_s
-        # Temporary threshold increase applied after each trigger-based entry.
-        self.TRIGGER_THRESHOLD_INCREMENT: int = self.config.runtime.trigger_threshold_increment
 
         # Setup log files under a single logs directory.
         logs_dir = Path(__file__).resolve().parent.parent / "logs"
@@ -53,6 +44,22 @@ class TwitchBot(commands.Cog):
         # Persistent per-channel counters for joins and wins.
         self.stats_log_path = logs_dir / "channel_stats.json"
         self.channel_stats = self._load_channel_stats()
+
+        # Chat activity monitor (replaces static repetition logic).
+        self.activity_monitor = ChatActivityMonitor(
+            channel_names=[ch.name for ch in config.channels],
+            logs_dir=logs_dir,
+            baseline_window_s=config.activity_monitor.baseline_window_s,
+            monitor_window_s=config.activity_monitor.monitor_window_s,
+            min_messages_in_window=config.activity_monitor.min_messages_in_window,
+            min_unique_chatters=config.activity_monitor.min_unique_chatters,
+            enter_score_threshold=config.activity_monitor.enter_score_threshold,
+            channel_settings={
+                ch.name: ch.activity_monitor
+                for ch in config.channels
+                if ch.activity_monitor is not None
+            },
+        )
 
     def _append_win_log(self, timestamp: str, channel_name: str):
         with open(self.wins_log_path, "a", encoding="utf-8") as f:
@@ -96,14 +103,6 @@ class TwitchBot(commands.Cog):
         values[key] = max(0, int(values.get(key, 0))) + 1
         self._save_channel_stats()
         print(f"[📈] [{channel_name}] Stats -> joined: {values.get('joined', 0)} | won: {values.get('won', 0)}")
-
-    def _reset_trigger_chain(self, channel_name: str, reason: str | None = None, reset_bonus: bool = False):
-        self.trigger_counters[channel_name] = 0
-        self.trigger_last_hit[channel_name] = 0.0
-        if reset_bonus:
-            self.trigger_threshold_bonus[channel_name] = 0
-        if reason:
-            print(f"[🔄] [{channel_name}] Trigger counter reset ({reason})")
 
     def _normalize_text(self, text: str) -> str:
         """Normalizes text for resilient trigger matching."""
@@ -176,6 +175,7 @@ class TwitchBot(commands.Cog):
             print(f"    - giveaway trigger: {giveaway_trigger}")
             print(f"    - won trigger: {won_trigger}")
             print(f"    - stats: joined={stats.get('joined', 0)} won={stats.get('won', 0)}")
+        print("[✓] Giveaway mode: activity monitor")
         print()
 
     @commands.Cog.event()
@@ -199,12 +199,7 @@ class TwitchBot(commands.Cog):
         if not channel_config:
             return
 
-        # Expire trigger chain if inactive for too long.
-        timeout_seconds = self.TRIGGER_TIMEOUT_S
-        if self.trigger_counters[channel_name] > 0 or self.trigger_threshold_bonus[channel_name] > 0:
-            last_hit = self.trigger_last_hit.get(channel_name, 0.0)
-            if last_hit > 0 and (now - last_hit) >= timeout_seconds:
-                self._reset_trigger_chain(channel_name, "timeout", reset_bonus=True)
+        self.activity_monitor.observe_message(channel_name, message.author.name, message.content, now)
 
         message_lower = message.content.lower()
 
@@ -220,7 +215,6 @@ class TwitchBot(commands.Cog):
                     return
 
                 self.won_last_triggered[cooldown_key] = now
-                self._reset_trigger_chain(channel_name, reset_bonus=True)
                 print(f"\n[🏆] Won giveaway in #{channel_name}!")
                 print(f"[📝] Message: {message.content}")
 
@@ -241,46 +235,36 @@ class TwitchBot(commands.Cog):
                     await message.channel.send(won_reply)
                 return
 
-        if (
-            channel_config.break_chain_condition
-            and self._contains_trigger(message_lower, channel_config.break_chain_condition)
-        ):
-            if self.trigger_counters[channel_name] > 0:
-                self._reset_trigger_chain(channel_name, "break condition matched", reset_bonus=True)
-            return
-
-        # --- Main giveaway trigger: count repetitions, then enter ---
+        matched_trigger = None
         for trigger in channel_config.giveaway_triggers:
             if self._contains_trigger(message_lower, trigger):
-                self.trigger_counters[channel_name] += 1
-                self.trigger_last_hit[channel_name] = now
-                count = self.trigger_counters[channel_name]
-                threshold = channel_config.repeat_enter_condition + self.trigger_threshold_bonus[channel_name]
-                print(f"[📊] [{channel_name}] Giveaway trigger: {count}/{threshold}")
+                matched_trigger = trigger
+                break
 
-                if count < threshold:
-                    return
+        if matched_trigger and not self.activity_monitor.has_active_window(channel_name):
+            self.activity_monitor.start_window(channel_name, matched_trigger, now)
+            print(f"[🧪] [{channel_name}] Activity monitor started after trigger: {matched_trigger}")
 
-                self.trigger_threshold_bonus[channel_name] += self.TRIGGER_THRESHOLD_INCREMENT
-                next_threshold = channel_config.repeat_enter_condition + self.trigger_threshold_bonus[channel_name]
-                self._reset_trigger_chain(channel_name)
-                self.trigger_last_hit[channel_name] = now
-                print(f"\n[🎰] Giveaway detected in #{channel_name}")
-                print(f"[📝] Streamer: {channel_name}")
-                print(f"[📝] User: {message.author.name}")
-                print(f"[📖] Message: {message.content}")
-                print(f"[⬆] [{channel_name}] Next trigger threshold increased to {next_threshold}")
+        decision = self.activity_monitor.evaluate_if_ready(channel_name, now)
+        if decision is None:
+            return
 
-                if self.config.notification.enabled:
-                    self.notifier.send_notification(channel_name, message.content, title="🎰 Giveaway detected!")
-            
-                delay_sec = self._get_random_delay_s(channel_name, channel_config.delay_ms)
-                if delay_sec > 0:
-                    await asyncio.sleep(delay_sec)
+        if not decision.enter:
+            print(f"[🛑] [{channel_name}] Giveaway ignored: {decision.reason}")
+            return
 
-                print(f"[📤] Sending: {channel_config.giveaway_message}")
-                await message.channel.send(channel_config.giveaway_message)
-                self._increment_channel_stat(channel_name, "joined")
+        print(f"\n[🎰] Giveaway detected in #{channel_name}")
+        print(f"[📝] Streamer: {channel_name}")
+        print(f"[📖] Decision: {decision.reason}")
 
-                return
+        if self.config.notification.enabled:
+            self.notifier.send_notification(channel_name, message.content, title="🎰 Giveaway detected!")
+
+        delay_sec = self._get_random_delay_s(channel_name, channel_config.delay_ms)
+        if delay_sec > 0:
+            await asyncio.sleep(delay_sec)
+
+        print(f"[📤] Sending: {channel_config.giveaway_message}")
+        await message.channel.send(channel_config.giveaway_message)
+        self._increment_channel_stat(channel_name, "joined")
 
