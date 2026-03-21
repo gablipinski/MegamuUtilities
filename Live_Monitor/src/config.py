@@ -1,7 +1,7 @@
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-from string import Formatter
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / 'configs' / 'config.json'
 DEFAULT_NOTIFICATION_ENABLED = True
@@ -28,13 +28,27 @@ class ChannelConfig:
     name: str
     giveaway_triggers: list[str]
     giveaway_message: str
-    delay_ms: int
+    delay_ms: tuple[int, int]
     won_triggers: list[str]
     won_prefix: str
-    backup_trigger: str           # message to count; empty = disabled
-    repeat_enter_condition: int   # how many hits before entering giveaway
+    repeat_enter_condition: int   # how many trigger hits before entering giveaway
     break_chain_condition: str    # message that resets the counter; empty = disabled
-    backup_timeout_ms: int        # reset backup chain if idle for this duration
+
+
+def parse_delay_range_ms(value) -> tuple[int, int]:
+    """Parses delay_ms from either int or [min, max] into a normalized tuple."""
+    if isinstance(value, int):
+        delay = max(0, int(value))
+        return (delay, delay)
+
+    if isinstance(value, list) and len(value) == 2:
+        delay_min = max(0, int(value[0]))
+        delay_max = max(0, int(value[1]))
+        if delay_min > delay_max:
+            delay_min, delay_max = delay_max, delay_min
+        return (delay_min, delay_max)
+
+    return (2000, 2000)
 
 @dataclass
 class TwitchConfig:
@@ -46,17 +60,48 @@ class NotificationConfig:
     enabled: bool = DEFAULT_NOTIFICATION_ENABLED
     message: str = DEFAULT_NOTIFICATION_MESSAGE
 
+
+@dataclass
+class RuntimeConfig:
+    won_cooldown_s: float = 600.0
+    trigger_timeout_s: float = 600.0
+    trigger_threshold_increment: int = 15
+
 @dataclass
 class BotConfig:
     twitch: TwitchConfig
     nickname: str
     channels: list[ChannelConfig]
     notification: NotificationConfig
+    runtime: RuntimeConfig
+
+
+def resolve_default_config_path() -> Path:
+    """Finds the default config path, preferring external editable configs."""
+    candidates: list[Path] = []
+
+    # PyInstaller onefile/onedir executable location
+    if getattr(sys, 'frozen', False):
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.append(exe_dir / 'configs' / 'config.json')
+
+    # Current working directory (useful when launched from project root)
+    cwd = Path.cwd().resolve()
+    candidates.append(cwd / 'configs' / 'config.json')
+
+    # Source tree fallback
+    candidates.append(DEFAULT_CONFIG_PATH)
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    return candidates[0]
 
 def load_config(config_file: str | None = None) -> BotConfig:
     """Loads configuration from JSON file"""
 
-    config_path = Path(config_file) if config_file else DEFAULT_CONFIG_PATH
+    config_path = Path(config_file) if config_file else resolve_default_config_path()
 
     if not config_path.exists():
         raise FileNotFoundError(f"Config file '{config_path}' not found")
@@ -99,21 +144,25 @@ def load_config(config_file: str | None = None) -> BotConfig:
             name=ch['name'],
             giveaway_triggers=[t.lower() for t in format_list(giveaway_triggers, context)],
             giveaway_message=format_with_context(ch.get('giveaway_message', 'Joining!'), context),
-            delay_ms=ch.get('delay_ms', 2000),
+            delay_ms=parse_delay_range_ms(ch.get('delay_ms', 2000)),
             won_triggers=[t.lower() for t in format_list(won_triggers, context)],
             won_prefix=format_with_context(ch.get('won_prefix', ch.get('won_message', '')), context),
-            backup_trigger=format_with_context(ch.get('backup_trigger', ''), context).strip().lower(),
             repeat_enter_condition=int(ch.get('repeat_enter_condition', 5)),
             break_chain_condition=format_with_context(ch.get('break_chain_condition', ''), context).strip().lower(),
-            backup_timeout_ms=int(ch.get('backup_timeout_ms', 600000)),
         )
         channels.append(channel)
 
     notification = NotificationConfig()
+    runtime = RuntimeConfig(
+        won_cooldown_s=float(data.get('won_cooldown_s', 600.0)),
+        trigger_timeout_s=float(data.get('trigger_timeout_s', 600.0)),
+        trigger_threshold_increment=int(data.get('trigger_threshold_increment', 15)),
+    )
 
     return BotConfig(
         twitch=twitch,
         nickname=str(data.get('nickname', '')).strip(),
         channels=channels,
         notification=notification,
+        runtime=runtime,
     )

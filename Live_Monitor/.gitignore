@@ -4,6 +4,12 @@ env/
 ENV/
 .venv
 
+# Binaries
+bin/
+
+# Logs 
+logs/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -25,10 +31,6 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-
-# Sensitive files
-configs/config.json
-!configs/config.json.example
 
 # IDE
 .vscode/
