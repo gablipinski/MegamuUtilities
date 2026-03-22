@@ -11,6 +11,7 @@ import twitchio
 from twitchio.ext import commands
 
 from activity_monitor import ChatActivityMonitor
+from chat_monitor import ChatMonitorLogger
 from config import BotConfig
 from windows_notifier import WindowsNotifier
 
@@ -60,6 +61,7 @@ class TwitchBot(commands.Cog):
                 if ch.activity_monitor is not None
             },
         )
+        self.chat_monitor = ChatMonitorLogger(logs_dir=logs_dir)
 
     def _append_win_log(self, timestamp: str, channel_name: str):
         with open(self.wins_log_path, "a", encoding="utf-8") as f:
@@ -203,47 +205,76 @@ class TwitchBot(commands.Cog):
 
         message_lower = message.content.lower()
 
-        # --- Won trigger: notify + reply after delay ---
+        matched_won_trigger = None
         for trigger in channel_config.won_triggers:
             if self._contains_trigger(message_lower, trigger):
-                sender = message.author.name
-                cooldown_key = (channel_name, sender)
-                last_won = self.won_last_triggered.get(cooldown_key, 0.0)
-                if last_won > 0 and (now - last_won) < self.WON_COOLDOWN_S:
-                    remaining = int(self.WON_COOLDOWN_S - (now - last_won))
-                    print(f"[⏸] [{channel_name}] Won trigger from {sender} on cooldown ({remaining}s left) - skipping")
-                    return
-
-                self.won_last_triggered[cooldown_key] = now
-                print(f"\n[🏆] Won giveaway in #{channel_name}!")
-                print(f"[📝] Message: {message.content}")
-
-                # Log the win.
-                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                self._append_win_log(timestamp, channel_name)
-                self._increment_channel_stat(channel_name, "won")
-
-                if self.config.notification.enabled:
-                    self.notifier.send_notification(channel_name, message.content, title="🏆 You won the giveaway!")
-
-                won_reply = f"{channel_config.won_prefix}{self.config.nickname}"
-                if won_reply:
-                    delay_sec = self._get_random_delay_s(channel_name, channel_config.delay_ms)
-                    if delay_sec > 0:
-                        await asyncio.sleep(delay_sec)
-                    print(f"[📤] Sending: {won_reply}")
-                    await message.channel.send(won_reply)
-                return
-
-        matched_trigger = None
-        for trigger in channel_config.giveaway_triggers:
-            if self._contains_trigger(message_lower, trigger):
-                matched_trigger = trigger
+                matched_won_trigger = trigger
                 break
 
-        if matched_trigger and not self.activity_monitor.has_active_window(channel_name):
-            self.activity_monitor.start_window(channel_name, matched_trigger, now)
-            print(f"[🧪] [{channel_name}] Activity monitor started after trigger: {matched_trigger}")
+        matched_giveaway_trigger = None
+        for trigger in channel_config.giveaway_triggers:
+            if self._contains_trigger(message_lower, trigger):
+                matched_giveaway_trigger = trigger
+                break
+
+        classes: set[str] = {"chat_message"}
+        stripped = message.content.strip()
+        if stripped.startswith("!") or stripped.startswith("#"):
+            classes.add("command_like")
+            classes.add("possible_giveaway_command")
+        if matched_giveaway_trigger is not None:
+            classes.add("giveaway_trigger")
+        if matched_won_trigger is not None:
+            classes.add("won_trigger")
+
+        metadata = {}
+        if matched_giveaway_trigger is not None:
+            metadata["matched_giveaway_trigger"] = matched_giveaway_trigger
+        if matched_won_trigger is not None:
+            metadata["matched_won_trigger"] = matched_won_trigger
+
+        self.chat_monitor.log_message(
+            channel_name=channel_name,
+            author_name=message.author.name,
+            message_text=message.content,
+            classes=classes,
+            metadata=metadata,
+        )
+
+        # --- Won trigger: notify + reply after delay ---
+        if matched_won_trigger is not None:
+            sender = message.author.name
+            cooldown_key = (channel_name, sender)
+            last_won = self.won_last_triggered.get(cooldown_key, 0.0)
+            if last_won > 0 and (now - last_won) < self.WON_COOLDOWN_S:
+                remaining = int(self.WON_COOLDOWN_S - (now - last_won))
+                print(f"[⏸] [{channel_name}] Won trigger from {sender} on cooldown ({remaining}s left) - skipping")
+                return
+
+            self.won_last_triggered[cooldown_key] = now
+            print(f"\n[🏆] Won giveaway in #{channel_name}!")
+            print(f"[📝] Message: {message.content}")
+
+            # Log the win.
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self._append_win_log(timestamp, channel_name)
+            self._increment_channel_stat(channel_name, "won")
+
+            if self.config.notification.enabled:
+                self.notifier.send_notification(channel_name, message.content, title="🏆 You won the giveaway!")
+
+            won_reply = f"{channel_config.won_prefix}{self.config.nickname}"
+            if won_reply:
+                delay_sec = self._get_random_delay_s(channel_name, channel_config.delay_ms)
+                if delay_sec > 0:
+                    await asyncio.sleep(delay_sec)
+                print(f"[📤] Sending: {won_reply}")
+                await message.channel.send(won_reply)
+            return
+
+        if matched_giveaway_trigger and not self.activity_monitor.has_active_window(channel_name):
+            self.activity_monitor.start_window(channel_name, matched_giveaway_trigger, now)
+            print(f"[🧪] [{channel_name}] Activity monitor started after trigger: {matched_giveaway_trigger}")
 
         decision = self.activity_monitor.evaluate_if_ready(channel_name, now)
         if decision is None:

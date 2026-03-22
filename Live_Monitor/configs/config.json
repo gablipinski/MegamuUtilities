@@ -42,8 +42,8 @@
       "giveaway_triggers": [ "!jxlive" ],
       "giveaway_message": "!jxlive",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": [ "@{username} escribe !TuNombreInGame (30 segundos)" ],
-      "won_prefix": "!"
+      "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
+      "won_prefix": ""
     },
     {
       "name": "marcusrp_gamers",
@@ -122,7 +122,7 @@
       "giveaway_triggers": [ "!androx1" ],
       "giveaway_message": "!androx1",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
+      "won_triggers": [ "Congratulations, @{username}! You won the giveaway!" ],
       "won_prefix": ""
     },
     {
@@ -180,6 +180,14 @@
       "delay_ms": [ 5000, 25000 ],
       "won_triggers": [ "@{username} PARABÉNS VOCÊ GANHOU" ],
       "won_prefix": "!"
+    },
+    {
+      "name": "valhallavikingos",
+      "giveaway_triggers": [ "!vikingos" ],
+      "giveaway_message": "!vikingos",
+      "delay_ms": [ 5000, 25000 ],
+      "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
+      "won_prefix": ""
     }
   ]
 }
