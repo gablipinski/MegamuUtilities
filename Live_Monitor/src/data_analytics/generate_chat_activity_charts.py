@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections import Counter
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +15,69 @@ import matplotlib.pyplot as plt
 TIMESTAMP_FMT = "%Y-%m-%d %H:%M:%S"
 DEFAULT_BIN_MINUTES = 5
 DAY_FOLDER_FMT = "%d_%m_%Y"
+
+WINNER_PATTERNS = [
+    re.compile(r"congratulations,?\s+@?(?P<winner>[a-z0-9_]+)!?\s+you won", re.IGNORECASE),
+    re.compile(r"@(?P<winner>[a-z0-9_]+)\s+parab[eé]ns.*?voc[eê]\s+ganhou", re.IGNORECASE),
+    re.compile(r"@(?P<winner>[a-z0-9_]+)\s+parab[eé]ns.*?envie", re.IGNORECASE),
+    re.compile(r"nosso\s+ganhador\s*\|\s*@?(?P<winner>[a-z0-9_]+)\s*\|", re.IGNORECASE),
+    re.compile(r"congratulations\s+@?(?P<winner>[a-z0-9_]+)\s+received", re.IGNORECASE),
+    re.compile(r"parab[eé]ns\s+@?(?P<winner>[a-z0-9_]+),?\s+voc[eê]\s+ganhou", re.IGNORECASE),
+]
+
+WINNER_EXCLUDE_PATTERNS = [
+    re.compile(r"ya\s+participas", re.IGNORECASE),
+    re.compile(r"regras\s+do\s+sorteo|regras\s+del\s+sorteo", re.IGNORECASE),
+    re.compile(r"sorteio\s+come[cç]ou|sorteo\s+comenz[oó]", re.IGNORECASE),
+]
+
+
+def load_channel_winner_patterns(config_path: Path) -> dict[str, list[re.Pattern[str]]]:
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    channel_patterns: dict[str, list[re.Pattern[str]]] = {}
+    channels = payload.get("channels", [])
+    if not isinstance(channels, list):
+        return {}
+
+    for entry in channels:
+        if not isinstance(entry, dict):
+            continue
+
+        channel_name = str(entry.get("name", "")).strip().lower()
+        won_triggers = entry.get("won_triggers", [])
+        if not channel_name or not isinstance(won_triggers, list):
+            continue
+
+        compiled_patterns = [
+            pattern
+            for trigger in won_triggers
+            for pattern in [compile_winner_trigger_pattern(str(trigger))]
+            if pattern is not None
+        ]
+        if compiled_patterns:
+            channel_patterns[channel_name] = compiled_patterns
+
+    return channel_patterns
+
+
+def compile_winner_trigger_pattern(trigger: str) -> re.Pattern[str] | None:
+    normalized_trigger = trigger.strip()
+    if not normalized_trigger or "{username}" not in normalized_trigger:
+        return None
+
+    escaped_trigger = re.escape(normalized_trigger)
+    escaped_trigger = escaped_trigger.replace(r"\{username\}", r"(?P<winner>[a-z0-9_]+)")
+    escaped_trigger = re.sub(r"\\\s+", r"\\s+", escaped_trigger)
+
+    try:
+        return re.compile(escaped_trigger, re.IGNORECASE)
+    except re.error:
+        return None
 
 
 @dataclass
@@ -228,11 +293,91 @@ def plot_hourly_heatmap(records: list[ChatRecord], out_path: Path):
     plt.close()
 
 
-def write_day_summary(channel_name: str, day_folder: str, records: list[ChatRecord], out_path: Path):
+def extract_winner_name(
+    record: ChatRecord,
+    channel_winner_patterns: dict[str, list[re.Pattern[str]]],
+) -> str | None:
+    message = record.message.strip()
+    lower_message = message.lower()
+
+    for pattern in WINNER_EXCLUDE_PATTERNS:
+        if pattern.search(lower_message):
+            return None
+
+    for pattern in iter_winner_patterns_for_channel(record.channel, channel_winner_patterns):
+        match = pattern.search(message)
+        if not match:
+            continue
+        winner = match.group("winner").strip().lower()
+        if winner:
+            return winner
+
+    for pattern in WINNER_PATTERNS:
+        match = pattern.search(message)
+        if not match:
+            continue
+        winner = match.group("winner").strip().lower()
+        if winner:
+            return winner
+
+    return None
+
+
+def iter_winner_patterns_for_channel(
+    channel_name: str,
+    channel_winner_patterns: dict[str, list[re.Pattern[str]]],
+) -> Iterable[re.Pattern[str]]:
+    return channel_winner_patterns.get(channel_name.strip().lower(), [])
+
+
+def collect_winner_counts(
+    records: list[ChatRecord],
+    channel_winner_patterns: dict[str, list[re.Pattern[str]]],
+) -> Counter[str]:
+    winners: Counter[str] = Counter()
+    for rec in records:
+        winner = extract_winner_name(rec, channel_winner_patterns)
+        if winner is not None:
+            winners[winner] += 1
+    return winners
+
+
+def plot_top_winners(
+    records: list[ChatRecord],
+    out_path: Path,
+    channel_winner_patterns: dict[str, list[re.Pattern[str]]],
+    top_n: int = 12,
+):
+    winner_counts = collect_winner_counts(records, channel_winner_patterns)
+    if not winner_counts:
+        return
+
+    top = winner_counts.most_common(top_n)
+    labels = [winner for winner, _ in top]
+    values = [count for _, count in top]
+
+    plt.figure(figsize=(12, 6))
+    plt.barh(labels, values)
+    plt.title("Top Giveaway Winners of the Day")
+    plt.xlabel("Detected win messages")
+    plt.ylabel("Winner username")
+    plt.tight_layout()
+    plt.savefig(out_path)
+    plt.close()
+
+
+def write_day_summary(
+    channel_name: str,
+    day_folder: str,
+    records: list[ChatRecord],
+    out_path: Path,
+    channel_winner_patterns: dict[str, list[re.Pattern[str]]],
+):
     authors = {rec.author for rec in records}
     giveaway_count = sum(1 for rec in records if "giveaway_trigger" in rec.classes)
     won_count = sum(1 for rec in records if "won_trigger" in rec.classes)
     command_like_count = sum(1 for rec in records if "command_like" in rec.classes)
+    winner_counts = collect_winner_counts(records, channel_winner_patterns)
 
     payload = {
         "generated_at": datetime.now().strftime(TIMESTAMP_FMT),
@@ -246,13 +391,22 @@ def write_day_summary(channel_name: str, day_folder: str, records: list[ChatReco
         "trigger_rate_pct": round(((giveaway_count + won_count) / len(records)) * 100.0, 3) if records else 0.0,
         "first_timestamp": records[0].ts.strftime(TIMESTAMP_FMT) if records else None,
         "last_timestamp": records[-1].ts.strftime(TIMESTAMP_FMT) if records else None,
+        "detected_winner_messages": int(sum(winner_counts.values())),
+        "top_winners": [{"winner": winner, "count": count} for winner, count in winner_counts.most_common(10)],
     }
 
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
-def build_day_charts(channel_name: str, day_folder: str, records: list[ChatRecord], out_dir: Path, bin_minutes: int):
+def build_day_charts(
+    channel_name: str,
+    day_folder: str,
+    records: list[ChatRecord],
+    out_dir: Path,
+    bin_minutes: int,
+    channel_winner_patterns: dict[str, list[re.Pattern[str]]],
+):
     out_dir.mkdir(parents=True, exist_ok=True)
 
     plot_activity_timeline(
@@ -264,7 +418,14 @@ def build_day_charts(channel_name: str, day_folder: str, records: list[ChatRecor
     plot_trigger_text_frequency(records, out_dir / "trigger_text_frequency.png")
     plot_hourly_trigger_rate(records, out_dir / "hourly_trigger_rate.png")
     plot_hourly_heatmap(records, out_dir / "trigger_heatmap_hour.png")
-    write_day_summary(channel_name, day_folder, records, out_dir / "analytics_summary.json")
+    plot_top_winners(records, out_dir / "top_giveaway_winners.png", channel_winner_patterns)
+    write_day_summary(
+        channel_name,
+        day_folder,
+        records,
+        out_dir / "analytics_summary.json",
+        channel_winner_patterns,
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -293,6 +454,8 @@ def main():
     project_root = Path(__file__).resolve().parent.parent.parent
     logs_root = project_root / "logs"
     chat_monitor_root = logs_root / "chat_monitor"
+    config_path = project_root / "configs" / "config.json"
+    channel_winner_patterns = load_channel_winner_patterns(config_path)
 
     if not chat_monitor_root.exists():
         print(f"[!] Chat monitor directory not found: {chat_monitor_root}")
@@ -329,6 +492,7 @@ def main():
             records=records,
             out_dir=day_dir,
             bin_minutes=DEFAULT_BIN_MINUTES,
+            channel_winner_patterns=channel_winner_patterns,
         )
         print(f"[✓] Charts generated for channel={channel_name} day={day_folder}")
 

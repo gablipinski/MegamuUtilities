@@ -6,10 +6,10 @@
   "nickname": "TarasaKGL",
   "won_cooldown_s": 300.0,
   "activity_monitor": {
-    "baseline_window_s": 300.0,
-    "monitor_window_s": 35.0,
-    "min_messages_in_window": 5,
-    "min_unique_chatters": 2,
+    "baseline_window_s": 150.0,
+    "monitor_window_s": 20.0,
+    "min_messages_in_window": 3,
+    "min_unique_chatters": 3,
     "enter_score_threshold": 1.25
   },
   "channels": [
@@ -50,7 +50,7 @@
       "giveaway_triggers": [ "!garuda" ],
       "giveaway_message": "!garuda",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": [ "@{username} PARABÉNS❗ VOCÊ GANHOU 🎁" ],
+      "won_triggers": [ "@{username} PARABÉNS VOCÊ GANHOU" ],
       "won_prefix": "!"
     },
     {
@@ -58,7 +58,7 @@
       "giveaway_triggers": [ "!panda" ],
       "giveaway_message": "!panda",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": [ "@{username} PARABÉNS 🏆ENVIE ⛔ !SEUNICK ⛔" ],
+      "won_triggers": [ "@{username} PARABÉNS VOCÊ GANHOU" ],
       "won_prefix": "!"
     },
     {
@@ -122,7 +122,7 @@
       "giveaway_triggers": [ "!androx1" ],
       "giveaway_message": "!androx1",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": [ "Congratulations, @{username}! You won the giveaway!" ],
+      "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""
     },
     {
@@ -135,10 +135,10 @@
     },
     {
       "name": "srwins",
-      "giveaway_triggers": [ "!sm" ],
-      "giveaway_message": "!sm",
+      "giveaway_triggers": [ "!sorteio" ],
+      "giveaway_message": "!sorteio",
       "delay_ms": [ 5000, 25000 ],
-      "won_triggers": [],
+      "won_triggers": ["Congratulations, {username}! You won the giveaway!"],
       "won_prefix": ""
     },
     {
@@ -185,6 +185,14 @@
       "name": "valhallavikingos",
       "giveaway_triggers": [ "!vikingos" ],
       "giveaway_message": "!vikingos",
+      "delay_ms": [ 5000, 25000 ],
+      "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
+      "won_prefix": ""
+    },
+    {
+      "name": "muniingg",
+      "giveaway_triggers": [ "!vara" ],
+      "giveaway_message": "!vara",
       "delay_ms": [ 5000, 25000 ],
       "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""

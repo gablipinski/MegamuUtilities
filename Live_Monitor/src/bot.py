@@ -19,9 +19,10 @@ from windows_notifier import WindowsNotifier
 class TwitchBot(commands.Cog):
     """Bot that automatically joins giveaways across multiple Twitch channels"""
 
-    def __init__(self, bot: commands.Bot, config: BotConfig):
+    def __init__(self, bot: commands.Bot, config: BotConfig, log_only_mode: bool = False):
         self.bot = bot
         self.config = config
+        self.log_only_mode = bool(log_only_mode)
         self.notifier = WindowsNotifier(config.notification)
         self.is_shutting_down = False
 
@@ -120,6 +121,22 @@ class TwitchBot(commands.Cog):
         """Checks trigger using both raw and normalized forms. Supports * as wildcard."""
         if not trigger_text:
             return False
+
+        # Winner triggers are commonly configured with {username}. Treat it as wildcard.
+        trigger_candidates = [trigger_text]
+        if "{username}" in trigger_text:
+            trigger_candidates.append(trigger_text.replace("@{username}", "*"))
+            trigger_candidates.append(trigger_text.replace("{username}", "*"))
+
+        for candidate in trigger_candidates:
+            if self._contains_trigger_candidate(message_text, candidate):
+                return True
+        return False
+
+    def _contains_trigger_candidate(self, message_text: str, trigger_text: str) -> bool:
+        """Internal single-trigger matcher with optional wildcard support."""
+        if not trigger_text:
+            return False
         if "*" not in trigger_text:
             if trigger_text in message_text:
                 return True
@@ -140,6 +157,51 @@ class TwitchBot(commands.Cog):
         delay_s = chosen_ms / 1000
         print(f"[⏳] [{channel_name}] Waiting {delay_s}s before replying... (range {delay_min}-{delay_max}ms)")
         return delay_s
+
+    def _parse_irc_tags(self, tags_raw: str) -> dict[str, str]:
+        tags: dict[str, str] = {}
+        for pair in tags_raw.split(";"):
+            if "=" not in pair:
+                continue
+            key, value = pair.split("=", 1)
+            tags[key] = value
+        return tags
+
+    async def _handle_won_trigger(
+        self,
+        *,
+        channel_name: str,
+        sender: str,
+        message_text: str,
+        channel_config,
+        send_channel,
+    ):
+        now = time.monotonic()
+        cooldown_key = (channel_name, sender)
+        last_won = self.won_last_triggered.get(cooldown_key, 0.0)
+        if last_won > 0 and (now - last_won) < self.WON_COOLDOWN_S:
+            remaining = int(self.WON_COOLDOWN_S - (now - last_won))
+            print(f"[⏸] [{channel_name}] Won trigger from {sender} on cooldown ({remaining}s left) - skipping")
+            return
+
+        self.won_last_triggered[cooldown_key] = now
+        print(f"\n[🏆] Won giveaway in #{channel_name}!")
+        print(f"[📝] Message: {message_text}")
+
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._append_win_log(timestamp, channel_name)
+        self._increment_channel_stat(channel_name, "won")
+
+        if self.config.notification.enabled:
+            self.notifier.send_notification(channel_name, message_text, title="🏆 You won the giveaway!")
+
+        won_reply = f"{channel_config.won_prefix}{self.config.nickname}"
+        if won_reply and send_channel is not None:
+            delay_sec = self._get_random_delay_s(channel_name, channel_config.delay_ms)
+            if delay_sec > 0:
+                await asyncio.sleep(delay_sec)
+            print(f"[📤] Sending: {won_reply}")
+            await send_channel.send(won_reply)
 
     async def graceful_shutdown(self, reason: str = "manual interrupt"):
         """Shuts down the bot gracefully."""
@@ -177,8 +239,84 @@ class TwitchBot(commands.Cog):
             print(f"    - giveaway trigger: {giveaway_trigger}")
             print(f"    - won trigger: {won_trigger}")
             print(f"    - stats: joined={stats.get('joined', 0)} won={stats.get('won', 0)}")
-        print("[✓] Giveaway mode: activity monitor")
+        if self.log_only_mode:
+            print("[✓] Runtime mode: logging-only (detection and replies disabled)")
+        else:
+            print("[✓] Giveaway mode: activity monitor")
         print()
+
+    @commands.Cog.event()
+    async def event_raw_data(self, data: str):
+        """Captures USERNOTICE announcements that may not arrive through event_message."""
+        if self.is_shutting_down:
+            return
+        if not data.startswith("@") or " USERNOTICE #" not in data:
+            return
+
+        try:
+            tags_part, rest = data[1:].split(" ", 1)
+        except ValueError:
+            return
+
+        channel_match = re.search(r" USERNOTICE #([^\s]+)", rest)
+        if channel_match is None:
+            return
+
+        channel_name = channel_match.group(1).strip().lower()
+        channel_config = self.channels_map.get(channel_name)
+        if channel_config is None:
+            return
+
+        message_text = ""
+        if " :" in rest:
+            message_text = rest.split(" :", 1)[1]
+        message_text = message_text.strip()
+        if not message_text:
+            return
+
+        tags = self._parse_irc_tags(tags_part)
+        msg_id = tags.get("msg-id", "")
+        author_name = tags.get("display-name") or tags.get("login") or "system"
+
+        classes: set[str] = {"chat_message", "raw_usernotice"}
+        metadata: dict[str, str] = {}
+        if msg_id:
+            metadata["msg_id"] = msg_id
+        if msg_id == "announcement":
+            classes.add("announcement")
+        if self.log_only_mode:
+            metadata["runtime_mode"] = "log_only"
+
+        matched_won_trigger = None
+        if not self.log_only_mode:
+            message_lower = message_text.lower()
+            for trigger in channel_config.won_triggers:
+                if self._contains_trigger(message_lower, trigger):
+                    matched_won_trigger = trigger
+                    break
+        if matched_won_trigger is not None:
+            classes.add("won_trigger")
+            metadata["matched_won_trigger"] = matched_won_trigger
+
+        self.chat_monitor.log_message(
+            channel_name=channel_name,
+            author_name=author_name,
+            message_text=message_text,
+            classes=classes,
+            metadata=metadata,
+        )
+
+        if matched_won_trigger is None:
+            return
+
+        send_channel = self.bot.get_channel(channel_name)
+        await self._handle_won_trigger(
+            channel_name=channel_name,
+            sender=author_name,
+            message_text=message_text,
+            channel_config=channel_config,
+            send_channel=send_channel,
+        )
 
     @commands.Cog.event()
     async def event_message(self, message: twitchio.Message):
@@ -201,6 +339,24 @@ class TwitchBot(commands.Cog):
         if not channel_config:
             return
 
+        classes: set[str] = {"chat_message"}
+        stripped = message.content.strip()
+        if stripped.startswith("!") or stripped.startswith("#"):
+            classes.add("command_like")
+            classes.add("possible_giveaway_command")
+
+        metadata = {}
+        if self.log_only_mode:
+            metadata["runtime_mode"] = "log_only"
+            self.chat_monitor.log_message(
+                channel_name=channel_name,
+                author_name=message.author.name,
+                message_text=message.content,
+                classes=classes,
+                metadata=metadata,
+            )
+            return
+
         self.activity_monitor.observe_message(channel_name, message.author.name, message.content, now)
 
         message_lower = message.content.lower()
@@ -217,17 +373,11 @@ class TwitchBot(commands.Cog):
                 matched_giveaway_trigger = trigger
                 break
 
-        classes: set[str] = {"chat_message"}
-        stripped = message.content.strip()
-        if stripped.startswith("!") or stripped.startswith("#"):
-            classes.add("command_like")
-            classes.add("possible_giveaway_command")
         if matched_giveaway_trigger is not None:
             classes.add("giveaway_trigger")
         if matched_won_trigger is not None:
             classes.add("won_trigger")
 
-        metadata = {}
         if matched_giveaway_trigger is not None:
             metadata["matched_giveaway_trigger"] = matched_giveaway_trigger
         if matched_won_trigger is not None:
@@ -243,33 +393,13 @@ class TwitchBot(commands.Cog):
 
         # --- Won trigger: notify + reply after delay ---
         if matched_won_trigger is not None:
-            sender = message.author.name
-            cooldown_key = (channel_name, sender)
-            last_won = self.won_last_triggered.get(cooldown_key, 0.0)
-            if last_won > 0 and (now - last_won) < self.WON_COOLDOWN_S:
-                remaining = int(self.WON_COOLDOWN_S - (now - last_won))
-                print(f"[⏸] [{channel_name}] Won trigger from {sender} on cooldown ({remaining}s left) - skipping")
-                return
-
-            self.won_last_triggered[cooldown_key] = now
-            print(f"\n[🏆] Won giveaway in #{channel_name}!")
-            print(f"[📝] Message: {message.content}")
-
-            # Log the win.
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self._append_win_log(timestamp, channel_name)
-            self._increment_channel_stat(channel_name, "won")
-
-            if self.config.notification.enabled:
-                self.notifier.send_notification(channel_name, message.content, title="🏆 You won the giveaway!")
-
-            won_reply = f"{channel_config.won_prefix}{self.config.nickname}"
-            if won_reply:
-                delay_sec = self._get_random_delay_s(channel_name, channel_config.delay_ms)
-                if delay_sec > 0:
-                    await asyncio.sleep(delay_sec)
-                print(f"[📤] Sending: {won_reply}")
-                await message.channel.send(won_reply)
+            await self._handle_won_trigger(
+                channel_name=channel_name,
+                sender=message.author.name,
+                message_text=message.content,
+                channel_config=channel_config,
+                send_channel=message.channel,
+            )
             return
 
         if matched_giveaway_trigger and not self.activity_monitor.has_active_window(channel_name):
