@@ -2,3 +2,5 @@ twitchio==2.9.0
 winotify>=1.1.0
 setuptools>=65.0.0,<72
 matplotlib>=3.8.0,<4
+colorama>=0.4.6,<1
+textual>=0.60.0

@@ -6,68 +6,6 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
-"""
-Activity monitor overview
-=========================
-
-This module implements a lightweight, per-channel activity model used to decide
-if the bot should enter a giveaway after a giveaway trigger appears in chat.
-
-How it works at runtime:
-1. The bot calls observe_message(...) for every message.
-2. The monitor always keeps a rolling baseline window (default 300s):
-    - message timestamps
-    - author timestamps
-3. When the bot detects a giveaway trigger, it calls start_window(...):
-    - this opens a short monitor window (default 25s)
-4. During the active window, observe_message(...) accumulates:
-    - total messages
-    - unique users
-    - command-like messages (starting with ! or #)
-5. The bot periodically calls evaluate_if_ready(...):
-    - returns None while the window is still collecting data
-    - returns ActivityDecision after the window ends
-6. Decision is based on activity score + minimum hard gates:
-    - enough message volume
-    - enough unique users
-    - score above threshold
-7. Every final decision is appended to logs/activity_monitor.log as JSONL.
-
-Why this design:
-- Replaces static trigger repetition logic with behavior-based detection.
-- Keeps decisions explainable through logged metrics.
-- Isolates monitoring logic in one module for easier tuning.
-
-Mathematical logic used by the current implementation:
-
-Let:
-- Bm = baseline_msg_count
-- Bu = baseline_unique
-- Wm = window_messages
-- Wu = window_unique
-- Wc = command_like
-- Tb = baseline_window_s
-- Tw = elapsed monitor window duration
-
-Derived features:
-- baseline_rate = Bm / max(Tb, 1)
-- window_rate = Wm / max(Tw, 1)
-- rate_ratio = window_rate / max(baseline_rate, 0.2)
-- unique_ratio = Wu / max(Bu, 1)
-- command_ratio = Wc / max(Wm, 1)
-
-Weighted score:
-- score = 0.6 * rate_ratio + 0.3 * unique_ratio + 0.1 * (command_ratio * 5.0)
-
-Hard gates:
-- enough_volume = (Wm >= min_messages_in_window)
-- enough_unique = (Wu >= min_unique_chatters)
-
-Final decision:
-- should_enter = enough_volume and enough_unique and (score >= enter_score_threshold)
-"""
-
-
 @dataclass
 class ActivityDecision:
     """Final result for one activity window evaluation."""
@@ -80,16 +18,30 @@ class ActivityDecision:
 class ChatActivityMonitor:
     """Per-channel activity monitor that decides giveaway entry from recent chat behavior."""
 
+    # Reference point: a channel with ~20 unique chatters in the baseline window is
+    # considered "normally active". Channels below this threshold get a sensitivity
+    # boost; channels above get stricter requirements.
+    ACTIVITY_REF_UNIQUE: int = 20
+
+    # Fraction of baseline unique users expected to participate in the giveaway window
+    # during a "typical" clear giveaway on a reference channel.
+    DIVERSITY_REF_FRACTION: float = 0.15
+
+    # Hard safety floors to avoid one-message false positives on very quiet channels.
+    ABSOLUTE_MIN_MESSAGES_IN_WINDOW: int = 2
+    ABSOLUTE_MIN_UNIQUE_CHATTERS: int = 2
+
     def __init__(
         self,
         channel_names: list[str],
-        logs_dir: Path,
+        logs_dir: Path | None,
         baseline_window_s: float = 300.0,
         monitor_window_s: float = 25.0,
         min_messages_in_window: int = 8,
         min_unique_chatters: int = 4,
         enter_score_threshold: float = 1.6,
         channel_settings: dict[str, dict[str, float | int]] | None = None,
+        enable_file_logging: bool = True,
     ):
         self.baseline_window_s = baseline_window_s
         self.monitor_window_s = monitor_window_s
@@ -104,8 +56,10 @@ class ChatActivityMonitor:
         # Active window exists only after a giveaway trigger and for a short period.
         self.active_windows: dict[str, dict | None] = {name: None for name in channel_names}
 
-        self.activity_log_path = logs_dir / "activity_monitor.log"
-        self.activity_log_path.touch(exist_ok=True)
+        self.enable_file_logging = bool(enable_file_logging)
+        self.activity_log_path = (logs_dir / "activity_monitor.log") if (logs_dir is not None and self.enable_file_logging) else None
+        if self.activity_log_path is not None:
+            self.activity_log_path.touch(exist_ok=True)
 
     def _cleanup_baseline(self, channel_name: str, now: float):
         """Drop baseline samples older than the rolling baseline window."""
@@ -156,6 +110,43 @@ class ChatActivityMonitor:
     def _baseline_unique_count(self, channel_name: str) -> int:
         return len({author for _, author in self.baseline_users[channel_name]})
 
+    def _compute_adaptive_thresholds(
+        self,
+        baseline_unique: int,
+        window_unique: int,
+        min_messages_in_window: int,
+        min_unique_chatters: int,
+        enter_score_threshold: float,
+    ) -> tuple[int, int, float]:
+        """
+        Derives per-evaluation adaptive thresholds from current channel state.
+
+        activity_scale  - scales ALL gates up/down based on overall channel busyness.
+        diversity_factor - adjusts the score threshold based on how many distinct users
+                           participated in the giveaway window relative to channel size.
+        """
+        activity_scale = max(0.25, min(baseline_unique / self.ACTIVITY_REF_UNIQUE, 3.0))
+
+        diversity_ref_count = max(baseline_unique * self.DIVERSITY_REF_FRACTION, 1.0)
+        diversity_factor = max(0.75, min(window_unique / diversity_ref_count, 2.0))
+
+        adaptive_min_messages = max(
+            self.ABSOLUTE_MIN_MESSAGES_IN_WINDOW,
+            round(min_messages_in_window * activity_scale),
+        )
+        adaptive_min_unique = max(
+            self.ABSOLUTE_MIN_UNIQUE_CHATTERS,
+            round(min_unique_chatters * activity_scale),
+        )
+
+        raw_threshold = (enter_score_threshold * activity_scale) / diversity_factor
+        adaptive_threshold = max(
+            enter_score_threshold * 0.4,
+            min(raw_threshold, enter_score_threshold * 2.5),
+        )
+
+        return adaptive_min_messages, adaptive_min_unique, adaptive_threshold
+
     def _get_setting(self, channel_name: str, key: str) -> float | int:
         override = self.channel_settings.get(channel_name, {})
         if key in override:
@@ -164,6 +155,8 @@ class ChatActivityMonitor:
 
     def _append_log(self, channel_name: str, decision: ActivityDecision):
         """Appends one decision row (JSONL) for offline tuning and auditing."""
+        if self.activity_log_path is None:
+            return
         record = {
             "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
             "channel": channel_name,
@@ -223,11 +216,23 @@ class ChatActivityMonitor:
         # Weighted score keeps logic simple while reflecting intensity and diversity.
         score = (0.6 * rate_ratio) + (0.3 * unique_ratio) + (0.1 * (command_ratio * 5.0))
 
-        # Hard gates reduce false positives from tiny/noisy bursts.
-        enough_volume = window_messages >= min_messages_in_window
-        enough_unique = window_unique >= min_unique_chatters
+        # Adaptive thresholds: scale hard gates and score threshold by channel activity
+        # and giveaway window diversity.
+        adaptive_min_messages, adaptive_min_unique, adaptive_threshold = (
+            self._compute_adaptive_thresholds(
+                baseline_unique, window_unique,
+                min_messages_in_window, min_unique_chatters, enter_score_threshold,
+            )
+        )
 
-        should_enter = enough_volume and enough_unique and score >= enter_score_threshold
+        activity_scale = max(0.25, min(baseline_unique / self.ACTIVITY_REF_UNIQUE, 3.0))
+        diversity_ref_count = max(baseline_unique * self.DIVERSITY_REF_FRACTION, 1.0)
+        diversity_factor = max(0.75, min(window_unique / diversity_ref_count, 2.0))
+
+        enough_volume = window_messages >= adaptive_min_messages
+        enough_unique = window_unique >= adaptive_min_unique
+
+        should_enter = enough_volume and enough_unique and score >= adaptive_threshold
 
         metrics = {
             "elapsed_s": round(elapsed, 2),
@@ -239,25 +244,65 @@ class ChatActivityMonitor:
             "rate_ratio": round(rate_ratio, 3),
             "unique_ratio": round(unique_ratio, 3),
             "score": round(score, 3),
+            "activity_scale": round(activity_scale, 3),
+            "diversity_factor": round(diversity_factor, 3),
+            "adaptive_min_messages": float(adaptive_min_messages),
+            "adaptive_min_unique": float(adaptive_min_unique),
+            "adaptive_threshold": round(adaptive_threshold, 3),
         }
 
         if should_enter:
-            reason = f"score={metrics['score']} volume={window_messages} unique={window_unique}"
+            reason = (
+                f"score={metrics['score']} >= threshold={metrics['adaptive_threshold']} "
+                f"volume={window_messages}/{adaptive_min_messages} "
+                f"unique={window_unique}/{adaptive_min_unique} "
+                f"(activity_scale={metrics['activity_scale']} diversity={metrics['diversity_factor']})"
+            )
         else:
             failed = []
-            if score < enter_score_threshold:
-                failed.append("score")
+            if score < adaptive_threshold:
+                failed.append(f"score={metrics['score']:.3f}<{metrics['adaptive_threshold']:.3f}")
             if not enough_volume:
-                failed.append("volume")
+                failed.append(f"volume={window_messages}<{adaptive_min_messages}")
             if not enough_unique:
-                failed.append("unique")
-            failed_text = ",".join(failed) if failed else "unknown"
+                failed.append(f"unique={window_unique}<{adaptive_min_unique}")
+            failed_text = ", ".join(failed) if failed else "unknown"
             reason = (
-                f"insufficient activity [{failed_text}] score={metrics['score']} "
-                f"volume={window_messages} unique={window_unique}"
+                f"insufficient activity [{failed_text}] "
+                f"(activity_scale={metrics['activity_scale']} diversity={metrics['diversity_factor']})"
             )
 
         decision = ActivityDecision(enter=should_enter, reason=reason, metrics=metrics)
         self._append_log(channel_name, decision)
         self.active_windows[channel_name] = None
         return decision
+
+    def get_baseline_metrics(self, channel_name: str, now: float | None = None) -> dict[str, float]:
+        """Returns current baseline activity metrics for a channel.
+        
+        This is used by join dedup auto-detection to scale settings based on activity level.
+        
+        Returns:
+        {
+            "baseline_msg_count": count of messages in rolling baseline window,
+            "baseline_unique": count of unique users in rolling baseline window,
+            "baseline_window_s": length of baseline window,
+            "msg_rate": messages per second,
+        }
+        """
+        ts = now if now is not None else time.monotonic()
+        self._cleanup_baseline(channel_name, ts)
+        
+        baseline_window_s = float(self._get_setting(channel_name, "baseline_window_s"))
+        baseline_msg_count = len(self.baseline_messages[channel_name])
+        baseline_unique = self._baseline_unique_count(channel_name)
+        
+        # Messages per second in the baseline window
+        msg_rate = baseline_msg_count / max(baseline_window_s, 1.0) if baseline_msg_count > 0 else 0.0
+        
+        return {
+            "baseline_msg_count": float(baseline_msg_count),
+            "baseline_unique": float(baseline_unique),
+            "baseline_window_s": baseline_window_s,
+            "msg_rate": msg_rate,
+        }

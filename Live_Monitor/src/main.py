@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Twitch bot that automatically joins giveaways across multiple channels.
+Twitch bot that automatically joins giveaways across multiple channels using multiple accounts.
 """
 
 import asyncio
@@ -9,78 +9,97 @@ import sys
 from twitchio.ext import commands
 from config import load_config
 from bot import TwitchBot
+from console_log import log_line
+from startup_logs import emit_startup_logs
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Run Twitch bot runtime.')
+    parser.add_argument(
+        '--log',
+        action='store_true',
+        help='Enable file logging to logs/ while keeping normal bot behavior.',
+    )
     parser.add_argument(
         '--log-only',
         action='store_true',
         help='Run in logging-only mode (no giveaway detection and no trigger responses).',
     )
+    parser.add_argument(
+        '--gui',
+        action='store_true',
+        help='Launch the Textual TUI monitor instead of plain terminal output.',
+    )
     return parser.parse_args()
 
 
+async def run_bot_account(account, config, args):
+    """Run a single bot instance for one account."""
+    bot = commands.Bot(
+        token=account.oauth_token,
+        nick=account.username,
+        prefix='§',
+        initial_channels=[ch.name for ch in config.channels]
+    )
+    
+    twitch_bot = TwitchBot(
+        bot,
+        config,
+        account_name=account.username,
+        account_nickname=account.nickname,
+        ignored_usernames=account.ignored_usernames,
+        log_only_mode=args.log_only,
+        enable_logging=(args.log or args.log_only),
+    )
+    bot.add_cog(twitch_bot)
+    await bot.start()
+
+
 async def main():
-    bot = None
-    twitch_bot = None
     args = parse_args()
 
     try:
-        # Carrega configurações do JSON
         config = load_config()
-        print('[📋] Configurações carregadas de configs/config.json')
-        
-        # Cria lista de canais para o bot
-        channel_names = [ch.name for ch in config.channels]
-        
-        # Gera URL do multitwitch com canais ordenados alfabeticamente
-        sorted_channels = sorted(channel_names)
-        multitwitch_url = f"https://multitwitch.tv/{'/'.join(sorted_channels)}"
-        print(f'[🔗] Multitwitch: {multitwitch_url}\n')
-        
-        # Cria a instância do bot
-        bot = commands.Bot(
-            token=config.twitch.oauth_token,
-            nick=config.twitch.username,
-            prefix='§',
-            initial_channels=channel_names
-        )
-        
-        # Adiciona a Cog
-        twitch_bot = TwitchBot(bot, config, log_only_mode=args.log_only)
-        bot.add_cog(twitch_bot)
-        
-        # Conecta à Twitch
-        mode_label = 'LOG-ONLY' if args.log_only else 'FULL'
-        print(f'[⚙️] Modo de execução: {mode_label}')
-        print('[⏳] Conectando ao chat da Twitch...\n')
-        await bot.start()
-        
+        emit_startup_logs(config, args)
+        print()
+        print()
+
+        bot_tasks = []
+        for account in config.accounts:
+            task = run_bot_account(account, config, args)
+            bot_tasks.append(task)
+
+        await asyncio.gather(*bot_tasks, return_exceptions=False)
     except FileNotFoundError as e:
-        print(f'[✗] Erro: {e}')
+        log_line(f'Erro: {e}', 'other')
         sys.exit(1)
     except ValueError as e:
-        print(f'[✗] Erro de configuração: {e}')
+        log_line(f'Erro de configuracao: {e}', 'other')
         sys.exit(1)
     except asyncio.CancelledError:
-        if twitch_bot is not None:
-            await twitch_bot.graceful_shutdown('task cancelled')
         raise
     except Exception as e:
         import traceback
-        print(f'[✗] Erro: {e}')
+        log_line(f'Erro: {e}', 'other')
         traceback.print_exc()
         sys.exit(1)
-    finally:
-        if twitch_bot is not None and not twitch_bot.is_shutting_down:
-            await twitch_bot.graceful_shutdown('application shutdown')
 
 if __name__ == '__main__':
+    _args = parse_args()
+    if _args.gui:
+        try:
+            from monitor_gui import run_gui
+            _config = load_config()
+            run_gui(_config, _args)
+        except ImportError:
+            log_line('textual not installed. Run: pip install textual', 'ignore')
+            sys.exit(1)
+        sys.exit(0)
+
     _exit_code = 0
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print('[✓] Bot encerrado')
+        log_line('Bot encerrado', 'other')
     except SystemExit as e:
         _exit_code = e.code if isinstance(e.code, int) else 1
     finally:

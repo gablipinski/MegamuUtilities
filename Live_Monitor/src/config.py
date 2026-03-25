@@ -50,9 +50,18 @@ def parse_delay_range_ms(value) -> tuple[int, int]:
     return (2000, 2000)
 
 @dataclass
+class AccountConfig:
+    username: str
+    oauth_token: str
+    nickname: str
+    ignored_usernames: list[str]
+
+
+@dataclass
 class TwitchConfig:
     username: str
     oauth_token: str
+
 
 @dataclass
 class NotificationConfig:
@@ -75,12 +84,14 @@ class ActivityMonitorConfig:
 
 @dataclass
 class BotConfig:
-    twitch: TwitchConfig
-    nickname: str
+    accounts: list[AccountConfig]
     channels: list[ChannelConfig]
     notification: NotificationConfig
     runtime: RuntimeConfig
     activity_monitor: ActivityMonitorConfig
+    # Legacy support: keep twitch and nickname for backward compatibility
+    twitch: TwitchConfig | None = None
+    nickname: str | None = None
 
 
 def parse_activity_monitor_config(value: dict | None, defaults: ActivityMonitorConfig | None = None) -> ActivityMonitorConfig:
@@ -118,7 +129,7 @@ def resolve_default_config_path() -> Path:
     return candidates[0]
 
 def load_config(config_file: str | None = None) -> BotConfig:
-    """Loads configuration from JSON file"""
+    """Loads configuration from JSON file. Supports both old (single account) and new (multiple accounts) format."""
 
     config_path = Path(config_file) if config_file else resolve_default_config_path()
 
@@ -128,33 +139,74 @@ def load_config(config_file: str | None = None) -> BotConfig:
     with open(config_path, 'r', encoding='utf-8-sig') as f:
         data = json.load(f)
 
-    # Basic validation
-    if not data.get('twitch', {}).get('username'):
-        raise ValueError('twitch.username is not configured')
-    if not data.get('twitch', {}).get('oauth_token'):
-        raise ValueError('twitch.oauth_token is not configured')
-    if not data.get('nickname'):
-        raise ValueError('nickname is not configured')
     if not data.get('channels'):
         raise ValueError('No channels configured')
 
-    # Parse Twitch config
-    twitch = TwitchConfig(
-        username=data['twitch']['username'],
-        oauth_token=data['twitch']['oauth_token']
-    )
-
     activity_monitor_defaults = parse_activity_monitor_config(data.get('activity_monitor'))
 
-    # Parse channels
+    # Parse accounts - support both new format (accounts array) and old format (single twitch account)
+    accounts: list[AccountConfig] = []
+    twitch_legacy: TwitchConfig | None = None
+    nickname_legacy: str | None = None
+
+    if 'accounts' in data and isinstance(data['accounts'], list):
+        # New format: multiple accounts
+        for acc in data['accounts']:
+            if not acc.get('username'):
+                raise ValueError('Account missing "username"')
+            if not acc.get('oauth_token'):
+                raise ValueError('Account missing "oauth_token"')
+            if not acc.get('nickname'):
+                raise ValueError('Account missing "nickname"')
+            
+            accounts.append(AccountConfig(
+                username=acc['username'],
+                oauth_token=acc['oauth_token'],
+                nickname=acc['nickname'],
+                ignored_usernames=[
+                    str(value).strip()
+                    for value in acc.get('ignored_usernames', [])
+                    if str(value).strip()
+                ],
+            ))
+    else:
+        # Legacy format: single account (twitch + nickname)
+        if not data.get('twitch', {}).get('username'):
+            raise ValueError('twitch.username is not configured')
+        if not data.get('twitch', {}).get('oauth_token'):
+            raise ValueError('twitch.oauth_token is not configured')
+        if not data.get('nickname'):
+            raise ValueError('nickname is not configured')
+        
+        username = data['twitch']['username']
+        oauth_token = data['twitch']['oauth_token']
+        nickname = str(data.get('nickname', '')).strip()
+        
+        accounts.append(AccountConfig(
+            username=username,
+            oauth_token=oauth_token,
+            nickname=nickname,
+            ignored_usernames=[],
+        ))
+        
+        # Keep for backward compatibility
+        twitch_legacy = TwitchConfig(username=username, oauth_token=oauth_token)
+        nickname_legacy = nickname
+
+    # Parse channels (using first account for context in old format)
     channels = []
+    first_account = accounts[0] if accounts else None
+    
     for ch in data['channels']:
         if not ch.get('name'):
             raise ValueError("Channel missing 'name'")
 
         context = {
-            'username': str(data.get('twitch', {}).get('username', '')).strip(),
-            'nickname': str(data.get('nickname', '')).strip(),
+            'username': str(first_account.username if first_account else '').strip(),
+            'nickname': str(first_account.nickname if first_account else '').strip(),
+            'channel': str(ch.get('name', '')).strip(),
+        }
+        won_context = {
             'channel': str(ch.get('name', '')).strip(),
         }
 
@@ -166,7 +218,7 @@ def load_config(config_file: str | None = None) -> BotConfig:
             giveaway_triggers=[t.lower() for t in format_list(giveaway_triggers, context)],
             giveaway_message=format_with_context(ch.get('giveaway_message', 'Joining!'), context),
             delay_ms=parse_delay_range_ms(ch.get('delay_ms', 2000)),
-            won_triggers=[t.lower() for t in format_list(won_triggers, context)],
+            won_triggers=[t.lower() for t in format_list(won_triggers, won_context)],
             won_prefix=format_with_context(ch.get('won_prefix', ch.get('won_message', '')), context),
             activity_monitor=parse_activity_monitor_config(
                 ch.get('activity_monitor'),
@@ -181,10 +233,11 @@ def load_config(config_file: str | None = None) -> BotConfig:
     )
 
     return BotConfig(
-        twitch=twitch,
-        nickname=str(data.get('nickname', '')).strip(),
+        accounts=accounts,
         channels=channels,
         notification=notification,
         runtime=runtime,
         activity_monitor=activity_monitor_defaults,
+        twitch=twitch_legacy,
+        nickname=nickname_legacy,
     )

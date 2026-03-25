@@ -1,4 +1,5 @@
 from config import NotificationConfig
+from console_log import log_line
 
 try:
     from winotify import Notification
@@ -12,7 +13,13 @@ class WindowsNotifier:
         self.config = config
         self._warned = False
     
-    def send_notification(self, channel: str, message: str, title: str = '🎰 Giveaway detected!') -> bool:
+    def send_notification(
+        self,
+        channel: str,
+        message: str,
+        title: str = 'Giveaway detected!',
+        account: str | None = None,
+    ) -> bool:
         """Sends a Windows toast notification"""
         
         if not self.config.enabled:
@@ -20,7 +27,12 @@ class WindowsNotifier:
 
         if Notification is None:
             if not self._warned:
-                print('[!] Windows notifications unavailable (winotify missing).')
+                log_line(
+                    'Windows notifications unavailable (winotify missing).',
+                    'notification',
+                    channel,
+                    account=account,
+                )
                 self._warned = True
             return False
         
@@ -36,8 +48,8 @@ class WindowsNotifier:
                 msg=body,
             )
             toast.show()
-            print(f'[🔔] Windows notification sent: {body}')
+            log_line(f'Windows notification sent: {body}', 'decision', channel, account=account)
             return True
         except Exception as e:
-            print(f'[✗] Error sending notification: {e}')
+            log_line(f'Error sending notification: {e}', 'notification', channel, account=account)
             return False
