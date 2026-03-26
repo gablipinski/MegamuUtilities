@@ -102,6 +102,18 @@ class TwitchBot(commands.Cog):
         )
         self.chat_monitor = ChatMonitorLogger(logs_dir=self.logs_dir) if self.logs_dir is not None else None
 
+    def reset_channel(self, channel_name: str) -> None:
+        """Reset all giveaway / activity state for a single channel."""
+        self.channel_active_giveaway.pop(channel_name, None)
+        self.won_last_triggered.clear()
+        self.activity_monitor.reset_channel(channel_name)
+        log_line(
+            "Channel state reset",
+            "other",
+            channel_name,
+            account=self.account_name,
+        )
+
     def _append_win_log(self, timestamp: str, channel_name: str):
         self.wins_log_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.wins_log_path, "a", encoding="utf-8") as f:

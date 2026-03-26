@@ -17,14 +17,6 @@
   },
   "channels": [
     {
-      "name": "tarasak_",
-      "giveaway_triggers": [ "!sorteio" ],
-      "giveaway_message": "!sorteio",
-      "delay_ms": [ 5000, 25000 ],
-      "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
-      "won_prefix": "&"
-    },
-    {
       "name": "diiogofalcao",
       "giveaway_triggers": [ "#sorteio" ],
       "giveaway_message": "#sorteio",
@@ -260,6 +252,22 @@
       "name": "srkoos",
       "giveaway_triggers": [ "!srkoos" ],
       "giveaway_message": "!srkoos",
+      "delay_ms": [ 5000, 25000 ],
+      "won_triggers": [ ],
+      "won_prefix": ""
+    },
+    {
+      "name": "kenshinx",
+      "giveaway_triggers": [ "!kenshin" ],
+      "giveaway_message": "!kenshin",
+      "delay_ms": [ 5000, 25000 ],
+      "won_triggers": [ ],
+      "won_prefix": ""
+    },
+    {
+      "name": "xallan92",
+      "giveaway_triggers": [   ],
+      "giveaway_message": "",
       "delay_ms": [ 5000, 25000 ],
       "won_triggers": [ ],
       "won_prefix": ""

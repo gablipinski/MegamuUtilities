@@ -15,6 +15,9 @@ import subprocess
 import time
 import argparse
 import math
+import json
+import urllib.parse
+import urllib.request
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -63,6 +66,13 @@ class LogEvent(Message):
         self.account = account
 
 
+class ResetChannelEvent(Message):
+    """Fired by a ChannelPanel to ask the app to reset bot state for one streamer."""
+    def __init__(self, channel_name: str) -> None:
+        super().__init__()
+        self.channel_name = channel_name
+
+
 # ---------------------------------------------------------------------------
 # Per-channel panel
 # ---------------------------------------------------------------------------
@@ -82,6 +92,7 @@ class ChannelPanel(Widget):
 
     BINDINGS = [
         Binding("c", "copy_log", "Copy log"),
+        Binding("r", "refresh_channel", "Refresh"),
     ]
 
     DEFAULT_CSS = """
@@ -122,9 +133,10 @@ class ChannelPanel(Widget):
 
     _LOG_BUFFER_MAX = 500
 
-    def __init__(self, channel_name: str, **kwargs) -> None:
+    def __init__(self, channel_name: str, is_online: bool = False, **kwargs) -> None:
         super().__init__(**kwargs)
         self.channel_name = channel_name
+        self._is_online = is_online
         self._status = self._STATUS_IDLE
         self._status_since: float = 0.0
         self._log_buffer: list[str] = []
@@ -134,14 +146,15 @@ class ChannelPanel(Widget):
         self._session_win_recorded = False
 
     def _render_header_text(self, now: float | None = None) -> str:
+        online_dot = "🟢" if self._is_online else "🔴"
         stats = f"({self._session_giveaways}/{self._session_wins})"
         if self._status == self._STATUS_ACTIVE:
-            return f"#{self.channel_name} {stats}   ● ACTIVE"
+            return f"{online_dot} {self.channel_name} {stats}   ● ACTIVE"
         if self._status == self._STATUS_ENDING:
             now_value = now if now is not None else time.monotonic()
             remaining = max(0, int(math.ceil(GIVEAWAY_SESSION_DURATION_S - (now_value - self._status_since))))
-            return f"#{self.channel_name} {stats}   ⏱ ENDING  {remaining:>3}s"
-        return f"#{self.channel_name} {stats}   ○ idle"
+            return f"{online_dot} {self.channel_name} {stats}   ⏱ ENDING  {remaining:>3}s"
+        return f"{online_dot} {self.channel_name} {stats}   ○ idle"
 
     def compose(self) -> ComposeResult:
         yield Static(
@@ -214,6 +227,27 @@ class ChannelPanel(Widget):
             self._session_wins += 1
             self._session_win_recorded = True
             self._refresh_header()
+
+    def reset(self) -> None:
+        """Clear log, reset status and session counters."""
+        self._log_buffer.clear()
+        self._pending_widget_logs.clear()
+        self._session_giveaways = 0
+        self._session_wins = 0
+        self._session_win_recorded = False
+        self._status = self._STATUS_IDLE
+        self._status_since = 0.0
+        try:
+            log = self.query_one(f"#log_{self.channel_name}", RichLog)
+            log.clear()
+        except NoMatches:
+            pass
+        self._refresh_header()
+
+    def action_refresh_channel(self) -> None:
+        self.reset()
+        self.post_message(ResetChannelEvent(self.channel_name))
+        self.notify(f"#{self.channel_name} reset", timeout=2)
 
     def action_copy_log(self) -> None:
         content = "\n".join(self._log_buffer)
@@ -349,6 +383,7 @@ class MonitorApp(App):
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
+        Binding("R", "refresh_all", "Refresh all", key_display="Shift+R"),
     ]
 
     def __init__(self, config: BotConfig, args: argparse.Namespace) -> None:
@@ -356,6 +391,7 @@ class MonitorApp(App):
         self._bot_config = config
         self._bot_args = args
         self._channel_panels: dict[str, ChannelPanel] = {}
+        self._bot_instances: list[TwitchBot] = []
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -372,17 +408,109 @@ class MonitorApp(App):
             return
         sys_panel.add_log(message, kind)
 
+    def _normalize_bearer_token(self, token: str) -> str:
+        token_value = token.strip()
+        if token_value.lower().startswith("oauth:"):
+            return token_value.split(":", 1)[1].strip()
+        return token_value
+
+    def _get_twitch_client_id_sync(self, token: str) -> str | None:
+        """Resolves Client-ID from OAuth token using Twitch validate endpoint."""
+        validate_url = "https://id.twitch.tv/oauth2/validate"
+        auth_variants = [f"OAuth {token}", f"Bearer {token}"]
+
+        for authorization in auth_variants:
+            request = urllib.request.Request(
+                validate_url,
+                headers={"Authorization": authorization},
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=8) as response:
+                    payload = json.loads(response.read().decode("utf-8", errors="ignore"))
+            except Exception:
+                continue
+
+            client_id = str(payload.get("client_id", "")).strip()
+            if client_id:
+                return client_id
+
+        return None
+
+    def _fetch_online_channels_helix_sync(self, channel_names: list[str]) -> set[str]:
+        """Fetches online channels from Twitch Helix Streams endpoint."""
+        if not self._bot_config.accounts:
+            return set()
+
+        raw_token = self._bot_config.accounts[0].oauth_token
+        token = self._normalize_bearer_token(raw_token)
+        if not token:
+            return set()
+
+        client_id = self._get_twitch_client_id_sync(token)
+        if not client_id:
+            return set()
+
+        online: set[str] = set()
+        base_url = "https://api.twitch.tv/helix/streams"
+
+        # Helix accepts up to 100 user_login params per request.
+        for index in range(0, len(channel_names), 100):
+            chunk = channel_names[index:index + 100]
+            if not chunk:
+                continue
+
+            query = urllib.parse.urlencode([("user_login", name) for name in chunk])
+            request = urllib.request.Request(
+                f"{base_url}?{query}",
+                headers={
+                    "Client-ID": client_id,
+                    "Authorization": f"Bearer {token}",
+                },
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    payload = json.loads(response.read().decode("utf-8", errors="ignore"))
+            except Exception:
+                continue
+
+            entries = payload.get("data", []) if isinstance(payload, dict) else []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                login = str(entry.get("user_login", "")).strip().lower()
+                if login:
+                    online.add(login)
+
+        return online
+
+    async def _fetch_online_channels_startup(self, channel_names: list[str]) -> set[str]:
+        """Returns channels currently online (lowercase names), or empty set if unavailable."""
+        normalized = [name.strip().lower() for name in channel_names if name.strip()]
+        return await asyncio.to_thread(self._fetch_online_channels_helix_sync, normalized)
+
     async def on_mount(self) -> None:
         # Build channel panels inside scrollable two-column rows, static order by name.
         channel_list = self.query_one("#channel-list", Container)
-        sorted_channels = sorted(self._bot_config.channels, key=lambda channel: channel.name.casefold())
+        channel_names = [channel.name for channel in self._bot_config.channels]
+        online_channels = await self._fetch_online_channels_startup(channel_names)
+        sorted_channels = sorted(
+            self._bot_config.channels,
+            key=lambda channel: (
+                0 if channel.name.casefold() in online_channels else 1,
+                channel.name.casefold(),
+            ),
+        )
 
         for index in range(0, len(sorted_channels), 2):
             row = Horizontal(classes="channel-row")
             await channel_list.mount(row)
 
             for ch in sorted_channels[index:index + 2]:
-                panel = ChannelPanel(ch.name, id=f"cpanel_{ch.name}")
+                panel = ChannelPanel(
+                    ch.name,
+                    is_online=(ch.name.casefold() in online_channels),
+                    id=f"cpanel_{ch.name}",
+                )
                 self._channel_panels[ch.name] = panel
                 await row.mount(panel)
 
@@ -421,6 +549,58 @@ class MonitorApp(App):
         for panel in self._channel_panels.values():
             panel.tick(now)
 
+    def _reset_bot_channel(self, channel_name: str) -> None:
+        """Reset giveaway/activity state for *channel_name* across all bot accounts."""
+        for twitch_bot in self._bot_instances:
+            twitch_bot.reset_channel(channel_name)
+
+    def on_reset_channel_event(self, event: ResetChannelEvent) -> None:
+        self._reset_bot_channel(event.channel_name)
+
+    async def action_refresh_all(self) -> None:
+        """Global refresh: re-fetch online status, reset all panels, reorganise layout."""
+        self._add_system_log("Refreshing all channels...", "other")
+
+        # Reset every panel and bot state
+        for channel_name, panel in self._channel_panels.items():
+            panel.reset()
+            self._reset_bot_channel(channel_name)
+
+        # Re-fetch who is online
+        channel_names = [ch.name for ch in self._bot_config.channels]
+        online_channels = await self._fetch_online_channels_startup(channel_names)
+
+        # Update online dot on each panel
+        for channel_name, panel in self._channel_panels.items():
+            panel._is_online = channel_name.casefold() in online_channels
+            panel._refresh_header()
+
+        # Rebuild the grid: online first, then offline, alphabetically within each group
+        sorted_channels = sorted(
+            self._bot_config.channels,
+            key=lambda ch: (
+                0 if ch.name.casefold() in online_channels else 1,
+                ch.name.casefold(),
+            ),
+        )
+
+        channel_list = self.query_one("#channel-list", Container)
+        await channel_list.remove_children()
+
+        for index in range(0, len(sorted_channels), 2):
+            row = Horizontal(classes="channel-row")
+            await channel_list.mount(row)
+            for ch in sorted_channels[index:index + 2]:
+                panel = self._channel_panels[ch.name]
+                await row.mount(panel)
+
+        online_count = sum(1 for ch in self._bot_config.channels if ch.name.casefold() in online_channels)
+        self._add_system_log(
+            f"Refresh complete — {online_count}/{len(channel_names)} online",
+            "notification",
+        )
+        self.notify(f"Refreshed — {online_count}/{len(channel_names)} online", timeout=3)
+
     async def _run_bot(self) -> None:
         try:
             emit_startup_logs(self._bot_config, self._bot_args)
@@ -442,6 +622,7 @@ class MonitorApp(App):
                     log_only_mode=self._bot_args.log_only,
                     enable_logging=(self._bot_args.log or self._bot_args.log_only),
                 )
+                self._bot_instances.append(twitch_bot)
                 bot.add_cog(twitch_bot)
                 tasks.append(bot.start())
             await asyncio.gather(*tasks)

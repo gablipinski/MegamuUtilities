@@ -91,6 +91,14 @@ class ChatActivityMonitor:
         if text.startswith("!") or text.startswith("#"):
             window["command_like"] += 1
 
+    def reset_channel(self, channel_name: str) -> None:
+        """Clear all baseline and active-window state for one channel."""
+        if channel_name in self.baseline_messages:
+            self.baseline_messages[channel_name].clear()
+        if channel_name in self.baseline_users:
+            self.baseline_users[channel_name].clear()
+        self.active_windows[channel_name] = None
+
     def has_active_window(self, channel_name: str) -> bool:
         return self.active_windows.get(channel_name) is not None
 
