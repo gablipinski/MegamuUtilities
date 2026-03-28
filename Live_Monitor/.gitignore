@@ -6,6 +6,7 @@ ENV/
 
 # Binaries
 bin/
+*.rar
 
 # Logs 
 logs/

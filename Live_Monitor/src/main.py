@@ -27,7 +27,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--gui',
         action='store_true',
-        help='Launch the Textual TUI monitor instead of plain terminal output.',
+        default=True,
+        help='Launch the Textual TUI monitor (default when no flags are given).',
+    )
+    parser.add_argument(
+        '--no-gui',
+        action='store_true',
+        help='Disable the TUI and use plain terminal output.',
     )
     return parser.parse_args()
 
@@ -85,13 +91,25 @@ async def main():
 
 if __name__ == '__main__':
     _args = parse_args()
+    if _args.no_gui:
+        _args.gui = False
     if _args.gui:
         try:
             from monitor_gui import run_gui
             _config = load_config()
             run_gui(_config, _args)
-        except ImportError:
-            log_line('textual not installed. Run: pip install textual', 'ignore')
+        except ImportError as e:
+            log_line(f'GUI dependency missing: {e}', 'ignore')
+            log_line('Run: pip install textual rich', 'ignore')
+            import traceback
+            traceback.print_exc()
+            input('Press Enter to exit...')
+            sys.exit(1)
+        except Exception as e:
+            log_line(f'GUI error: {e}', 'ignore')
+            import traceback
+            traceback.print_exc()
+            input('Press Enter to exit...')
             sys.exit(1)
         sys.exit(0)
 

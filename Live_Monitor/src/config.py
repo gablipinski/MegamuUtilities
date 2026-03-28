@@ -72,6 +72,7 @@ class NotificationConfig:
 @dataclass
 class RuntimeConfig:
     won_cooldown_s: float = 600.0
+    giveaway_end_after_win_s: float = 300.0
 
 
 @dataclass
@@ -127,6 +128,47 @@ def resolve_default_config_path() -> Path:
             return candidate
 
     return candidates[0]
+
+def load_channel_config(channel_name: str, account_username: str, account_nickname: str, config_file: str | None = None) -> ChannelConfig | None:
+    """Re-read a single channel's config from the JSON file on disk."""
+    config_path = Path(config_file) if config_file else resolve_default_config_path()
+    if not config_path.exists():
+        return None
+
+    with open(config_path, 'r', encoding='utf-8-sig') as f:
+        data = json.load(f)
+
+    activity_monitor_defaults = parse_activity_monitor_config(data.get('activity_monitor'))
+
+    for ch in data.get('channels', []):
+        if ch.get('name') != channel_name:
+            continue
+
+        context = {
+            'username': account_username.strip(),
+            'nickname': account_nickname.strip(),
+            'channel': str(ch.get('name', '')).strip(),
+        }
+        won_context = {'channel': str(ch.get('name', '')).strip()}
+
+        giveaway_triggers = [t for t in ch.get('giveaway_triggers', []) if t.strip()]
+        won_triggers = [t for t in ch.get('won_triggers', []) if t.strip()]
+
+        return ChannelConfig(
+            name=ch['name'],
+            giveaway_triggers=[t.lower() for t in format_list(giveaway_triggers, context)],
+            giveaway_message=format_with_context(ch.get('giveaway_message', 'Joining!'), context),
+            delay_ms=parse_delay_range_ms(ch.get('delay_ms', 2000)),
+            won_triggers=[t.lower() for t in format_list(won_triggers, won_context)],
+            won_prefix=format_with_context(ch.get('won_prefix', ch.get('won_message', '')), context),
+            activity_monitor=parse_activity_monitor_config(
+                ch.get('activity_monitor'),
+                defaults=activity_monitor_defaults,
+            ).__dict__ if ch.get('activity_monitor') else None,
+        )
+
+    return None
+
 
 def load_config(config_file: str | None = None) -> BotConfig:
     """Loads configuration from JSON file. Supports both old (single account) and new (multiple accounts) format."""
@@ -230,6 +272,7 @@ def load_config(config_file: str | None = None) -> BotConfig:
     notification = NotificationConfig()
     runtime = RuntimeConfig(
         won_cooldown_s=float(data.get('won_cooldown_s', 600.0)),
+        giveaway_end_after_win_s=float(data.get('giveaway_end_after_win_s', 300.0)),
     )
 
     return BotConfig(

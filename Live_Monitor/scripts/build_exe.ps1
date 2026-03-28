@@ -46,10 +46,12 @@ aio_d, aio_b, aio_h = collect_all('aiohttp')
 cn_d,  cn_b,  cn_h  = collect_all('charset_normalizer')
 yr_d,  yr_b,  yr_h  = collect_all('yarl')
 md_d,  md_b,  md_h  = collect_all('multidict')
+tx_d,  tx_b,  tx_h  = collect_all('textual')
+ri_d,  ri_b,  ri_h  = collect_all('rich')
 
-all_datas    = tw_d  + aio_d + cn_d + yr_d + md_d
-all_binaries = tw_b  + aio_b + cn_b + yr_b + md_b
-all_hidden   = tw_h  + aio_h + cn_h + yr_h + md_h + [
+all_datas    = tw_d  + aio_d + cn_d + yr_d + md_d + tx_d + ri_d
+all_binaries = tw_b  + aio_b + cn_b + yr_b + md_b + tx_b + ri_b
+all_hidden   = tw_h  + aio_h + cn_h + yr_h + md_h + tx_h + ri_h + [
     'twitchio',
     'twitchio.ext',
     'twitchio.ext.commands',

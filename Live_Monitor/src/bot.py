@@ -13,7 +13,7 @@ from twitchio.ext import commands
 from activity_monitor import ChatActivityMonitor
 from chat_monitor import ChatMonitorLogger
 from console_log import log_line
-from config import BotConfig
+from config import BotConfig, load_channel_config
 from windows_notifier import WindowsNotifier
 
 
@@ -56,8 +56,8 @@ class TwitchBot(commands.Cog):
         self.won_last_triggered: dict[str, tuple[float, str]] = {}
         # Cooldown between won-trigger responses (seconds)
         self.WON_COOLDOWN_S: float = self.config.runtime.won_cooldown_s
-        # Giveaway stays active for 5 minutes after the first winner announcement is seen.
-        self.GIVEAWAY_END_AFTER_FIRST_WIN_S: float = 300.0
+        # Giveaway stays active after the first winner announcement is seen.
+        self.GIVEAWAY_END_AFTER_FIRST_WIN_S: float = self.config.runtime.giveaway_end_after_win_s
 
         # Tracks the currently active giveaway session in each channel.
         # A session begins on the first successful join, stays active until 5 minutes after the
@@ -101,6 +101,25 @@ class TwitchBot(commands.Cog):
             enable_file_logging=self.enable_logging,
         )
         self.chat_monitor = ChatMonitorLogger(logs_dir=self.logs_dir) if self.logs_dir is not None else None
+
+    def reload_channel_triggers(self, channel_name: str) -> bool:
+        """Re-read triggers for *channel_name* from config.json. Returns True on success."""
+        new_cfg = load_channel_config(
+            channel_name,
+            account_username=self.account_name,
+            account_nickname=self.account_nickname,
+        )
+        if new_cfg is None:
+            log_line("Trigger reload failed - channel not found in config", "ignore", channel_name, account=self.account_name)
+            return False
+        self.channels_map[channel_name] = new_cfg
+        log_line(
+            f"Triggers reloaded: giveaway={new_cfg.giveaway_triggers}  won={new_cfg.won_triggers}  msg={new_cfg.giveaway_message}",
+            "notification",
+            channel_name,
+            account=self.account_name,
+        )
+        return True
 
     def reset_channel(self, channel_name: str) -> None:
         """Reset all giveaway / activity state for a single channel."""
@@ -373,8 +392,8 @@ class TwitchBot(commands.Cog):
         if self.config.notification.enabled:
             self.notifier.send_notification(
                 channel_name,
-                message_text,
-                title="You won the giveaway!",
+                f"You won on {channel_name}!",
+                title="You won!",
                 account=self.account_name,
             )
 
@@ -729,14 +748,6 @@ class TwitchBot(commands.Cog):
                 f"Active giveaway rejoin allowed ({current_score:.3f} >= {required_score:.3f}, last join score {last_score:.3f})",
                 "join",
                 channel_name,
-                account=self.account_name,
-            )
-
-        if self.config.notification.enabled:
-            self.notifier.send_notification(
-                channel_name,
-                message.content,
-                title="Giveaway detected!",
                 account=self.account_name,
             )
 

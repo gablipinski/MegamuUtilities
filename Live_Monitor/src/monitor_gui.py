@@ -51,7 +51,7 @@ _RICH_COLOR: dict[str, str] = {
     "other":            "dim white",
 }
 
-GIVEAWAY_SESSION_DURATION_S = 300.0  # mirrors bot.py constant
+GIVEAWAY_SESSION_DURATION_S = 300.0  # default; overridden from config at app startup
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +68,13 @@ class LogEvent(Message):
 
 class ResetChannelEvent(Message):
     """Fired by a ChannelPanel to ask the app to reset bot state for one streamer."""
+    def __init__(self, channel_name: str) -> None:
+        super().__init__()
+        self.channel_name = channel_name
+
+
+class ReloadTriggersEvent(Message):
+    """Fired by a ChannelPanel to ask the app to reload triggers from config.json."""
     def __init__(self, channel_name: str) -> None:
         super().__init__()
         self.channel_name = channel_name
@@ -93,6 +100,7 @@ class ChannelPanel(Widget):
     BINDINGS = [
         Binding("c", "copy_log", "Copy log"),
         Binding("r", "refresh_channel", "Refresh"),
+        Binding("t", "reload_triggers", "Reload triggers"),
     ]
 
     DEFAULT_CSS = """
@@ -106,18 +114,18 @@ class ChannelPanel(Widget):
         border: solid $accent;
     }
     ChannelPanel .ch-header {
-        background: $primary-darken-3;
+        background: #1a3a5c;
         color: $text-muted;
         height: 1;
         padding: 0 1;
         text-style: bold;
     }
-    ChannelPanel .ch-header.status-active {
-        background: $success-darken-2;
+    ChannelPanel .ch-header.status-joined {
+        background: #5b2c8e;
         color: $text;
     }
-    ChannelPanel .ch-header.status-ending {
-        background: $warning-darken-2;
+    ChannelPanel .ch-header.status-ongoing {
+        background: $success-darken-2;
         color: $text;
     }
     ChannelPanel RichLog {
@@ -128,8 +136,8 @@ class ChannelPanel(Widget):
     """
 
     _STATUS_IDLE = "idle"
-    _STATUS_ACTIVE = "active"
-    _STATUS_ENDING = "ending"
+    _STATUS_JOINED = "joined"
+    _STATUS_ONGOING = "ongoing"
 
     _LOG_BUFFER_MAX = 500
 
@@ -144,17 +152,19 @@ class ChannelPanel(Widget):
         self._session_giveaways = 0
         self._session_wins = 0
         self._session_win_recorded = False
+        self._win_at: float = 0.0  # monotonic timestamp of last win (0 = none)
 
     def _render_header_text(self, now: float | None = None) -> str:
         online_dot = "🟢" if self._is_online else "🔴"
         stats = f"({self._session_giveaways}/{self._session_wins})"
-        if self._status == self._STATUS_ACTIVE:
-            return f"{online_dot} {self.channel_name} {stats}   ● ACTIVE"
-        if self._status == self._STATUS_ENDING:
-            now_value = now if now is not None else time.monotonic()
+        now_value = now if now is not None else time.monotonic()
+        win_badge = "  🏆 WIN" if (self._win_at > 0 and (now_value - self._win_at) < GIVEAWAY_SESSION_DURATION_S) else ""
+        if self._status == self._STATUS_JOINED:
+            return f"{online_dot} {self.channel_name} {stats}   ● JOINED{win_badge}"
+        if self._status == self._STATUS_ONGOING:
             remaining = max(0, int(math.ceil(GIVEAWAY_SESSION_DURATION_S - (now_value - self._status_since))))
-            return f"{online_dot} {self.channel_name} {stats}   ⏱ ENDING  {remaining:>3}s"
-        return f"{online_dot} {self.channel_name} {stats}   ○ idle"
+            return f"{online_dot} {self.channel_name} {stats}   ⏱ ONGOING  {remaining:>3}s{win_badge}"
+        return f"{online_dot} {self.channel_name} {stats}   ○ idle{win_badge}"
 
     def compose(self) -> ComposeResult:
         yield Static(
@@ -179,12 +189,12 @@ class ChannelPanel(Widget):
         except NoMatches:
             return
 
-        header.remove_class("status-active")
-        header.remove_class("status-ending")
-        if self._status == self._STATUS_ACTIVE:
-            header.add_class("status-active")
-        elif self._status == self._STATUS_ENDING:
-            header.add_class("status-ending")
+        header.remove_class("status-joined")
+        header.remove_class("status-ongoing")
+        if self._status == self._STATUS_JOINED:
+            header.add_class("status-joined")
+        elif self._status == self._STATUS_ONGOING:
+            header.add_class("status-ongoing")
         header.update(self._render_header_text(now))
 
     def _flush_pending_widget_logs(self) -> None:
@@ -217,15 +227,19 @@ class ChannelPanel(Widget):
             log.write(f"[{color}]{message}[/{color}]")
 
         if kind == "giveaway_active":
-            if self._status != self._STATUS_ACTIVE:
+            if self._status != self._STATUS_JOINED:
                 self._session_giveaways += 1
                 self._session_win_recorded = False
-            self._set_status(self._STATUS_ACTIVE)
+            self._set_status(self._STATUS_JOINED)
         elif kind == "giveaway_inactive":
-            self._set_status(self._STATUS_ENDING)
+            self._set_status(self._STATUS_ONGOING)
         elif kind == "win" and not self._session_win_recorded:
             self._session_wins += 1
             self._session_win_recorded = True
+            # Only show win badge if we're in ONGOING (winner already announced)
+            if self._status != self._STATUS_ONGOING:
+                self._set_status(self._STATUS_ONGOING)
+            self._win_at = time.monotonic()
             self._refresh_header()
 
     def reset(self) -> None:
@@ -235,6 +249,7 @@ class ChannelPanel(Widget):
         self._session_giveaways = 0
         self._session_wins = 0
         self._session_win_recorded = False
+        self._win_at = 0.0
         self._status = self._STATUS_IDLE
         self._status_since = 0.0
         try:
@@ -249,6 +264,9 @@ class ChannelPanel(Widget):
         self.post_message(ResetChannelEvent(self.channel_name))
         self.notify(f"#{self.channel_name} reset", timeout=2)
 
+    def action_reload_triggers(self) -> None:
+        self.post_message(ReloadTriggersEvent(self.channel_name))
+
     def action_copy_log(self) -> None:
         content = "\n".join(self._log_buffer)
         if _copy_to_clipboard(content):
@@ -262,11 +280,17 @@ class ChannelPanel(Widget):
         self._refresh_header()
 
     def tick(self, now: float) -> None:
-        """Called by the app timer; resets ENDING → IDLE after session expires."""
-        if self._status == self._STATUS_ENDING:
+        """Called by the app timer; resets ONGOING → IDLE after session expires and clears win badge."""
+        needs_refresh = False
+        if self._status == self._STATUS_ONGOING:
             if now - self._status_since >= GIVEAWAY_SESSION_DURATION_S:
                 self._set_status(self._STATUS_IDLE)
                 return
+            needs_refresh = True
+        if self._win_at > 0 and (now - self._win_at) >= GIVEAWAY_SESSION_DURATION_S:
+            self._win_at = 0.0
+            needs_refresh = True
+        if needs_refresh:
             self._refresh_header(now)
 
 
@@ -386,12 +410,19 @@ class MonitorApp(App):
         Binding("R", "refresh_all", "Refresh all", key_display="Shift+R"),
     ]
 
+    # How often (seconds) to poll Twitch for online/offline changes.
+    _ONLINE_POLL_INTERVAL_S = 60
+
     def __init__(self, config: BotConfig, args: argparse.Namespace) -> None:
         super().__init__()
         self._bot_config = config
         self._bot_args = args
         self._channel_panels: dict[str, ChannelPanel] = {}
         self._bot_instances: list[TwitchBot] = []
+        self._online_channels: set[str] = set()
+        # Sync GUI countdown with the configured bot timer.
+        global GIVEAWAY_SESSION_DURATION_S
+        GIVEAWAY_SESSION_DURATION_S = config.runtime.giveaway_end_after_win_s
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -493,6 +524,7 @@ class MonitorApp(App):
         channel_list = self.query_one("#channel-list", Container)
         channel_names = [channel.name for channel in self._bot_config.channels]
         online_channels = await self._fetch_online_channels_startup(channel_names)
+        self._online_channels = online_channels
         sorted_channels = sorted(
             self._bot_config.channels,
             key=lambda channel: (
@@ -501,11 +533,11 @@ class MonitorApp(App):
             ),
         )
 
-        for index in range(0, len(sorted_channels), 2):
+        for index in range(0, len(sorted_channels), 3):
             row = Horizontal(classes="channel-row")
             await channel_list.mount(row)
 
-            for ch in sorted_channels[index:index + 2]:
+            for ch in sorted_channels[index:index + 3]:
                 panel = ChannelPanel(
                     ch.name,
                     is_online=(ch.name.casefold() in online_channels),
@@ -522,8 +554,14 @@ class MonitorApp(App):
 
         set_gui_hook(_hook)
 
+        # Generate the initial MultiTwitch link from online channels only.
+        self._update_multitwitch_link()
+
         # Periodic status ticker (every 1 s) for live ENDING countdown.
         self.set_interval(1.0, self._tick_statuses)
+
+        # Periodic online-status poller — reorders panels automatically.
+        asyncio.get_event_loop().create_task(self._poll_online_status())
 
         # Launch bot tasks inside Textual's asyncio loop
         asyncio.get_event_loop().create_task(self._run_bot())
@@ -533,13 +571,9 @@ class MonitorApp(App):
         if channel and channel in self._channel_panels:
             self._channel_panels[channel].add_log(event.log_message, event.kind)
         else:
-            # Route MultTwitch URL to the dedicated link bar instead of the main log
+            # Ignore the startup Multitwitch log — we manage the link bar ourselves
+            # based on online channels only.
             if not channel and event.log_message.startswith("Multitwitch: "):
-                url = event.log_message[len("Multitwitch: "):]
-                try:
-                    self.query_one("#sys_panel", SystemPanel).set_link(url)
-                except NoMatches:
-                    pass
                 return
             prefix = f"[{channel}] " if channel else ""
             self._add_system_log(f"{prefix}{event.log_message}", event.kind)
@@ -549,6 +583,81 @@ class MonitorApp(App):
         for panel in self._channel_panels.values():
             panel.tick(now)
 
+    def _update_multitwitch_link(self) -> None:
+        """Regenerate the MultiTwitch URL from currently online channels (alphabetical)."""
+        online_sorted = sorted(self._online_channels)
+        if online_sorted:
+            url = f"https://multitwitch.tv/{'/'.join(online_sorted)}"
+        else:
+            url = "(no channels online)"
+        try:
+            self.query_one("#sys_panel", SystemPanel).set_link(url)
+        except NoMatches:
+            pass
+
+    async def _reorder_panels(self, online_channels: set[str]) -> None:
+        """Reparent channel panels into rows sorted by online status. No state is cleared."""
+        self._online_channels = online_channels
+
+        # Update the online dot on every panel
+        for channel_name, panel in self._channel_panels.items():
+            panel._is_online = channel_name.casefold() in online_channels
+            panel._refresh_header()
+
+        sorted_channels = sorted(
+            self._bot_config.channels,
+            key=lambda ch: (
+                0 if ch.name.casefold() in online_channels else 1,
+                ch.name.casefold(),
+            ),
+        )
+
+        channel_list = self.query_one("#channel-list", Container)
+
+        # Detach panels from their current rows (without destroying them)
+        for panel in self._channel_panels.values():
+            await panel.remove()
+
+        # Now remove the empty row containers
+        await channel_list.remove_children()
+
+        # Rebuild rows and re-mount the existing panels (preserves log history)
+        for index in range(0, len(sorted_channels), 3):
+            row = Horizontal(classes="channel-row")
+            await channel_list.mount(row)
+            for ch in sorted_channels[index:index + 3]:
+                panel = self._channel_panels[ch.name]
+                await row.mount(panel)
+
+        self._update_multitwitch_link()
+
+    async def _poll_online_status(self) -> None:
+        """Periodically poll Twitch Helix and reorder panels on changes."""
+        while True:
+            await asyncio.sleep(self._ONLINE_POLL_INTERVAL_S)
+            try:
+                channel_names = [ch.name for ch in self._bot_config.channels]
+                new_online = await self._fetch_online_channels_startup(channel_names)
+            except Exception:
+                continue
+
+            if new_online == self._online_channels:
+                continue
+
+            went_online = new_online - self._online_channels
+            went_offline = self._online_channels - new_online
+
+            for name in sorted(went_online):
+                self._add_system_log(f"#{name} went ONLINE", "notification")
+            for name in sorted(went_offline):
+                self._add_system_log(f"#{name} went OFFLINE", "other")
+
+            await self._reorder_panels(new_online)
+
+            online_count = len(new_online)
+            total = len(channel_names)
+            self._add_system_log(f"Layout reordered — {online_count}/{total} online", "notification")
+
     def _reset_bot_channel(self, channel_name: str) -> None:
         """Reset giveaway/activity state for *channel_name* across all bot accounts."""
         for twitch_bot in self._bot_instances:
@@ -556,6 +665,16 @@ class MonitorApp(App):
 
     def on_reset_channel_event(self, event: ResetChannelEvent) -> None:
         self._reset_bot_channel(event.channel_name)
+
+    def on_reload_triggers_event(self, event: ReloadTriggersEvent) -> None:
+        success = False
+        for twitch_bot in self._bot_instances:
+            if twitch_bot.reload_channel_triggers(event.channel_name):
+                success = True
+        if success:
+            self.notify(f"#{event.channel_name} triggers reloaded", timeout=2)
+        else:
+            self.notify(f"#{event.channel_name} trigger reload failed", severity="error", timeout=3)
 
     async def action_refresh_all(self) -> None:
         """Global refresh: re-fetch online status, reset all panels, reorganise layout."""
@@ -566,35 +685,12 @@ class MonitorApp(App):
             panel.reset()
             self._reset_bot_channel(channel_name)
 
-        # Re-fetch who is online
+        # Re-fetch who is online and reorder (preserves log history via _reorder_panels)
         channel_names = [ch.name for ch in self._bot_config.channels]
         online_channels = await self._fetch_online_channels_startup(channel_names)
+        await self._reorder_panels(online_channels)
 
-        # Update online dot on each panel
-        for channel_name, panel in self._channel_panels.items():
-            panel._is_online = channel_name.casefold() in online_channels
-            panel._refresh_header()
-
-        # Rebuild the grid: online first, then offline, alphabetically within each group
-        sorted_channels = sorted(
-            self._bot_config.channels,
-            key=lambda ch: (
-                0 if ch.name.casefold() in online_channels else 1,
-                ch.name.casefold(),
-            ),
-        )
-
-        channel_list = self.query_one("#channel-list", Container)
-        await channel_list.remove_children()
-
-        for index in range(0, len(sorted_channels), 2):
-            row = Horizontal(classes="channel-row")
-            await channel_list.mount(row)
-            for ch in sorted_channels[index:index + 2]:
-                panel = self._channel_panels[ch.name]
-                await row.mount(panel)
-
-        online_count = sum(1 for ch in self._bot_config.channels if ch.name.casefold() in online_channels)
+        online_count = len(online_channels)
         self._add_system_log(
             f"Refresh complete — {online_count}/{len(channel_names)} online",
             "notification",
