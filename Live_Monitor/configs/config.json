@@ -21,7 +21,7 @@
       "name": "diiogofalcao",
       "giveaway_triggers": [ "#sorteio" ],
       "giveaway_message": "#sorteio",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "@{username} escribe !TuNombreInGame (30 segundos)" ],
       "won_prefix": "!"
     },
@@ -29,7 +29,7 @@
       "name": "shamen_",
       "giveaway_triggers": [ "!shamen" ],
       "giveaway_message": "!shamen",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""
     },
@@ -37,7 +37,7 @@
       "name": "jexuslivee",
       "giveaway_triggers": [ "!jxlive" ],
       "giveaway_message": "!jxlive",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""
     },
@@ -45,7 +45,7 @@
       "name": "marcusrp_gamers",
       "giveaway_triggers": [ "!garuda" ],
       "giveaway_message": "!garuda",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "@{username} PARABÉNS VOCÊ GANHOU" ],
       "won_prefix": "!"
     },
@@ -53,7 +53,7 @@
       "name": "angelim92",
       "giveaway_triggers": [ "!panda" ],
       "giveaway_message": "!panda",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "@{username} PARABÉNS VOCÊ GANHOU" ],
       "won_prefix": "!"
     },
@@ -61,7 +61,7 @@
       "name": "rutharzz",
       "giveaway_triggers": [ "!sm" ],
       "giveaway_message": "!sm",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""
     },
@@ -69,7 +69,7 @@
       "name": "anyelo992",
       "giveaway_triggers": [ "!sorteo" ],
       "giveaway_message": "!sorteo",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""
     },
@@ -77,7 +77,7 @@
       "name": "b4ll4ckfps",
       "giveaway_triggers": [ "!mega" ],
       "giveaway_message": "!mega",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""
     },
@@ -85,7 +85,7 @@
       "name": "exxtranho",
       "giveaway_triggers": [ "!exxtranho" ],
       "giveaway_message": "!exxtranho",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""
     },
@@ -93,7 +93,7 @@
       "name": "laranjeira1991",
       "giveaway_triggers": [ "!laranja" ],
       "giveaway_message": "!laranja",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""
     },
@@ -101,7 +101,7 @@
       "name": "smeagolgamess",
       "giveaway_triggers": [ "!precioso" ],
       "giveaway_message": "!precioso",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "@{username} PARABÉNS VOCÊ GANHOU" ],
       "won_prefix": "!"
     },
@@ -109,7 +109,7 @@
       "name": "hadabest_gm",
       "giveaway_triggers": [ "!ha" ],
       "giveaway_message": "!ha",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Congratulations @{username} received" ],
       "won_prefix": ""
     },
@@ -117,7 +117,7 @@
       "name": "androx111111",
       "giveaway_triggers": [ "!androx1" ],
       "giveaway_message": "!androx1",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""
     },
@@ -125,7 +125,7 @@
       "name": "lucaslr021",
       "giveaway_triggers": [ "!megamu" ],
       "giveaway_message": "!megamu",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Parabéns @{username}, você ganhou" ],
       "won_prefix": "!"
     },
@@ -133,7 +133,7 @@
       "name": "srwins",
       "giveaway_triggers": [ "!sorteio" ],
       "giveaway_message": "!sorteio",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": ["Congratulations, {username}! You won the giveaway!"],
       "won_prefix": ""
     },
@@ -141,15 +141,15 @@
       "name": "mewing____",
       "giveaway_triggers": [ "!mewing" ],
       "giveaway_message": "!mewing",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
-      "won_prefix": "!"
+      "won_prefix": ""
     },
     {
       "name": "mttzfps",
       "giveaway_triggers": [ "!mttz" ],
       "giveaway_message": "!mttz",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""
     },
@@ -157,7 +157,7 @@
       "name": "mamedegame",
       "giveaway_triggers": [ "#sorteio" ],
       "giveaway_message": "#sorteio",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Nosso Ganhador | @{username} |" ],
       "won_prefix": "!"
     },
@@ -165,7 +165,7 @@
       "name": "lpestevo",
       "giveaway_triggers": [ "!sobora" ],
       "giveaway_message": "!sobora",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Parabéns @{username} 📊 Chance de vitória:" ],
       "won_prefix": "!"
     },
@@ -173,7 +173,7 @@
       "name": "ohbrunaoxdrj",
       "giveaway_triggers": [ "!bruxao" ],
       "giveaway_message": "!bruxao",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "@{username} PARABÉNS VOCÊ GANHOU" ],
       "won_prefix": "!"
     },
@@ -181,7 +181,7 @@
       "name": "valhallavikingos",
       "giveaway_triggers": [ "!vikingos" ],
       "giveaway_message": "!vikingos",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""
     },
@@ -189,7 +189,7 @@
       "name": "muniingg",
       "giveaway_triggers": [ "!vara" ],
       "giveaway_message": "!vara",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""
     },
@@ -197,7 +197,7 @@
       "name": "gtssoares",
       "giveaway_triggers": [ "!gts" ],
       "giveaway_message": "!gts",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "@{username} PARABÉNS VOCÊ GANHOU" ],
       "won_prefix": "!"
     },
@@ -205,15 +205,15 @@
       "name": "elchicocisko",
       "giveaway_triggers": [ "!cisko" ],
       "giveaway_message": "!cisko",
-      "delay_ms": [ 5000, 25000 ],
-      "won_triggers": [ "GANADOR: {username}" ],
+      "delay_ms": [ 5000, 15000 ],
+      "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""
     },
     {
       "name": "casalxgamer",
       "giveaway_triggers": [ "!casalx" ],
       "giveaway_message": "!casalx",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""
     },
@@ -221,7 +221,7 @@
       "name": "kevcox4200",
       "giveaway_triggers": [ "!kev" ],
       "giveaway_message": "!kev",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""
     },
@@ -229,7 +229,7 @@
       "name": "haxorus79",
       "giveaway_triggers": [ "!sorteio" ],
       "giveaway_message": "!sorteio",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""
     },
@@ -237,7 +237,7 @@
       "name": "aemegamu",
       "giveaway_triggers": [ "!dc" ],
       "giveaway_message": "!dc",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""
     },
@@ -245,7 +245,7 @@
       "name": "geofordok",
       "giveaway_triggers": [ "!geo" ],
       "giveaway_message": "!geo",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ ],
       "won_prefix": ""
     },
@@ -253,7 +253,7 @@
       "name": "srkoos",
       "giveaway_triggers": [ "!srkoos" ],
       "giveaway_message": "!srkoos",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ ],
       "won_prefix": ""
     },
@@ -261,7 +261,7 @@
       "name": "kenshinx",
       "giveaway_triggers": [ "!kenshin" ],
       "giveaway_message": "!kenshin",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ ],
       "won_prefix": ""
     },
@@ -269,7 +269,7 @@
       "name": "xallan92",
       "giveaway_triggers": [   ],
       "giveaway_message": "",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ ],
       "won_prefix": ""
     },
@@ -277,7 +277,7 @@
       "name": "polar815",
       "giveaway_triggers": [ "!polar" ],
       "giveaway_message": "!polar",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""
     },
@@ -285,7 +285,7 @@
       "name": "chox512",
       "giveaway_triggers": [ "" ],
       "giveaway_message": "",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ ],
       "won_prefix": ""
     },
@@ -293,23 +293,23 @@
       "name": "donpv93",
       "giveaway_triggers": [ "!donpv" ],
       "giveaway_message": "!donpv",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""
     },
     {
       "name": "chimuelomza",
-      "giveaway_triggers": [ "" ],
-      "giveaway_message": "",
-      "delay_ms": [ 5000, 25000 ],
-      "won_triggers": [ ],
+      "giveaway_triggers": [ "!chimu" ],
+      "giveaway_message": "!chimu",
+      "delay_ms": [ 5000, 15000 ],
+      "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""
     },
     {
       "name": "erickan100",
       "giveaway_triggers": [ "!sorteio" ],
       "giveaway_message": "!sorteio",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""
     },
@@ -317,7 +317,7 @@
       "name": "andrenagato02",
       "giveaway_triggers": [ "!sorteio" ],
       "giveaway_message": "!sorteio",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ ],
       "won_prefix": ""
     },
@@ -325,7 +325,7 @@
       "name": "nicolasderbo",
       "giveaway_triggers": [ "!nicolasderbo" ],
       "giveaway_message": "!nicolasderbo",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""
     },
@@ -333,7 +333,7 @@
       "name": "thuynguyen95",
       "giveaway_triggers": [ "" ],
       "giveaway_message": "",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ ],
       "won_prefix": ""
     },
@@ -341,7 +341,7 @@
       "name": "srochoa07",
       "giveaway_triggers": [ "" ],
       "giveaway_message": "",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ ],
       "won_prefix": ""
     },
@@ -349,7 +349,7 @@
       "name": "braddockrst",
       "giveaway_triggers": [ "!braddock" ],
       "giveaway_message": "!braddock",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
       "won_prefix": ""
     },
@@ -357,7 +357,39 @@
       "name": "alfefps",
       "giveaway_triggers": [ "" ],
       "giveaway_message": "",
-      "delay_ms": [ 5000, 25000 ],
+      "delay_ms": [ 5000, 15000 ],
+      "won_triggers": [ ],
+      "won_prefix": ""
+    },
+    {
+      "name": "bukelegamer",
+      "giveaway_triggers": [ "!sorteio" ],
+      "giveaway_message": "!sorteio",
+      "delay_ms": [ 5000, 15000 ],
+      "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
+      "won_prefix": ""
+    },
+    {
+      "name": "charadaoficial",
+      "giveaway_triggers": [ "!charada" ],
+      "giveaway_message": "!charada",
+      "delay_ms": [ 5000, 15000 ],
+      "won_triggers": [ ],
+      "won_prefix": ""
+    },
+    {
+      "name": "krisinho",
+      "giveaway_triggers": [ "!sorteio" ],
+      "giveaway_message": "!sorteio",
+      "delay_ms": [ 5000, 15000 ],
+      "won_triggers": [ ],
+      "won_prefix": ""
+    },
+    {
+      "name": "lostsh0t",
+      "giveaway_triggers": [ "!sorteio" ],
+      "giveaway_message": "!sorteio",
+      "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ ],
       "won_prefix": ""
     }
