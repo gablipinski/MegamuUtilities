@@ -50,7 +50,7 @@
       "won_prefix": "!"
     },
     {
-      "name": "angelim92",
+      "name": "pandocalive",
       "giveaway_triggers": [ "!panda" ],
       "giveaway_message": "!panda",
       "delay_ms": [ 5000, 15000 ],
@@ -363,11 +363,11 @@
     },
     {
       "name": "bukelegamer",
-      "giveaway_triggers": [ "!sorteio" ],
-      "giveaway_message": "!sorteio",
+      "giveaway_triggers": [ "!chapulin" ],
+      "giveaway_message": "!chapulin",
       "delay_ms": [ 5000, 15000 ],
       "won_triggers": [ "Congratulations, {username}! You won the giveaway!" ],
-      "won_prefix": ""
+      "won_prefix": "!"
     },
     {
       "name": "charadaoficial",
