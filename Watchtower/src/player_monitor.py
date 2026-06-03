@@ -10,7 +10,7 @@ from PIL import Image
 
 
 @dataclass
-class BlueBallDetection:
+class PlayerDetection:
     found: bool
     confidence: float
     center_x: float | None
@@ -20,10 +20,10 @@ class BlueBallDetection:
     blue_pixels: int
 
 
-DetectionCallback = Callable[[BlueBallDetection], Awaitable[None] | None]
+DetectionCallback = Callable[[PlayerDetection], Awaitable[None] | None]
 
 
-class BlueBallMonitor:
+class PlayerMonitor:
     """Manual blue-blob detector: color + shape + local contrast."""
 
     def __init__(
@@ -186,7 +186,7 @@ class BlueBallMonitor:
         )
         return Image.frombytes('RGB', screenshot.size, screenshot.rgb)
 
-    def detect(self, image: Image.Image) -> BlueBallDetection:
+    def detect(self, image: Image.Image) -> PlayerDetection:
         self._frame_index += 1
         rgb = np.array(image)
         hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
@@ -197,7 +197,7 @@ class BlueBallMonitor:
                 print(f'[DEBUG] frame={self._frame_index} found=False reason=no_candidate')
             blue_mask = cv2.inRange(hsv, self.blue_lower, self.blue_upper)
             blue_pixels = int(cv2.countNonZero(blue_mask))
-            return BlueBallDetection(False, 0.0, None, None, None, None, blue_pixels)
+            return PlayerDetection(False, 0.0, None, None, None, None, blue_pixels)
 
         score, x, y, w, h, blue_pixels, metrics = match
         quality = bool(metrics.get('quality', 0.0) >= 0.5)
@@ -226,7 +226,7 @@ class BlueBallMonitor:
         center_x = x + (w / 2.0)
         center_y = y + (h / 2.0)
 
-        return BlueBallDetection(
+        return PlayerDetection(
             found=found,
             confidence=score,
             center_x=float(center_x),
@@ -394,7 +394,7 @@ class BlueBallMonitor:
             best_metrics,
         )
 
-    def _should_trigger(self, detection: BlueBallDetection) -> bool:
+    def _should_trigger(self, detection: PlayerDetection) -> bool:
         if not self._bg_ack_done:
             if self.debug:
                 print(
@@ -471,7 +471,7 @@ class BlueBallMonitor:
             return 0.0
         return inter / union
 
-    async def _emit_detection(self, detection: BlueBallDetection):
+    async def _emit_detection(self, detection: PlayerDetection):
         print(
             f'[INFO] Marker detected: conf={detection.confidence:.3f} '
             f'center=({detection.center_x:.1f},{detection.center_y:.1f}) bbox={detection.bbox}'

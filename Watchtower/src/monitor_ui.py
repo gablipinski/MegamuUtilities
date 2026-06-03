@@ -11,7 +11,7 @@ from tkinter import messagebox, simpledialog, ttk
 
 from action_controller import ActionController
 from area_selector import select_area_with_parent, select_points_with_parent
-from blue_ball_monitor import BlueBallMonitor
+from player_monitor import PlayerMonitor
 from config import WindowConfig, load_config
 from screen_monitor import ScreenMonitor
 
@@ -58,7 +58,7 @@ class MonitorUI:
         self._event_queue: queue.Queue[tuple[str, object | None]] = queue.Queue()
         self._monitor_thread: threading.Thread | None = None
         self._monitor_loop: asyncio.AbstractEventLoop | None = None
-        self._blue_monitor: BlueBallMonitor | None = None
+        self._player_monitor: PlayerMonitor | None = None
         self._tower_monitor: ScreenMonitor | None = None
         self._detected_waiting_rearm = False
         self._mode_var = tk.StringVar(value='SPOT TOWER')
@@ -743,8 +743,8 @@ class MonitorUI:
 
     def _stop_scanner(self, manual_stop: bool):
         if self._monitor_loop is not None:
-            if self._blue_monitor is not None:
-                asyncio.run_coroutine_threadsafe(self._blue_monitor.stop(), self._monitor_loop)
+            if self._player_monitor is not None:
+                asyncio.run_coroutine_threadsafe(self._player_monitor.stop(), self._monitor_loop)
             if self._tower_monitor is not None:
                 asyncio.run_coroutine_threadsafe(self._tower_monitor.stop_monitoring(), self._monitor_loop)
 
@@ -764,7 +764,7 @@ class MonitorUI:
             assert self.region is not None
             if mode == 'spot-tower':
                 marker_template = Path(__file__).resolve().parent.parent / 'teste.png'
-                monitor = BlueBallMonitor(
+                monitor = PlayerMonitor(
                     self.region,
                     interval_ms=65,
                     confirm_frames=2,
@@ -775,7 +775,7 @@ class MonitorUI:
                     startup_ignore_frames=12,
                     debug=True,
                 )
-                self._blue_monitor = monitor
+                self._player_monitor = monitor
                 action_controller = ActionController(actions=self.escape_route, cooldown_seconds=2.0)
 
                 async def on_detection(detection):
@@ -784,7 +784,7 @@ class MonitorUI:
                         return
                     triggered = True
                     self._event_queue.put(('detected', detection))
-                    await action_controller.execute_escape_sequence('Blue ball detected')
+                    await action_controller.execute_escape_sequence('Player detected')
                     await monitor.stop()
 
                 monitor.detection_callback = on_detection
@@ -820,7 +820,7 @@ class MonitorUI:
                 tower_monitor.detection_callback = on_tower_detection
                 await tower_monitor.start_monitoring()
         finally:
-            self._blue_monitor = None
+            self._player_monitor = None
             self._tower_monitor = None
             self._monitor_loop = None
             self._event_queue.put(('stopped', {'triggered': triggered, 'mode': mode}))
@@ -835,7 +835,7 @@ class MonitorUI:
             if event == 'detected':
                 self._detected_waiting_rearm = True
                 self._set_state_detected()
-                self._log('Blue ball detected. Escape route executed. Waiting for rearm.')
+                self._log('Player detected. Escape route executed. Waiting for rearm.')
             elif event == 'tower_detected':
                 info = payload if isinstance(payload, dict) else {}
                 char_name = info.get('char_name', 'Unknown')
