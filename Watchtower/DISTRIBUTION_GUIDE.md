@@ -45,10 +45,10 @@ python tools\generate_keys.py
 ```
 
 This creates:
-- `tools\private_key.pem` — **your secret key, never share this**
+- `licenses\keys\private_key.pem` — **your secret key, never share this**
 - Patches `src\license_manager.py` with the matching public key
 
-> **Backup `tools\private_key.pem` immediately** (USB drive, password manager, cloud vault).  
+> **Backup `licenses\keys\private_key.pem` immediately** (USB drive, password manager, cloud vault).  
 > If you lose it, you cannot issue new licenses and must regenerate keys — which invalidates ALL existing licenses.
 
 ### 3. Build the installer
@@ -110,7 +110,19 @@ python tools\generate_license.py A3F2-9C1B-D47E-8801 "Player One" --expiry never
 python tools\generate_license.py A3F2-9C1B-D47E-8801 "Player One" --output licenses\player_one.dat
 ```
 
-This creates a `license.dat` file signed with your private key.
+By default, this creates a signed file at:
+
+```
+licenses/dat/YYYY-MM/<username>_license.dat
+```
+
+And also appends a control row into:
+
+```
+licenses/control_licenses.xlsx
+```
+
+Columns tracked: user name, generated date, expiry date, renew in (days), and PC code (Machine ID).
 
 ### Step 4 — Send license.dat
 
@@ -192,7 +204,7 @@ Existing licenses remain valid across versions — the key pair doesn't change u
 
 | File | Purpose | Distribute? |
 |---|---|---|
-| `tools\private_key.pem` | Signs licenses | **NEVER** |
+| `licenses\keys\private_key.pem` | Signs licenses | **NEVER** |
 | `tools\generate_keys.py` | Creates key pair | No |
 | `tools\generate_license.py` | Creates license.dat per user | No |
 | `installer_output\Watchtower_Setup_*.exe` | User installer | **Yes** |

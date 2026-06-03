@@ -3,7 +3,7 @@ One-time RSA-2048 key pair generator for Watchtower licensing.
 
 Run this ONCE before your first production build.
 It will:
-  1. Generate private_key.pem in this folder (NEVER distribute this).
+    1. Generate private_key.pem in licenses/keys (NEVER distribute this).
   2. Embed the matching public key directly into src/license_manager.py.
 
 Usage:
@@ -27,7 +27,7 @@ except ImportError:
 
 TOOLS_DIR = Path(__file__).parent
 PROJECT_ROOT = TOOLS_DIR.parent
-PRIVATE_KEY_PATH = TOOLS_DIR / 'private_key.pem'
+PRIVATE_KEY_PATH = PROJECT_ROOT / 'licenses' / 'keys' / 'private_key.pem'
 LICENSE_MANAGER_PATH = PROJECT_ROOT / 'src' / 'license_manager.py'
 
 
@@ -56,6 +56,7 @@ def main() -> None:
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
     )
 
+    PRIVATE_KEY_PATH.parent.mkdir(parents=True, exist_ok=True)
     print(f'[2/3] Saving private key to {PRIVATE_KEY_PATH} ...')
     PRIVATE_KEY_PATH.write_bytes(private_pem)
 

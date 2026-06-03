@@ -41,3 +41,4 @@ configs/spot_template.png
 # Auth
 *.pem
 *.dat
+licenses/

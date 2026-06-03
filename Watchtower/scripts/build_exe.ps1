@@ -35,7 +35,9 @@ $DistDir        = Join-Path $ProjectRoot "dist"
 $BuildDir       = Join-Path $ProjectRoot "build"
 $InstallerOut   = Join-Path $ProjectRoot "installer_output"
 $SetupIss       = Join-Path $ProjectRoot "installer\setup.iss"
-$PrivateKeyPath = Join-Path $ProjectRoot "tools\private_key.pem"
+$PrivateKeyPath = Join-Path $ProjectRoot "licenses\keys\private_key.pem"
+$IconPngPath    = Join-Path $ProjectRoot "icons\watchtower.png"
+$IconIcoPath    = Join-Path $ProjectRoot "icons\watchtower.ico"
 $InnoCompiler   = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
 
 Write-Host ""
@@ -82,7 +84,21 @@ New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 
 Write-Host "[2/4] Updating build dependencies..." -ForegroundColor Cyan
 python -m pip install --upgrade pip --quiet
-python -m pip install --upgrade nuitka ordered-set zstandard --quiet
+python -m pip install --upgrade nuitka ordered-set zstandard pillow --quiet
+
+if (-not (Test-Path $IconPngPath)) {
+    Write-Host "[X] Icon source not found: $IconPngPath" -ForegroundColor Red
+    exit 1
+}
+
+if (-not (Test-Path $IconIcoPath)) {
+    Write-Host "[2/4] Creating icons\watchtower.ico from PNG..." -ForegroundColor Cyan
+    python -c "from PIL import Image; Image.open(r'$IconPngPath').save(r'$IconIcoPath', format='ICO', sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)])"
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $IconIcoPath)) {
+        Write-Host "[X] Failed to generate ICO file from PNG icon." -ForegroundColor Red
+        exit 1
+    }
+}
 
 # ── Step 3: Compile with Nuitka ────────────────────────────────────────────────
 
@@ -102,6 +118,7 @@ python -m nuitka `
     --include-package=pyscreeze `
     --include-package=mouseinfo `
     --include-package=cryptography `
+    --windows-icon-from-ico="$IconIcoPath" `
     --output-dir="$DistDir" `
     --output-filename="Watchtower.exe" `
     "$MainPath"

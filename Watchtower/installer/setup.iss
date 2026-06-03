@@ -32,6 +32,7 @@ WizardStyle=modern
 PrivilegesRequired=admin
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\{#MyAppExeName}
+SetupIconFile={#SourcePath}\icons\watchtower.ico
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
