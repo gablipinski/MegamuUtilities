@@ -4,7 +4,8 @@
     Creates and activates a Python virtual environment for Watchtower
 .DESCRIPTION
     This script creates a new Python virtual environment in the 'venv' folder
-    and activates it automatically at the end
+    and activates it automatically at the end. It also ensures Inno Setup 6
+    is available so installer builds can run.
 .EXAMPLE
     .\setup_venv.ps1
 #>
@@ -173,6 +174,59 @@ function Install-TorchRuntime {
     }
 }
 
+function Get-InnoCompilerPath {
+    $candidates = @(
+        (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
+        (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe')
+    )
+
+    foreach ($candidate in $candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            continue
+        }
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+
+    return $null
+}
+
+function Ensure-InnoSetupInstalled {
+    $innoPath = Get-InnoCompilerPath
+    if ($innoPath) {
+        Write-Host "[OK] Inno Setup detected: $innoPath" -ForegroundColor Green
+        return
+    }
+
+    Write-Host "`n[INFO] Inno Setup 6 was not found. Installing with winget..." -ForegroundColor Cyan
+
+    try {
+        $null = Get-Command winget -ErrorAction Stop
+    }
+    catch {
+        Write-Host "[WARN] winget is not available. Install Inno Setup manually:" -ForegroundColor Yellow
+        Write-Host "       https://jrsoftware.org/isdl.php" -ForegroundColor Yellow
+        return
+    }
+
+    winget install --id JRSoftware.InnoSetup --exact --silent --accept-package-agreements --accept-source-agreements
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[WARN] Failed to install Inno Setup automatically (exit code $LASTEXITCODE)." -ForegroundColor Yellow
+        Write-Host "       Install manually from: https://jrsoftware.org/isdl.php" -ForegroundColor Yellow
+        return
+    }
+
+    $innoPath = Get-InnoCompilerPath
+    if ($innoPath) {
+        Write-Host "[OK] Inno Setup installed: $innoPath" -ForegroundColor Green
+    }
+    else {
+        Write-Host "[WARN] Inno Setup install finished, but ISCC.exe was not found in default paths." -ForegroundColor Yellow
+        Write-Host "       Verify installation and rerun setup/build if needed." -ForegroundColor Yellow
+    }
+}
+
 Write-Host "`n[INFO] Creating Python virtual environment for Watchtower..." -ForegroundColor Cyan
 
 # Check whether a venv already exists
@@ -226,6 +280,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Install-TorchRuntime -PythonExe $VenvPython
+Ensure-InnoSetupInstalled
 
 Write-Host "`n[OK] Setup completed successfully." -ForegroundColor Green
 Write-Host "[INFO] To activate the venv again, run: .\scripts\activate_venv.ps1" -ForegroundColor Cyan
