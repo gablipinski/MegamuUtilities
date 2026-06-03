@@ -44,6 +44,13 @@ class BlueBallMonitor:
         target_color_ratio_min: float = 0.16,
         target_blob_min_area_px: int = 4,
         target_blob_max_area_px: int = 220,
+        background_ack_frames: int = 16,
+        background_color_delta_threshold: float = 22.0,
+        background_min_change_ratio: float = 0.20,
+        flood_blue_ratio_trigger: float = 0.055,
+        flood_min_area_px: int = 70,
+        flood_min_contrast: float = 0.11,
+        flood_max_ring_blue: float = 0.10,
         template_path: str | None = None,
         template_match_threshold: float = 0.56,
         startup_ignore_frames: int = 10,
@@ -71,6 +78,13 @@ class BlueBallMonitor:
         self.target_color_ratio_min = float(target_color_ratio_min)
         self.target_blob_min_area_px = int(target_blob_min_area_px)
         self.target_blob_max_area_px = int(target_blob_max_area_px)
+        self.background_ack_frames = max(1, int(background_ack_frames))
+        self.background_color_delta_threshold = max(1.0, float(background_color_delta_threshold))
+        self.background_min_change_ratio = max(0.0, min(1.0, float(background_min_change_ratio)))
+        self.flood_blue_ratio_trigger = max(0.0, min(1.0, float(flood_blue_ratio_trigger)))
+        self.flood_min_area_px = max(1, int(flood_min_area_px))
+        self.flood_min_contrast = max(0.0, float(flood_min_contrast))
+        self.flood_max_ring_blue = max(0.0, min(1.0, float(flood_max_ring_blue)))
 
         self.template_match_threshold = max(0.1, min(1.0, float(template_match_threshold)))
         self.startup_ignore_frames = max(0, int(startup_ignore_frames))
@@ -83,6 +97,9 @@ class BlueBallMonitor:
         self._confirm_streak = 0
         self._last_bbox: tuple[int, int, int, int] | None = None
         self._stable_iou_min = 0.25
+        self._bg_mean_rgb: np.ndarray | None = None
+        self._bg_frames_collected = 0
+        self._bg_ack_done = False
 
         # Keep template-related inputs for API compatibility, but manual mode ignores template matching.
         self._template_path = template_path
@@ -93,6 +110,24 @@ class BlueBallMonitor:
         self._frame_index = 0
         self._confirm_streak = 0
         self._last_bbox = None
+        self._bg_mean_rgb = None
+        self._bg_frames_collected = 0
+        self._bg_ack_done = False
+
+    def _update_background_ack(self, rgb: np.ndarray) -> None:
+        frame = rgb.astype(np.float32)
+        if self._bg_mean_rgb is None:
+            self._bg_mean_rgb = frame
+            self._bg_frames_collected = 1
+        elif not self._bg_ack_done:
+            n = float(self._bg_frames_collected)
+            self._bg_mean_rgb = ((self._bg_mean_rgb * n) + frame) / (n + 1.0)
+            self._bg_frames_collected += 1
+
+        if (not self._bg_ack_done) and self._bg_frames_collected >= self.background_ack_frames:
+            self._bg_ack_done = True
+            if self.debug:
+                print(f'[DEBUG] background_ack_done: frames={self._bg_frames_collected}')
 
     @staticmethod
     def _hex_to_hsv(hex_color: str) -> tuple[int, int, int]:
@@ -178,6 +213,10 @@ class BlueBallMonitor:
                 f'area={metrics.get("area", 0.0):.1f} '
                 f'contrast={metrics.get("contrast", 0.0):.3f} '
                 f'ring_blue={metrics.get("ring_blue", 0.0):.3f} '
+                f'scene_blue={metrics.get("scene_blue", 0.0):.3f} '
+                f'flood={int(metrics.get("flood", 0.0))} '
+                f'bg_change={metrics.get("bg_change", 0.0):.3f} '
+                f'bg_ack={int(self._bg_ack_done)} '
                 f'sat={metrics.get("sat", 0.0):.3f} '
                 f'val={metrics.get("val", 0.0):.3f} '
                 f'quality={int(quality)} '
@@ -200,6 +239,8 @@ class BlueBallMonitor:
     def _find_blue_blob_match(
         self, rgb: np.ndarray, hsv: np.ndarray
     ) -> tuple[float, int, int, int, int, int, dict[str, float]] | None:
+        self._update_background_ack(rgb)
+
         generic_mask = cv2.inRange(hsv, self.blue_lower, self.blue_upper)
 
         h0, s0, v0 = self.target_hsv
@@ -227,12 +268,22 @@ class BlueBallMonitor:
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
         blue_pixels = int(cv2.countNonZero(mask))
+        scene_blue_ratio = float(blue_pixels / float(mask.shape[0] * mask.shape[1]))
+        flood_mode = scene_blue_ratio >= self.flood_blue_ratio_trigger
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
             return None
 
         min_area = max(28, self.target_blob_min_area_px)
+        if flood_mode:
+            min_area = max(min_area, self.flood_min_area_px)
         max_area = max(min_area + 1, min(520, self.target_blob_max_area_px))
+
+        min_contrast = 0.06
+        max_ring_blue = 0.18
+        if flood_mode:
+            min_contrast = max(min_contrast, self.flood_min_contrast)
+            max_ring_blue = min(max_ring_blue, self.flood_max_ring_blue)
 
         best_score = -1.0
         best_box: tuple[int, int, int, int] | None = None
@@ -278,6 +329,14 @@ class BlueBallMonitor:
             ring_blue = float(cv2.countNonZero(cv2.bitwise_and(expanded, expanded, mask=ring)) / ring_pixels)
             contrast = max(0.0, blue_ratio - ring_blue)
 
+            if self._bg_mean_rgb is not None and self._bg_ack_done:
+                roi_cur = rgb[y : y + h, x : x + w].astype(np.float32)
+                roi_bg = self._bg_mean_rgb[y : y + h, x : x + w]
+                delta = np.linalg.norm(roi_cur - roi_bg, axis=2)
+                bg_change = float(np.count_nonzero(delta >= self.background_color_delta_threshold) / bbox_area)
+            else:
+                bg_change = 1.0
+
             contour_mask = np.zeros(mask.shape, dtype=np.uint8)
             cv2.drawContours(contour_mask, [contour], -1, 255, thickness=-1)
             sat_mean = float(cv2.mean(hsv[:, :, 1], mask=contour_mask)[0] / 255.0)
@@ -296,8 +355,9 @@ class BlueBallMonitor:
                 circularity >= 0.42
                 and aspect >= 0.62
                 and blue_ratio >= self.target_color_ratio_min
-                and contrast >= 0.06
-                and ring_blue <= 0.18
+                and contrast >= min_contrast
+                and ring_blue <= max_ring_blue
+                and ((not self._bg_ack_done) or (bg_change >= self.background_min_change_ratio))
                 and sat_mean >= 0.30
             )
 
@@ -312,6 +372,9 @@ class BlueBallMonitor:
                     'circularity': circularity,
                     'contrast': contrast,
                     'ring_blue': ring_blue,
+                    'scene_blue': scene_blue_ratio,
+                    'flood': 1.0 if flood_mode else 0.0,
+                    'bg_change': bg_change,
                     'sat': sat_mean,
                     'val': val_mean,
                     'area': area,
@@ -332,6 +395,17 @@ class BlueBallMonitor:
         )
 
     def _should_trigger(self, detection: BlueBallDetection) -> bool:
+        if not self._bg_ack_done:
+            if self.debug:
+                print(
+                    f'[DEBUG] background_ack: frame={self._frame_index} '
+                    f'progress={self._bg_frames_collected}/{self.background_ack_frames}'
+                )
+            self._active = False
+            self._confirm_streak = 0
+            self._last_bbox = None
+            return False
+
         if self._frame_index <= self.startup_ignore_frames:
             if self.debug:
                 print(
