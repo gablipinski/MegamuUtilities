@@ -60,7 +60,7 @@ class MonitorUI:
         self._monitor_loop: asyncio.AbstractEventLoop | None = None
         self._player_monitor: PlayerMonitor | None = None
         self._tower_monitor: ScreenMonitor | None = None
-        self._detected_waiting_rearm = False
+        self._detected_waiting_stop = False
         self._mode_var = tk.StringVar(value='SPOT TOWER')
         self._last_mode_selection = 'SPOT TOWER'
 
@@ -112,6 +112,7 @@ class MonitorUI:
         width: int,
         command,
         accent: bool = False,
+        success: bool = False,
         danger: bool = False,
     ) -> tk.Button:
         bg = self._colors['panel_alt']
@@ -121,6 +122,10 @@ class MonitorUI:
         if accent:
             bg = self._colors['accent']
             hover_bg = self._colors['accent_hover']
+            fg = '#ffffff'
+        elif success:
+            bg = self._colors['success']
+            hover_bg = '#1f8f58'
             fg = '#ffffff'
         elif danger:
             bg = self._colors['danger']
@@ -375,14 +380,15 @@ class MonitorUI:
         )
         self.btn_toggle_scan.grid(row=1, column=0, padx=(0, 8), pady=4)
 
-        self.btn_rearm = self._make_button(
+        self.btn_stop = self._make_button(
             controls,
-            text='Rearm Scanner',
+            text='Stop Scanner',
             width=20,
-            command=self._on_rearm,
+            command=self._on_stop_after_detect,
+            danger=True,
         )
-        self.btn_rearm.configure(state=tk.DISABLED)
-        self.btn_rearm.grid(row=1, column=1, padx=(0, 8), pady=4)
+        self.btn_stop.configure(state=tk.DISABLED)
+        self.btn_stop.grid(row=1, column=1, padx=(0, 8), pady=4)
 
         state_row = tk.Frame(container, bg=self._colors['panel'])
         state_row.pack(fill=tk.X, pady=(6, 6))
@@ -463,22 +469,25 @@ class MonitorUI:
         self._set_led('#7a7a7a')
         self.lbl_state.configure(text=f'State: Idle ({reason})')
         self.btn_toggle_scan.configure(text='Start Scanner')
+        self.btn_toggle_scan.configure(bg=self._colors['success'], activebackground='#1f8f58')
         if self._selected_mode() == 'spot-tower':
-            self.btn_rearm.configure(state=tk.DISABLED)
+            self.btn_stop.configure(state=tk.DISABLED)
         else:
-            self.btn_rearm.configure(state=tk.DISABLED)
+            self.btn_stop.configure(state=tk.DISABLED)
 
     def _set_state_scanning(self):
         self._set_led('#00b050')
         self.lbl_state.configure(text='State: Scanning')
         self.btn_toggle_scan.configure(text='Stop Scanner')
-        self.btn_rearm.configure(state=tk.DISABLED)
+        self.btn_toggle_scan.configure(bg=self._colors['danger'], activebackground=self._colors['danger_hover'])
+        self.btn_stop.configure(state=tk.DISABLED)
 
     def _set_state_detected(self):
         self._set_led('#d32f2f')
-        self.lbl_state.configure(text='State: Detected (waiting rearm)')
+        self.lbl_state.configure(text='State: Detected (press Stop)')
         self.btn_toggle_scan.configure(text='Start Scanner')
-        self.btn_rearm.configure(state=tk.NORMAL)
+        self.btn_toggle_scan.configure(bg=self._colors['success'], activebackground='#1f8f58')
+        self.btn_stop.configure(state=tk.NORMAL)
 
     def _selected_mode(self) -> str:
         return 'safe-tower' if self._mode_var.get() == 'SAFE TOWER' else 'spot-tower'
@@ -488,7 +497,7 @@ class MonitorUI:
         if mode == 'safe-tower':
             self.btn_select_route.configure(state=tk.DISABLED)
             self.lbl_route.configure(text='Escape route: not required in SAFE TOWER mode')
-            self.btn_rearm.configure(state=tk.DISABLED)
+            self.btn_stop.configure(state=tk.DISABLED)
             self._log('Mode set to SAFE TOWER.')
         else:
             self.btn_select_route.configure(state=tk.NORMAL)
@@ -512,7 +521,7 @@ class MonitorUI:
             self._mode_var.set(self._last_mode_selection)
             return
         self._last_mode_selection = self._mode_var.get()
-        self._detected_waiting_rearm = False
+        self._detected_waiting_stop = False
         self._set_state_idle('Mode changed')
         self._refresh_mode_ui()
 
@@ -715,13 +724,13 @@ class MonitorUI:
 
         self._start_scanner()
 
-    def _on_rearm(self):
+    def _on_stop_after_detect(self):
         if self._selected_mode() != 'spot-tower':
             return
-        if not self._detected_waiting_rearm:
+        if not self._detected_waiting_stop:
             return
-        self._detected_waiting_rearm = False
-        self._start_scanner()
+        self._detected_waiting_stop = False
+        self._stop_scanner(manual_stop=True)
 
     def _start_scanner(self):
         if self.region is None:
@@ -734,7 +743,7 @@ class MonitorUI:
         if self._monitor_thread and self._monitor_thread.is_alive():
             return
 
-        self._detected_waiting_rearm = False
+        self._detected_waiting_stop = False
         self._set_state_scanning()
         self._log('Scanner started.')
 
@@ -749,7 +758,7 @@ class MonitorUI:
                 asyncio.run_coroutine_threadsafe(self._tower_monitor.stop_monitoring(), self._monitor_loop)
 
         if manual_stop:
-            self._detected_waiting_rearm = False
+            self._detected_waiting_stop = False
             self._set_state_idle('Stopped')
             self._log('Scanner stop requested.')
 
@@ -833,9 +842,9 @@ class MonitorUI:
                 break
 
             if event == 'detected':
-                self._detected_waiting_rearm = True
+                self._detected_waiting_stop = True
                 self._set_state_detected()
-                self._log('Player detected. Escape route executed. Waiting for rearm.')
+                self._log('Player detected. Escape route executed. Press Stop to reset.')
             elif event == 'tower_detected':
                 info = payload if isinstance(payload, dict) else {}
                 char_name = info.get('char_name', 'Unknown')
@@ -849,10 +858,10 @@ class MonitorUI:
                 info = payload if isinstance(payload, dict) else {}
                 mode = info.get('mode', 'spot-tower')
                 if mode == 'spot-tower' and info.get('triggered'):
-                    self._detected_waiting_rearm = True
+                    self._detected_waiting_stop = True
                     self._set_state_detected()
                 else:
-                    self._detected_waiting_rearm = False
+                    self._detected_waiting_stop = False
                     self._set_state_idle('Stopped')
 
         self.root.after(120, self._drain_events)
