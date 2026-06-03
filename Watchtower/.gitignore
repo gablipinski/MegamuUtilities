@@ -31,6 +31,7 @@ wheels/
 
 # Config
 configs/config.json
+configs/spot_template.png
 !configs/config.json.example
 
 # OS

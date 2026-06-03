@@ -10,7 +10,7 @@ from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
 
 from action_controller import ActionController
-from area_selector import select_area_with_parent, select_points_with_parent
+from area_selector import capture_virtual_screen, select_area_with_parent, select_points_with_parent
 from player_monitor import PlayerMonitor
 from config import WindowConfig, load_config
 from screen_monitor import ScreenMonitor
@@ -54,6 +54,7 @@ class MonitorUI:
 
         self.region: tuple[int, int, int, int] | None = None
         self.escape_route: list[dict[str, int | str]] = []
+        self.template_path = Path(__file__).resolve().parent.parent / 'configs' / 'spot_template.png'
 
         self._event_queue: queue.Queue[tuple[str, object | None]] = queue.Queue()
         self._monitor_thread: threading.Thread | None = None
@@ -371,6 +372,14 @@ class MonitorUI:
         )
         self.btn_select_route.grid(row=0, column=1, padx=(0, 8), pady=4)
 
+        self.btn_capture_template = self._make_button(
+            controls,
+            text='Capture Template',
+            width=16,
+            command=self._on_capture_template,
+        )
+        self.btn_capture_template.grid(row=0, column=2, padx=(0, 8), pady=4)
+
         self.btn_toggle_scan = self._make_button(
             controls,
             text='Start Scanner',
@@ -379,16 +388,6 @@ class MonitorUI:
             accent=True,
         )
         self.btn_toggle_scan.grid(row=1, column=0, padx=(0, 8), pady=4)
-
-        self.btn_stop = self._make_button(
-            controls,
-            text='Stop Scanner',
-            width=20,
-            command=self._on_stop_after_detect,
-            danger=True,
-        )
-        self.btn_stop.configure(state=tk.DISABLED)
-        self.btn_stop.grid(row=1, column=1, padx=(0, 8), pady=4)
 
         state_row = tk.Frame(container, bg=self._colors['panel'])
         state_row.pack(fill=tk.X, pady=(6, 6))
@@ -470,24 +469,18 @@ class MonitorUI:
         self.lbl_state.configure(text=f'State: Idle ({reason})')
         self.btn_toggle_scan.configure(text='Start Scanner')
         self.btn_toggle_scan.configure(bg=self._colors['success'], activebackground='#1f8f58')
-        if self._selected_mode() == 'spot-tower':
-            self.btn_stop.configure(state=tk.DISABLED)
-        else:
-            self.btn_stop.configure(state=tk.DISABLED)
 
     def _set_state_scanning(self):
         self._set_led('#00b050')
         self.lbl_state.configure(text='State: Scanning')
         self.btn_toggle_scan.configure(text='Stop Scanner')
         self.btn_toggle_scan.configure(bg=self._colors['danger'], activebackground=self._colors['danger_hover'])
-        self.btn_stop.configure(state=tk.DISABLED)
 
     def _set_state_detected(self):
         self._set_led('#d32f2f')
-        self.lbl_state.configure(text='State: Detected (press Stop)')
+        self.lbl_state.configure(text='State: Detected')
         self.btn_toggle_scan.configure(text='Start Scanner')
         self.btn_toggle_scan.configure(bg=self._colors['success'], activebackground='#1f8f58')
-        self.btn_stop.configure(state=tk.NORMAL)
 
     def _selected_mode(self) -> str:
         return 'safe-tower' if self._mode_var.get() == 'SAFE TOWER' else 'spot-tower'
@@ -497,7 +490,6 @@ class MonitorUI:
         if mode == 'safe-tower':
             self.btn_select_route.configure(state=tk.DISABLED)
             self.lbl_route.configure(text='Escape route: not required in SAFE TOWER mode')
-            self.btn_stop.configure(state=tk.DISABLED)
             self._log('Mode set to SAFE TOWER.')
         else:
             self.btn_select_route.configure(state=tk.NORMAL)
@@ -551,6 +543,32 @@ class MonitorUI:
             return
 
         self._open_escape_route_editor()
+
+    def _on_capture_template(self):
+        if self._monitor_thread and self._monitor_thread.is_alive():
+            messagebox.showwarning('Scanner active', 'Stop scanner before capturing a template.')
+            return
+
+        selection = select_area_with_parent(
+            self.root,
+            help_text='Drag exact target image | Enter confirm | Esc cancel',
+            min_size=4,
+        )
+        if selection is None:
+            self._log('Template capture cancelled.')
+            return
+
+        image, offset_x, offset_y = capture_virtual_screen()
+        x1, y1, x2, y2 = selection
+        crop_x1 = max(0, x1 - offset_x)
+        crop_y1 = max(0, y1 - offset_y)
+        crop_x2 = max(crop_x1 + 1, x2 - offset_x)
+        crop_y2 = max(crop_y1 + 1, y2 - offset_y)
+        template = image.crop((crop_x1, crop_y1, crop_x2, crop_y2))
+
+        self.template_path.parent.mkdir(parents=True, exist_ok=True)
+        template.save(self.template_path)
+        self._log(f'Template saved to {self.template_path.name} ({crop_x2 - crop_x1}x{crop_y2 - crop_y1}).')
 
     def _open_escape_route_editor(self):
         working_route = [dict(step) for step in self.escape_route]
@@ -724,14 +742,6 @@ class MonitorUI:
 
         self._start_scanner()
 
-    def _on_stop_after_detect(self):
-        if self._selected_mode() != 'spot-tower':
-            return
-        if not self._detected_waiting_stop:
-            return
-        self._detected_waiting_stop = False
-        self._stop_scanner(manual_stop=True)
-
     def _start_scanner(self):
         if self.region is None:
             messagebox.showwarning('Missing area', 'Select area before starting scanner.')
@@ -772,17 +782,30 @@ class MonitorUI:
         try:
             assert self.region is not None
             if mode == 'spot-tower':
-                marker_template = Path(__file__).resolve().parent.parent / 'teste.png'
+                marker_template = self.template_path if self.template_path.exists() else None
                 monitor = PlayerMonitor(
                     self.region,
-                    interval_ms=65,
-                    confirm_frames=2,
+                    interval_ms=100,
+                    confirm_frames=1,
                     min_movement_px=0.0,
                     min_confidence=0.50,
-                    template_path=str(marker_template),
+                    template_path=str(marker_template) if marker_template is not None else None,
                     template_match_threshold=0.50,
-                    startup_ignore_frames=12,
-                    debug=True,
+                    startup_ignore_frames=0,
+                    background_ack_frames=1,
+                    require_background_ack=False,
+                    log_each_poll=True,
+                    fast_trigger_on_blue_spike=True,
+                    fast_trigger_min_blue_pixels=170,
+                    fast_trigger_min_increase=100,
+                    fast_trigger_ratio=2.1,
+                    fast_trigger_confidence=0.56,
+                    fast_trigger_circle_min_area_px=24,
+                    fast_trigger_circle_max_area_px=320,
+                    fast_trigger_circle_min_circularity=0.68,
+                    fast_trigger_circle_min_aspect=0.75,
+                    fast_trigger_circle_min_new_pixels=30,
+                    debug=False,
                 )
                 self._player_monitor = monitor
                 action_controller = ActionController(actions=self.escape_route, cooldown_seconds=2.0)

@@ -8,12 +8,21 @@ from config import WindowConfig
 
 
 class ScreenAreaOverlay:
-    def __init__(self, image: Image.Image, offset_x: int, offset_y: int, help_text: Optional[str] = None, parent: Optional[tk.Misc] = None):
+    def __init__(
+        self,
+        image: Image.Image,
+        offset_x: int,
+        offset_y: int,
+        help_text: Optional[str] = None,
+        parent: Optional[tk.Misc] = None,
+        min_size: int = 20,
+    ):
         self.offset_x = offset_x
         self.offset_y = offset_y
         self.image = image
         self.photo = None
         self.help_text = help_text or "Drag to select scan area | Enter: confirm | Esc: cancel"
+        self.min_size = max(1, int(min_size))
 
         self.root = tk.Toplevel(parent) if parent is not None else tk.Tk()
         self.root.title("Watchtower - Select Scan Area")
@@ -79,7 +88,7 @@ class ScreenAreaOverlay:
         x2 = max(self.start_x, self.end_x) + self.offset_x
         y2 = max(self.start_y, self.end_y) + self.offset_y
 
-        if abs(x2 - x1) < 20 or abs(y2 - y1) < 20:
+        if abs(x2 - x1) < self.min_size or abs(y2 - y1) < self.min_size:
             print("[!] Selection too small. Drag a bigger area.")
             return
 
@@ -191,15 +200,19 @@ def capture_virtual_screen() -> tuple[Image.Image, int, int]:
     return image, int(monitor["left"]), int(monitor["top"])
 
 
-def select_area(help_text: Optional[str] = None) -> Optional[tuple[int, int, int, int]]:
+def select_area(help_text: Optional[str] = None, min_size: int = 20) -> Optional[tuple[int, int, int, int]]:
     image, offset_x, offset_y = capture_virtual_screen()
-    selector = ScreenAreaOverlay(image, offset_x, offset_y, help_text=help_text)
+    selector = ScreenAreaOverlay(image, offset_x, offset_y, help_text=help_text, min_size=min_size)
     return selector.select()
 
 
-def select_area_with_parent(parent: tk.Misc, help_text: Optional[str] = None) -> Optional[tuple[int, int, int, int]]:
+def select_area_with_parent(
+    parent: tk.Misc,
+    help_text: Optional[str] = None,
+    min_size: int = 20,
+) -> Optional[tuple[int, int, int, int]]:
     image, offset_x, offset_y = capture_virtual_screen()
-    selector = ScreenAreaOverlay(image, offset_x, offset_y, help_text=help_text, parent=parent)
+    selector = ScreenAreaOverlay(image, offset_x, offset_y, help_text=help_text, parent=parent, min_size=min_size)
     return selector.select()
 
 

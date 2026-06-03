@@ -1,6 +1,7 @@
 import asyncio
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 import cv2
@@ -54,6 +55,21 @@ class PlayerMonitor:
         template_path: str | None = None,
         template_match_threshold: float = 0.56,
         startup_ignore_frames: int = 10,
+        require_background_ack: bool = True,
+        log_each_poll: bool = False,
+        fast_trigger_on_blue_spike: bool = True,
+        fast_trigger_min_blue_pixels: int = 180,
+        fast_trigger_min_increase: int = 110,
+        fast_trigger_ratio: float = 2.4,
+        fast_trigger_confidence: float = 0.56,
+        fast_trigger_circle_min_area_px: int = 22,
+        fast_trigger_circle_max_area_px: int = 900,
+        fast_trigger_circle_min_circularity: float = 0.46,
+        fast_trigger_circle_min_aspect: float = 0.58,
+        fast_trigger_circle_min_new_pixels: int = 24,
+        fast_trigger_circle_min_extent: float = 0.62,
+        fast_trigger_circle_min_enclosing_fill: float = 0.74,
+        fast_trigger_circle_min_solidity: float = 0.86,
         debug: bool = False,
     ):
         x1, y1, x2, y2 = region
@@ -61,7 +77,7 @@ class PlayerMonitor:
             raise ValueError('Region is invalid')
 
         self.region = (int(x1), int(y1), int(x2), int(y2))
-        self.interval_ms = max(30, int(interval_ms))
+        self.interval_ms = max(10, int(interval_ms))
         self.confirm_frames = max(1, int(confirm_frames))
         self.min_movement_px = max(0.0, float(min_movement_px))
         self.min_confidence = float(min_confidence)
@@ -88,6 +104,24 @@ class PlayerMonitor:
 
         self.template_match_threshold = max(0.1, min(1.0, float(template_match_threshold)))
         self.startup_ignore_frames = max(0, int(startup_ignore_frames))
+        self.require_background_ack = bool(require_background_ack)
+        self.log_each_poll = bool(log_each_poll)
+        self.fast_trigger_on_blue_spike = bool(fast_trigger_on_blue_spike)
+        self.fast_trigger_min_blue_pixels = max(1, int(fast_trigger_min_blue_pixels))
+        self.fast_trigger_min_increase = max(1, int(fast_trigger_min_increase))
+        self.fast_trigger_ratio = max(1.0, float(fast_trigger_ratio))
+        self.fast_trigger_confidence = max(0.1, min(1.0, float(fast_trigger_confidence)))
+        self.fast_trigger_circle_min_area_px = max(1, int(fast_trigger_circle_min_area_px))
+        self.fast_trigger_circle_max_area_px = max(
+            self.fast_trigger_circle_min_area_px + 1,
+            int(fast_trigger_circle_max_area_px),
+        )
+        self.fast_trigger_circle_min_circularity = max(0.0, min(1.0, float(fast_trigger_circle_min_circularity)))
+        self.fast_trigger_circle_min_aspect = max(0.0, min(1.0, float(fast_trigger_circle_min_aspect)))
+        self.fast_trigger_circle_min_new_pixels = max(1, int(fast_trigger_circle_min_new_pixels))
+        self.fast_trigger_circle_min_extent = max(0.0, min(1.0, float(fast_trigger_circle_min_extent)))
+        self.fast_trigger_circle_min_enclosing_fill = max(0.0, min(1.0, float(fast_trigger_circle_min_enclosing_fill)))
+        self.fast_trigger_circle_min_solidity = max(0.0, min(1.0, float(fast_trigger_circle_min_solidity)))
         self.debug = debug
 
         self.detection_callback: Optional[DetectionCallback] = None
@@ -100,9 +134,14 @@ class PlayerMonitor:
         self._bg_mean_rgb: np.ndarray | None = None
         self._bg_frames_collected = 0
         self._bg_ack_done = False
+        self._blue_px_ema = 0.0
+        self._prev_blue_mask: np.ndarray | None = None
 
-        # Keep template-related inputs for API compatibility, but manual mode ignores template matching.
-        self._template_path = template_path
+        self._template_path = Path(template_path) if template_path else None
+        self._template_gray: np.ndarray | None = None
+        self._template_edges: np.ndarray | None = None
+        self._template_sizes: tuple[float, ...] = (0.90, 1.00, 1.10)
+        self._load_template()
 
     def _reset_runtime_state(self) -> None:
         self._running = False
@@ -113,6 +152,246 @@ class PlayerMonitor:
         self._bg_mean_rgb = None
         self._bg_frames_collected = 0
         self._bg_ack_done = False
+        self._blue_px_ema = 0.0
+        self._prev_blue_mask = None
+
+    def _is_blue_spike_trigger(self, blue_pixels: int) -> bool:
+        prev = float(self._blue_px_ema)
+        if prev <= 0.0:
+            self._blue_px_ema = float(blue_pixels)
+            return False
+
+        is_spike = (
+            self.fast_trigger_on_blue_spike
+            and blue_pixels >= self.fast_trigger_min_blue_pixels
+            and blue_pixels >= int(prev * self.fast_trigger_ratio)
+            and (blue_pixels - prev) >= self.fast_trigger_min_increase
+        )
+
+        # Keep an adaptive baseline so sudden jumps stand out, but the baseline still follows scene drift.
+        alpha = 0.08 if blue_pixels < prev else 0.16
+        self._blue_px_ema = ((1.0 - alpha) * prev) + (alpha * float(blue_pixels))
+        return is_spike
+
+    def _load_template(self) -> None:
+        if self._template_path is None or not self._template_path.exists():
+            return
+
+        template = cv2.imread(str(self._template_path), cv2.IMREAD_COLOR)
+        if template is None:
+            return
+
+        self._template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+        self._template_edges = cv2.Canny(self._template_gray, 50, 150)
+
+    @staticmethod
+    def _resize_template(template: np.ndarray, scale: float) -> np.ndarray | None:
+        if scale <= 0:
+            return None
+        width = max(1, int(round(template.shape[1] * scale)))
+        height = max(1, int(round(template.shape[0] * scale)))
+        if width < 2 or height < 2:
+            return None
+        return cv2.resize(template, (width, height), interpolation=cv2.INTER_AREA)
+
+    def _match_template(self, rgb: np.ndarray) -> tuple[float, int, int, int, int] | None:
+        if self._template_gray is None or self._template_edges is None:
+            return None
+
+        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+        edges = cv2.Canny(gray, 50, 150)
+
+        best_score = -1.0
+        best_box: tuple[int, int, int, int] | None = None
+
+        for scale in self._template_sizes:
+            template_gray = self._resize_template(self._template_gray, scale)
+            template_edges = self._resize_template(self._template_edges, scale)
+            if template_gray is None or template_edges is None:
+                continue
+
+            th, tw = template_gray.shape[:2]
+            if tw > gray.shape[1] or th > gray.shape[0]:
+                continue
+
+            gray_result = cv2.matchTemplate(gray, template_gray, cv2.TM_CCOEFF_NORMED)
+            edge_result = cv2.matchTemplate(edges, template_edges, cv2.TM_CCOEFF_NORMED)
+
+            _, gray_score, _, gray_loc = cv2.minMaxLoc(gray_result)
+            _, edge_score, _, edge_loc = cv2.minMaxLoc(edge_result)
+
+            if gray_score >= edge_score:
+                score = float(gray_score)
+                x, y = gray_loc
+            else:
+                score = float(edge_score)
+                x, y = edge_loc
+
+            if score > best_score:
+                best_score = score
+                best_box = (int(x), int(y), int(tw), int(th))
+
+        if best_box is None:
+            return None
+
+        return best_score, best_box[0], best_box[1], best_box[2], best_box[3]
+
+    def _validate_template_box(self, blue_mask: np.ndarray, x: int, y: int, w: int, h: int) -> dict[str, float] | None:
+        if w <= 0 or h <= 0:
+            return None
+
+        x2 = min(blue_mask.shape[1], x + w)
+        y2 = min(blue_mask.shape[0], y + h)
+        x = max(0, x)
+        y = max(0, y)
+        if x >= x2 or y >= y2:
+            return None
+
+        roi_mask = blue_mask[y:y2, x:x2]
+        roi_blue_pixels = int(cv2.countNonZero(roi_mask))
+        roi_area = float(max(1, (x2 - x) * (y2 - y)))
+        blue_ratio = float(roi_blue_pixels / roi_area)
+
+        # Reject template hits that land on UI clutter or non-circle blue noise.
+        if roi_blue_pixels < 70:
+            return None
+        if blue_ratio < 0.14:
+            return None
+
+        contours, _ = cv2.findContours(roi_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+
+        best = None
+        best_score = -1.0
+        for contour in contours:
+            area = float(cv2.contourArea(contour))
+            if area < 20.0:
+                continue
+
+            perimeter = float(cv2.arcLength(contour, True))
+            if perimeter <= 0:
+                continue
+
+            bx, by, bw, bh = cv2.boundingRect(contour)
+            if bw <= 0 or bh <= 0:
+                continue
+
+            circularity = float((4.0 * np.pi * area) / (perimeter * perimeter))
+            aspect = float(min(bw, bh) / max(bw, bh))
+            extent = float(area / float(max(1, bw * bh)))
+
+            (_, _), enclosing_radius = cv2.minEnclosingCircle(contour)
+            enclosing_area = float(np.pi * (enclosing_radius * enclosing_radius)) if enclosing_radius > 0 else 0.0
+            enclosing_fill = float(area / enclosing_area) if enclosing_area > 0 else 0.0
+
+            hull = cv2.convexHull(contour)
+            hull_area = float(cv2.contourArea(hull)) if hull is not None else 0.0
+            solidity = float(area / hull_area) if hull_area > 0 else 0.0
+
+            if circularity < 0.72:
+                continue
+            if aspect < 0.72:
+                continue
+            if extent < 0.60:
+                continue
+            if enclosing_fill < 0.74:
+                continue
+            if solidity < 0.86:
+                continue
+
+            score = (
+                (circularity * 0.30)
+                + (aspect * 0.15)
+                + (extent * 0.20)
+                + (enclosing_fill * 0.20)
+                + (solidity * 0.15)
+            )
+            if score > best_score:
+                best_score = score
+                best = {
+                    'x': float(x + bx),
+                    'y': float(y + by),
+                    'w': float(bw),
+                    'h': float(bh),
+                    'blue_pixels': float(roi_blue_pixels),
+                    'blue_ratio': blue_ratio,
+                    'circularity': circularity,
+                    'extent': extent,
+                    'enclosing_fill': enclosing_fill,
+                    'solidity': solidity,
+                    'score': score,
+                }
+
+        return best
+
+    def _match_new_blue_circle(self, blue_mask: np.ndarray):
+        if self._prev_blue_mask is None or self._prev_blue_mask.shape != blue_mask.shape:
+            return None
+
+        new_blue_mask = cv2.bitwise_and(blue_mask, cv2.bitwise_not(self._prev_blue_mask))
+        new_blue_pixels = int(cv2.countNonZero(new_blue_mask))
+        if new_blue_pixels < self.fast_trigger_circle_min_new_pixels:
+            return None
+
+        kernel = np.ones((3, 3), dtype=np.uint8)
+        new_blue_mask = cv2.morphologyEx(new_blue_mask, cv2.MORPH_OPEN, kernel)
+        new_blue_mask = cv2.morphologyEx(new_blue_mask, cv2.MORPH_CLOSE, kernel)
+
+        contours, _ = cv2.findContours(new_blue_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+
+        best = None
+        best_score = -1.0
+        for contour in contours:
+            x, y, w, h = cv2.boundingRect(contour)
+            if w <= 0 or h <= 0:
+                continue
+
+            area = float(cv2.contourArea(contour))
+            if area < self.fast_trigger_circle_min_area_px or area > self.fast_trigger_circle_max_area_px:
+                continue
+
+            perimeter = float(cv2.arcLength(contour, True))
+            if perimeter <= 0:
+                continue
+
+            circularity = float((4.0 * np.pi * area) / (perimeter * perimeter))
+            aspect = float(min(w, h) / max(w, h))
+            extent = float(area / float(max(1, w * h)))
+
+            (_, _), enclosing_radius = cv2.minEnclosingCircle(contour)
+            enclosing_area = float(np.pi * (enclosing_radius * enclosing_radius)) if enclosing_radius > 0 else 0.0
+            enclosing_fill = float(area / enclosing_area) if enclosing_area > 0 else 0.0
+
+            hull = cv2.convexHull(contour)
+            hull_area = float(cv2.contourArea(hull)) if hull is not None else 0.0
+            solidity = float(area / hull_area) if hull_area > 0 else 0.0
+
+            if circularity < self.fast_trigger_circle_min_circularity:
+                continue
+            if aspect < self.fast_trigger_circle_min_aspect:
+                continue
+            if extent < self.fast_trigger_circle_min_extent:
+                continue
+            if enclosing_fill < self.fast_trigger_circle_min_enclosing_fill:
+                continue
+            if solidity < self.fast_trigger_circle_min_solidity:
+                continue
+
+            score = (
+                (circularity * 0.35)
+                + (aspect * 0.15)
+                + (extent * 0.20)
+                + (enclosing_fill * 0.20)
+                + (solidity * 0.10)
+            )
+            if score > best_score:
+                best_score = score
+                best = (x, y, w, h)
+
+        return best
 
     def _update_background_ack(self, rgb: np.ndarray) -> None:
         frame = rgb.astype(np.float32)
@@ -157,7 +436,16 @@ class PlayerMonitor:
                 try:
                     image = self._capture(sct)
                     detection = self.detect(image)
-                    if self._should_trigger(detection):
+                    should_trigger = self._should_trigger(detection)
+                    if self.log_each_poll:
+                        status = 'FOUND' if detection.found else 'MISS'
+                        print(
+                            f'[POLL] frame={self._frame_index} status={status} '
+                            f'conf={detection.confidence:.3f} blue_px={detection.blue_pixels} '
+                            f'streak={self._confirm_streak}/{self.confirm_frames} '
+                            f'bg_ack={int(self._bg_ack_done)} trigger={int(should_trigger)}'
+                        )
+                    if should_trigger:
                         await self._emit_detection(detection)
 
                     elapsed = time.monotonic() - started
@@ -190,13 +478,74 @@ class PlayerMonitor:
         self._frame_index += 1
         rgb = np.array(image)
         hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+        blue_mask = cv2.inRange(hsv, self.blue_lower, self.blue_upper)
+
+        template_match = self._match_template(rgb)
+        if template_match is not None:
+            score, x, y, w, h = template_match
+            if score >= self.template_match_threshold:
+                template_valid = self._validate_template_box(blue_mask, x, y, w, h)
+                if template_valid is None:
+                    if self.debug:
+                        print(
+                            f'[DEBUG] frame={self._frame_index} template_rejected=True '
+                            f'score={score:.3f} threshold={self.template_match_threshold:.3f} '
+                            f'bbox=({x},{y},{w},{h})'
+                        )
+                else:
+                    tx = int(template_valid['x'])
+                    ty = int(template_valid['y'])
+                    tw = int(template_valid['w'])
+                    th = int(template_valid['h'])
+
+                    if self.debug:
+                        print(
+                            f'[DEBUG] frame={self._frame_index} template_found=True '
+                            f'score={score:.3f} threshold={self.template_match_threshold:.3f} '
+                            f'bbox=({tx},{ty},{tw},{th}) blue_ratio={template_valid["blue_ratio"]:.3f} '
+                            f'circularity={template_valid["circularity"]:.3f} '
+                            f'extent={template_valid["extent"]:.3f} '
+                            f'enclosing_fill={template_valid["enclosing_fill"]:.3f} '
+                            f'solidity={template_valid["solidity"]:.3f}'
+                        )
+
+                    self._prev_blue_mask = blue_mask
+                    return PlayerDetection(
+                        True,
+                        float(score),
+                        float(tx + (tw / 2.0)),
+                        float(ty + (th / 2.0)),
+                        float(max(tw, th) / 2.0),
+                        (tx, ty, tw, th),
+                        int(template_valid['blue_pixels']),
+                    )
 
         match = self._find_blue_blob_match(rgb, hsv)
         if match is None:
             if self.debug:
                 print(f'[DEBUG] frame={self._frame_index} found=False reason=no_candidate')
-            blue_mask = cv2.inRange(hsv, self.blue_lower, self.blue_upper)
             blue_pixels = int(cv2.countNonZero(blue_mask))
+            if self._is_blue_spike_trigger(blue_pixels):
+                circle_bbox = self._match_new_blue_circle(blue_mask)
+                if circle_bbox is not None:
+                    x, y, w, h = circle_bbox
+                    self._prev_blue_mask = blue_mask
+                    return PlayerDetection(
+                        True,
+                        max(self.min_confidence, self.fast_trigger_confidence),
+                        float(x + (w / 2.0)),
+                        float(y + (h / 2.0)),
+                        float(max(w, h) / 2.0),
+                        (x, y, w, h),
+                        blue_pixels,
+                    )
+                if self.debug:
+                    print(
+                        f'[DEBUG] frame={self._frame_index} spike_rejected reason=no_new_circle '
+                        f'blue_pixels={blue_pixels}'
+                    )
+
+            self._prev_blue_mask = blue_mask
             return PlayerDetection(False, 0.0, None, None, None, None, blue_pixels)
 
         score, x, y, w, h, blue_pixels, metrics = match
@@ -225,6 +574,7 @@ class PlayerMonitor:
 
         center_x = x + (w / 2.0)
         center_y = y + (h / 2.0)
+        self._prev_blue_mask = blue_mask
 
         return PlayerDetection(
             found=found,
@@ -308,6 +658,15 @@ class PlayerMonitor:
 
             circularity = float((4.0 * np.pi * area) / (perimeter * perimeter))
             aspect = min(w, h) / max(w, h)
+            extent = float(area / float(max(1, w * h)))
+
+            (_, _), enclosing_radius = cv2.minEnclosingCircle(contour)
+            enclosing_area = float(np.pi * (enclosing_radius * enclosing_radius)) if enclosing_radius > 0 else 0.0
+            enclosing_fill = float(area / enclosing_area) if enclosing_area > 0 else 0.0
+
+            hull = cv2.convexHull(contour)
+            hull_area = float(cv2.contourArea(hull)) if hull is not None else 0.0
+            solidity = float(area / hull_area) if hull_area > 0 else 0.0
 
             roi_mask = mask[y : y + h, x : x + w]
             bbox_area = float(max(1, w * h))
@@ -357,6 +716,9 @@ class PlayerMonitor:
                 and blue_ratio >= self.target_color_ratio_min
                 and contrast >= min_contrast
                 and ring_blue <= max_ring_blue
+                and extent >= 0.60
+                and enclosing_fill >= 0.72
+                and solidity >= 0.84
                 and ((not self._bg_ack_done) or (bg_change >= self.background_min_change_ratio))
                 and sat_mean >= 0.30
             )
@@ -370,6 +732,9 @@ class PlayerMonitor:
                 best_metrics = {
                     'blue_ratio': blue_ratio,
                     'circularity': circularity,
+                    'extent': extent,
+                    'enclosing_fill': enclosing_fill,
+                    'solidity': solidity,
                     'contrast': contrast,
                     'ring_blue': ring_blue,
                     'scene_blue': scene_blue_ratio,
@@ -395,7 +760,7 @@ class PlayerMonitor:
         )
 
     def _should_trigger(self, detection: PlayerDetection) -> bool:
-        if not self._bg_ack_done:
+        if self.require_background_ack and not self._bg_ack_done:
             if self.debug:
                 print(
                     f'[DEBUG] background_ack: frame={self._frame_index} '
@@ -472,9 +837,13 @@ class PlayerMonitor:
         return inter / union
 
     async def _emit_detection(self, detection: PlayerDetection):
+        center_text = 'n/a'
+        if detection.center_x is not None and detection.center_y is not None:
+            center_text = f'({detection.center_x:.1f},{detection.center_y:.1f})'
+
         print(
             f'[INFO] Marker detected: conf={detection.confidence:.3f} '
-            f'center=({detection.center_x:.1f},{detection.center_y:.1f}) bbox={detection.bbox}'
+            f'center={center_text} bbox={detection.bbox}'
         )
 
         if self.detection_callback is None:
