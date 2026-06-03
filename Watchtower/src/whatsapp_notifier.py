@@ -1,22 +1,22 @@
 from config import NotificationConfig
 
 class WhatsAppNotifier:
-    """Envia notificações para WhatsApp"""
+    """Sends notifications to WhatsApp."""
     
     def __init__(self, config: NotificationConfig):
         self.config = config
         
         if config.enabled and not config.whatsapp_group_id:
-            print('[⚠️] WhatsApp habilitado mas sem group_id configurado')
+            print('[WARN] WhatsApp enabled but group_id is not configured')
     
     async def send_notification(self, char_name: str, map_name: str) -> bool:
         """
-        Envia notificação para o grupo WhatsApp
-        
-        Para integração real com Twilio, você precisa:
+        Sends a notification to the WhatsApp group.
+
+        For real Twilio integration, you need to:
         1. pip install twilio
-        2. Configurar credenciais da Twilio em config.json
-        3. Descomentar o código abaixo
+        2. Configure Twilio credentials in config.json
+        3. Uncomment the code below
         """
         
         if not self.config.enabled:
@@ -27,10 +27,10 @@ class WhatsAppNotifier:
             map=map_name
         )
         
-        print(f'[📱] WhatsApp: {notification}')
+        print(f'[INFO] WhatsApp: {notification}')
         
-        # TODO: Implementar integração real com Twilio
-        # Exemplo de integração com Twilio:
+        # TODO: Implement real Twilio integration.
+        # Example Twilio integration:
         # from twilio.rest import Client
         # client = Client(account_sid, auth_token)
         # client.messages.create(

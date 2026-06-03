@@ -30,7 +30,15 @@ from cryptography.hazmat.primitives.asymmetric import padding
 # automatically patch this constant with the generated key.
 # ─────────────────────────────────────────────────────────────────────────────
 _PUBLIC_KEY_PEM = b"""\
-REPLACE_WITH_OUTPUT_FROM_tools/generate_keys.py
+-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsw44gxDu5wYyBkqgYI8N
+7ATXSua2yh1OBxS8Bh/4y7fUI+F1FqvhwimEc6JJuT18Q+jtZcgMuvr287gR9K5a
+hz6crKwjr7xrCkIK54mY3yam3bkaA31MHOvviz7G4o/2m8oSeU1r3/JwXMtJ0YMf
+0uN0lIJn7n/57TedvfslCF6oNlFEHB7QxI968gBOxckDKfDPwSboqIC/A/za+1Sh
+uiyu6kiKoilFpy0Q7aQPjG81Mo1snI/blIbPcL1+5L9hIxXiULJ0TDLnjfqiQYPn
+aHpeks3e5y1M4eIyH/6UBACpCb6GhcGeGYK1cxQz+3h+46vszhk+P6d2UdCzqfQS
+pQIDAQAB
+-----END PUBLIC KEY-----
 """
 
 

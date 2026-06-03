@@ -1,10 +1,10 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    Cria e ativa um ambiente virtual Python para Watchtower
+    Creates and activates a Python virtual environment for Watchtower
 .DESCRIPTION
-    Este script cria um novo ambiente virtual Python na pasta 'venv'
-    e ativa automaticamente ao final
+    This script creates a new Python virtual environment in the 'venv' folder
+    and activates it automatically at the end
 .EXAMPLE
     .\setup_venv.ps1
 #>
@@ -40,14 +40,14 @@ function Find-Python312Executable {
         }
     }
     catch {
-        # Sem python no PATH.
+        # Python is not available in PATH.
     }
 
     return $null
 }
 
 function Get-PreferredPythonCommand {
-    # Prioriza Python 3.12 por melhor compatibilidade de wheels PyTorch CUDA.
+    # Prefer Python 3.12 for better PyTorch CUDA wheel compatibility.
     $python312Exe = Find-Python312Executable
     if ($python312Exe) {
         return @{ Exe = $python312Exe; Args = @() }
@@ -61,7 +61,7 @@ function Get-PreferredPythonCommand {
         }
     }
     catch {
-        # Sem launcher 'py'; segue fallback.
+        # No 'py' launcher available; continue with fallback.
     }
 
     return @{ Exe = 'python'; Args = @() }
@@ -109,7 +109,7 @@ function Install-TorchRuntime {
             [string]$Label
         )
 
-        Write-Host "[⏳] Tentando instalar PyTorch ($Label)..." -ForegroundColor Cyan
+        Write-Host "[INFO] Trying to install PyTorch ($Label)..." -ForegroundColor Cyan
         & $PythonExe -m pip install --upgrade --force-reinstall torch torchvision torchaudio --index-url $IndexUrl
         return ($LASTEXITCODE -eq 0)
     }
@@ -122,11 +122,11 @@ function Install-TorchRuntime {
     $hasNvidiaCuda = Test-NvidiaCudaAvailable
     $cudaInstalled = $false
 
-    Write-Host "[ℹ️]  Python do venv:" -ForegroundColor Cyan
+    Write-Host "[INFO] Venv Python version:" -ForegroundColor Cyan
     & $PythonExe -c "import sys; print(sys.version.split()[0])"
 
     if ($hasNvidiaCuda) {
-        Write-Host "[⏳] NVIDIA detectada. Buscando wheel CUDA compativel..." -ForegroundColor Cyan
+        Write-Host "[INFO] NVIDIA detected. Looking for a compatible CUDA wheel..." -ForegroundColor Cyan
 
         $cudaIndexes = @(
             @{ Url = 'https://download.pytorch.org/whl/cu126'; Label = 'CUDA cu126' },
@@ -145,46 +145,46 @@ function Install-TorchRuntime {
         }
 
         if (-not $cudaInstalled) {
-            Write-Host "[⚠️]  Nenhuma wheel CUDA compativel encontrada para este Python. Fazendo fallback para CPU." -ForegroundColor Yellow
+            Write-Host "[WARN] No compatible CUDA wheel found for this Python version. Falling back to CPU." -ForegroundColor Yellow
         }
     }
 
     if (-not $cudaInstalled) {
-        Write-Host "[ℹ️]  CUDA nao detectado. Instalando PyTorch CPU..." -ForegroundColor Cyan
+        Write-Host "[INFO] CUDA not detected. Installing CPU PyTorch..." -ForegroundColor Cyan
         $cpuInstalled = Try-InstallTorchFromIndex -IndexUrl 'https://download.pytorch.org/whl/cpu' -Label 'CPU'
 
         if (-not $cpuInstalled) {
-            Write-Host "[⚠️]  Falha no indice CPU dedicado. Tentando PyPI padrao..." -ForegroundColor Yellow
+            Write-Host "[WARN] CPU index installation failed. Trying standard PyPI..." -ForegroundColor Yellow
             & $PythonExe -m pip install --upgrade --force-reinstall torch torchvision torchaudio
             $cpuInstalled = ($LASTEXITCODE -eq 0)
         }
 
         if (-not $cpuInstalled) {
-            Write-Host "[✗] Erro ao instalar PyTorch (runtime OCR)!" -ForegroundColor Red
-            Write-Host "[ℹ️]  Dica: sua versao de Python pode nao ter wheel disponivel. Tente Python 3.12." -ForegroundColor Cyan
+            Write-Host "[ERROR] Failed to install PyTorch (OCR runtime)." -ForegroundColor Red
+            Write-Host "[INFO] Tip: your Python version may not have an available wheel. Try Python 3.12." -ForegroundColor Cyan
             exit 1
         }
     }
 
-    Write-Host "[⏳] Validando backend do PyTorch..." -ForegroundColor Cyan
+    Write-Host "[INFO] Validating PyTorch backend..." -ForegroundColor Cyan
     if (-not (Validate-Torch)) {
-        Write-Host "[✗] Falha ao validar instalacao do PyTorch!" -ForegroundColor Red
+        Write-Host "[ERROR] Failed to validate PyTorch installation." -ForegroundColor Red
         exit 1
     }
 }
 
-Write-Host "`n🐍 Criando ambiente virtual Python para Watchtower..." -ForegroundColor Cyan
+Write-Host "`n[INFO] Creating Python virtual environment for Watchtower..." -ForegroundColor Cyan
 
-# Verifica se já existe um venv
+# Check whether a venv already exists
 if (Test-Path $VenvPath) {
-    Write-Host "[⚠️]  Ambiente virtual já existe." -ForegroundColor Yellow
-    Write-Host "[ℹ️]  Reaproveitando venv existente e sincronizando runtime OCR (CUDA/CPU)." -ForegroundColor Cyan
+    Write-Host "[WARN] Virtual environment already exists." -ForegroundColor Yellow
+    Write-Host "[INFO] Reusing existing venv and syncing OCR runtime (CUDA/CPU)." -ForegroundColor Cyan
 
     if (Test-Path $VenvPython) {
         $existingVersion = Get-VenvPythonVersion -PythonExe $VenvPython
         if ($existingVersion -and $existingVersion -ne '3.12') {
-            Write-Host "[⚠️]  Venv atual usa Python $existingVersion." -ForegroundColor Yellow
-            Write-Host "[ℹ️]  Para melhor chance de CUDA, recrie com Python 3.12:" -ForegroundColor Cyan
+            Write-Host "[WARN] Current venv uses Python $existingVersion." -ForegroundColor Yellow
+            Write-Host "[INFO] For better CUDA compatibility, recreate it with Python 3.12:" -ForegroundColor Cyan
             Write-Host "      Remove-Item -Recurse -Force .\venv" -ForegroundColor Cyan
             Write-Host "      .\scripts\setup_venv.ps1" -ForegroundColor Cyan
         }
@@ -192,41 +192,41 @@ if (Test-Path $VenvPath) {
 }
 
 if (-not (Test-Path $VenvPath)) {
-    # Cria o venv
+    # Create the venv
     $pythonCmd = Get-PreferredPythonCommand
     if ($pythonCmd.Exe -eq 'py' -or $pythonCmd.Exe -match 'Python312') {
-        Write-Host "[⏳] Criando venv com Python 3.12 (preferido para CUDA)..." -ForegroundColor Cyan
+        Write-Host "[INFO] Creating venv with Python 3.12 (preferred for CUDA)..." -ForegroundColor Cyan
     }
     else {
-        Write-Host "[⏳] Criando venv com Python padrao..." -ForegroundColor Cyan
-        Write-Host "[⚠️]  Python 3.12 nao encontrado automaticamente. Para melhor compatibilidade CUDA, instale Python 3.12." -ForegroundColor Yellow
+        Write-Host "[INFO] Creating venv with default Python..." -ForegroundColor Cyan
+        Write-Host "[WARN] Python 3.12 was not found automatically. For better CUDA compatibility, install Python 3.12." -ForegroundColor Yellow
     }
 
     & $pythonCmd.Exe @($pythonCmd.Args + @('-m', 'venv', $VenvPath))
 
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "[✗] Erro ao criar ambiente virtual!" -ForegroundColor Red
+        Write-Host "[ERROR] Failed to create virtual environment." -ForegroundColor Red
         exit 1
     }
 
-    Write-Host "[✓] Ambiente virtual criado com sucesso!" -ForegroundColor Green
+    Write-Host "[OK] Virtual environment created successfully." -ForegroundColor Green
 }
 
-# Ativa o venv
-Write-Host "[⏳] Ativando ambiente virtual..." -ForegroundColor Cyan
+# Activate venv
+Write-Host "[INFO] Activating virtual environment..." -ForegroundColor Cyan
 & $VenvActivate
 
-# Instala as dependências
-Write-Host "`n[⏳] Instalando dependências..." -ForegroundColor Cyan
+# Install dependencies
+Write-Host "`n[INFO] Installing dependencies..." -ForegroundColor Cyan
 pip install -r $RequirementsPath
 
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "`n[✗] Erro ao instalar dependências!" -ForegroundColor Red
+    Write-Host "`n[ERROR] Failed to install dependencies." -ForegroundColor Red
     exit 1
 }
 
 Install-TorchRuntime -PythonExe $VenvPython
 
-Write-Host "`n[✓] Setup concluído com sucesso!" -ForegroundColor Green
-Write-Host "[ℹ️]  Para ativar o venv novamente, execute: .\scripts\activate_venv.ps1" -ForegroundColor Cyan
-Write-Host "[ℹ️]  Para rodar o monitor, execute: .\scripts\run_watchtower.ps1`n" -ForegroundColor Cyan
+Write-Host "`n[OK] Setup completed successfully." -ForegroundColor Green
+Write-Host "[INFO] To activate the venv again, run: .\scripts\activate_venv.ps1" -ForegroundColor Cyan
+Write-Host "[INFO] To run the monitor, run: .\scripts\run_watchtower.ps1`n" -ForegroundColor Cyan

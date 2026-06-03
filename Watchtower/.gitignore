@@ -36,3 +36,7 @@ configs/config.json
 # OS
 .DS_Store
 *.log
+
+# Auth
+*.pem
+*.dat

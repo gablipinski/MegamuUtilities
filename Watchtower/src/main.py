@@ -12,7 +12,7 @@ if __name__ == '__main__':
     try:
         main()
     except KeyboardInterrupt:
-        print('[✓] Monitoramento encerrado')
+        print('[INFO] Monitoring stopped')
     except Exception as exc:
-        print(f'[✗] Erro: {exc}')
+        print(f'[ERROR] Error: {exc}')
         sys.exit(1)

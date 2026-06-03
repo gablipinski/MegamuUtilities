@@ -39,7 +39,7 @@ class MinimapDetectionResult:
     bbox_h: int | None = None
 
 class ScreenMonitor:
-    """Monitora janelas de jogo e detecta personagens"""
+    """Monitors game windows and detects characters."""
     
     def __init__(self, config: MonitorConfig, detection_callback=None, fast_live_mode: bool = False):
         self.config = config
@@ -56,7 +56,7 @@ class ScreenMonitor:
         self.is_first_scan = True
         self.is_running = False
 
-        # Warm-up reduz o atraso da primeira inferencia OCR em runtime.
+        # Warm-up reduces OCR latency on the first runtime inference.
         self._warmup_ocr()
 
     def _warmup_ocr(self):
@@ -64,11 +64,11 @@ class ScreenMonitor:
             sample = np.zeros((24, 64), dtype=np.uint8)
             self.reader.readtext(sample, paragraph=False, decoder='greedy')
         except Exception:
-            # Falha de warm-up nao deve impedir o monitor.
+            # Warm-up failure should not block monitoring.
             pass
 
     def capture_window_snapshot(self, window: WindowConfig) -> Image.Image:
-        """Captura uma unica imagem de uma janela do jogo."""
+        """Captures a single image of a game window."""
         with mss.MSS() as sct:
             screenshot = sct.grab({
                 'left': window.x,
@@ -84,7 +84,7 @@ class ScreenMonitor:
 
         blue_mask = cv2.inRange(hsv, lower, upper)
 
-        # Faixa complementar para variações ciano/azul-claras do marcador.
+        # Complementary range for cyan/light-blue marker variants.
         alt_lower = np.array([55, 20, 35], dtype=np.uint8)
         alt_upper = np.array([145, 255, 255], dtype=np.uint8)
         blue_mask = cv2.bitwise_or(blue_mask, cv2.inRange(hsv, alt_lower, alt_upper))
@@ -96,12 +96,12 @@ class ScreenMonitor:
         return blue_mask, int(cv2.countNonZero(blue_mask))
 
     def _resolve_minimap_limits(self, mask_shape: tuple[int, int]) -> tuple[int, int, int, int, int]:
-        """Calcula limites proporcionais ao tamanho da ROI do minimapa."""
+        """Calculates limits proportional to minimap ROI size."""
         height, width = mask_shape[:2]
         roi_area = max(1, width * height)
         min_side = max(1, min(width, height))
 
-        # Faixa pensada para um marcador pequeno-médio de jogador em uma ROI de ~260x260.
+        # Target range for a small-to-medium player marker in an ROI of ~260x260.
         scaled_min_area = int(roi_area * 0.0010)
         scaled_max_area = int(roi_area * 0.0120)
 
@@ -145,7 +145,7 @@ class ScreenMonitor:
         if aspect_ratio > max_aspect_ratio or fill_ratio < min_fill_ratio or circularity < min_circularity:
             return False, 0.0, None, None, None
 
-        # Dá mais peso a ser circular e bem preenchido do que ao tamanho.
+        # Put more weight on circular and filled shape than on size.
         shape_score = min(1.0, (circularity / max(min_circularity, 0.001)) * 0.55)
         fill_score = min(1.0, (fill_ratio / max(min_fill_ratio, 0.001)) * 0.30)
         aspect_score = max(0.0, 1.0 - ((aspect_ratio - 1.0) / max(1.0, max_aspect_ratio - 1.0))) * 0.15
@@ -160,7 +160,7 @@ class ScreenMonitor:
         min_radius: int,
         max_radius: int,
     ) -> tuple[bool, float, float | None, float | None, tuple[int, int, int, int] | None]:
-        """Fallback para encontrar um círculo azul quando o contorno fica incompleto."""
+        """Fallback to find a blue circle when contour extraction is incomplete."""
         circles = cv2.HoughCircles(
             blue_mask,
             cv2.HOUGH_GRADIENT,
@@ -206,7 +206,7 @@ class ScreenMonitor:
             if not (min_area <= area <= max_area):
                 continue
 
-            # Círculo plausível: boa cobertura azul dentro da área projetada.
+            # Plausible circle: strong blue coverage inside projected area.
             confidence = min(1.0, (fill_ratio * 0.85) + min(0.15, radius / max(1.0, float(max_radius))) * 0.15)
             score = confidence + fill_ratio
             if score > best_score:
@@ -222,7 +222,7 @@ class ScreenMonitor:
         return True, best_confidence, best_center_x, best_center_y, best_bbox
 
     def preprocess_for_character_ocr(self, image: Image.Image) -> np.ndarray:
-        """Isola texto amarelo e reduz ruido para OCR mais rapido e preciso."""
+        """Isolates yellow text and reduces noise for faster, more accurate OCR."""
         img_array = np.array(image)
 
         if not self.config.character_color_filter_enabled:
@@ -241,9 +241,9 @@ class ScreenMonitor:
         return binary
         
     async def start_monitoring(self):
-        """Inicia o monitoramento contínuo"""
+        """Starts continuous monitoring."""
         self.is_running = True
-        print('[📺] Iniciando monitoramento de tela...\n')
+        print('[INFO] Starting screen monitoring...\n')
 
         with mss.MSS() as sct:
             while self.is_running:
@@ -251,18 +251,18 @@ class ScreenMonitor:
                 try:
                     await self.capture_and_analyze(sct)
 
-                    # Intervalo alvo: evita adicionar espera extra se o OCR ja consumiu o ciclo.
+                    # Target interval: avoid extra sleep if OCR already consumed the cycle.
                     elapsed = time.monotonic() - started
                     target = self.config.capture_interval_ms / 1000.0
                     remaining = target - elapsed
                     if remaining > 0:
                         await asyncio.sleep(remaining)
                 except Exception as e:
-                    print(f'[✗] Erro durante captura: {e}')
+                    print(f'[ERROR] Capture error: {e}')
                     await asyncio.sleep(0.2)
     
     async def capture_and_analyze(self, sct: mss.mss):
-        """Captura tela e analisa cada janela de jogo"""
+        """Captures the screen and analyzes each game window."""
         now = time.monotonic()
         self.cleanup_expired_tracks(now)
 
@@ -274,10 +274,10 @@ class ScreenMonitor:
                 'height': window.height
             })
 
-            # Converte para PIL Image
+            # Convert to PIL Image
             img = Image.frombytes('RGB', screenshot.size, screenshot.rgb)
 
-            # Recorta área útil para OCR (ignora chat lateral e HUD inferior)
+            # Crop useful OCR area (ignore side chat and lower HUD).
             roi_img = self.crop_scan_region(img)
 
             if self.fast_live_mode:
@@ -296,15 +296,15 @@ class ScreenMonitor:
                     await self.notify_character_found(name, window.map_name, None)
                 continue
 
-            # Detecta personagens
+            # Detect characters
             detections = await self.detect_characters(roi_img, window)
 
-            # Atualiza trilhas e notifica conforme regra de movimento.
+            # Update tracks and notify according to movement rules.
             for detection in detections:
                 track = self.match_or_create_track(window, detection, now)
 
                 if track.notified:
-                    # Re-alerta se o personagem se moveu desde a última notificação
+                    # Re-alert if the character moved since the last notification.
                     dist = self.calculate_distance(
                         track.notified_x, track.notified_y, track.x, track.y
                     )
@@ -314,19 +314,19 @@ class ScreenMonitor:
                         await self.notify_character_found(track.char_name, window.map_name, track.guild_name)
                     continue
 
-                # No primeiro scan, notifica imediatamente; depois, espera N confirmações
+                # On first scan, notify immediately; after that, wait for N confirmations.
                 if self.is_first_scan or track.observations >= self.config.min_observations_to_notify:
                     track.notified = True
                     track.notified_x = track.x
                     track.notified_y = track.y
                     await self.notify_character_found(track.char_name, window.map_name, track.guild_name)
 
-        # Marca o primeiro ciclo como concluído após processar todas as janelas
+        # Mark the first cycle as complete after processing all windows.
         if self.is_first_scan:
             self.is_first_scan = False
 
     def detect_minimap_blue_markers(self, image: Image.Image) -> MinimapDetectionResult:
-        """Conta blobs azuis no minimapa e devolve o candidato mais estável."""
+        """Counts blue minimap blobs and returns the most stable candidate."""
         img_array = np.array(image)
         hsv = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV)
         blue_mask, blue_pixels = self._build_minimap_blue_mask(hsv)
@@ -380,7 +380,7 @@ class ScreenMonitor:
         return MinimapDetectionResult(count, best_confidence, best_center_x, best_center_y, blue_pixels, x, y, w, h)
 
     def should_trigger_minimap_alert(self, window_position: str, detection: MinimapDetectionResult) -> bool:
-        """Dispara alerta apenas após estabilidade de frames, confiança e centro consistentes."""
+        """Triggers alert only after stable frames, confidence, and center consistency."""
         state = self.live_minimap_state.setdefault(
             window_position,
             {
@@ -404,7 +404,7 @@ class ScreenMonitor:
             ))
             center_tolerance = max(int(getattr(self.config, 'minimap_center_tolerance_px', 5)), dynamic_center_tolerance)
 
-            # Permite movimento moderado, mas ainda exige que seja o mesmo candidato visível.
+            # Allow moderate movement while still requiring the same visible candidate.
             if detection.center_x is not None and detection.center_y is not None and last_center_x is not None and last_center_y is not None:
                 center_shift = self.calculate_distance(float(last_center_x), float(last_center_y), float(detection.center_x), float(detection.center_y))
                 if center_shift > center_tolerance:
@@ -497,7 +497,7 @@ class ScreenMonitor:
         return inter_area / union
 
     async def detect_character_names_fast(self, image: Image.Image, window: WindowConfig) -> list[str]:
-        """Fast path para live mode: detecta apenas nomes, sem guild/tracking."""
+        """Fast path for live mode: detect names only, without guild/tracking."""
         try:
             ocr_image = self.preprocess_for_character_ocr(image)
             texts = self.reader.readtext(
@@ -521,11 +521,11 @@ class ScreenMonitor:
                 names.append(candidate)
             return names
         except Exception as e:
-            print(f'[✗] Erro no fast OCR em {window.position}: {e}')
+            print(f'[ERROR] Fast OCR error in {window.position}: {e}')
             return []
 
     def cleanup_expired_tracks(self, now: float):
-        """Remove entidades que sumiram por tempo suficiente para permitir novos alertas."""
+        """Removes entities unseen long enough to allow new alerts."""
         expiry_seconds = self.config.track_expiry_ms / 1000
         self.active_tracks = [
             track for track in self.active_tracks
@@ -536,7 +536,7 @@ class ScreenMonitor:
         return ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
 
     def update_track_from_detection(self, track: DetectionTrack, detection: dict[str, float | str | None], now: float):
-        """Atualiza a trilha mantendo o melhor nome OCR conhecido para a entidade."""
+        """Updates a track while preserving the best known OCR name for the entity."""
         track.x = float(detection['x'])
         track.y = float(detection['y'])
         track.last_seen_at = now
@@ -555,7 +555,7 @@ class ScreenMonitor:
         detection: dict[str, float | str | None],
         now: float,
     ) -> DetectionTrack:
-        """Relaciona uma leitura OCR com uma entidade já vista pela posição na tela."""
+        """Matches an OCR read with an already seen entity by screen position."""
         detection_x = float(detection['x'])
         detection_y = float(detection['y'])
 
@@ -591,7 +591,7 @@ class ScreenMonitor:
         return new_track
 
     def crop_scan_region(self, image: Image.Image) -> Image.Image:
-        """Recorta somente a região provável de nomes de personagens."""
+        """Crops only the likely region where character names appear."""
         width, height = image.size
 
         left_pct = float(self.config.scan_region.get('left_pct', 0.25))
@@ -607,7 +607,7 @@ class ScreenMonitor:
         return image.crop((left, top, right, bottom))
 
     def is_valid_character_name(self, text: str) -> bool:
-        """Filtra OCR para manter apenas candidatos plausíveis a nome de personagem."""
+        """Filters OCR output to keep only plausible character name candidates."""
         if not text:
             return False
 
@@ -617,11 +617,11 @@ class ScreenMonitor:
         if not (3 <= len(name) <= 16):
             return False
 
-        # Nunca trate tags de guild como nome de personagem.
+        # Never treat guild tags as character names.
         if '<' in normalized_name or '>' in normalized_name:
             return False
 
-        # Nomes de chat/eventos costumam incluir espaços e pontuação pesada.
+        # Chat/event text usually includes spaces and heavy punctuation.
         if ' ' in name:
             return False
 
@@ -631,8 +631,8 @@ class ScreenMonitor:
         if not any(ch.isalpha() for ch in name):
             return False
 
-        # Nomes de personagem em MU Online têm capitalização mista.
-        # Texto em ALL-CAPS é quase sempre um fragmento de tag de guild.
+        # MU Online character names usually use mixed capitalization.
+        # ALL-CAPS text is usually a guild-tag fragment.
         alpha_chars = [ch for ch in name if ch.isalpha()]
         uppercase_ratio = sum(1 for ch in alpha_chars if ch.isupper()) / len(alpha_chars)
         if uppercase_ratio > 0.75:
@@ -645,14 +645,14 @@ class ScreenMonitor:
         return True
 
     def normalize_guild_text(self, text: str) -> str:
-        """Normaliza o texto de guild para reduzir variações de OCR."""
+        """Normalizes guild text to reduce OCR variations."""
         normalized = text.strip()
         normalized = normalized.replace('«', '<').replace('»', '>')
         normalized = normalized.replace('[', '<').replace(']', '>')
         return normalized
 
     def is_valid_guild_name(self, text: str) -> bool:
-        """Detecta padrões de guild tag, preferindo texto entre < >."""
+        """Detects guild tag patterns, preferring text inside < >."""
         if not text:
             return False
 
@@ -678,7 +678,7 @@ class ScreenMonitor:
         return True
 
     def get_box_center(self, bbox) -> tuple[float, float]:
-        """Retorna o centro (x, y) do bounding box da detecção OCR."""
+        """Returns the (x, y) center of an OCR detection bounding box."""
         xs = [point[0] for point in bbox]
         ys = [point[1] for point in bbox]
         return (sum(xs) / 4.0, sum(ys) / 4.0)
@@ -688,7 +688,7 @@ class ScreenMonitor:
         characters: list[dict[str, float | str]],
         guilds: list[dict[str, float | str]]
     ) -> list[dict[str, float | str | None]]:
-        """Relaciona guild detectada acima do nome do personagem (quando existir)."""
+        """Pairs a detected guild above a character name when present."""
         combined = []
 
         for char_item in characters:
@@ -726,11 +726,11 @@ class ScreenMonitor:
         return combined
     
     async def detect_characters(self, image: Image.Image, window: WindowConfig) -> list[dict[str, float | str | None]]:
-        """Usa OCR para detectar nome do personagem e guild (opcional)."""
+        """Uses OCR to detect character name and optional guild."""
         try:
             ocr_image = self.preprocess_for_character_ocr(image)
             
-            # Detecta texto com EasyOCR usando allowlist para acelerar e reduzir ruído.
+            # Detect text with EasyOCR using allowlist to speed up and reduce noise.
             results = self.reader.readtext(
                 ocr_image,
                 allowlist=self.config.character_ocr_allowlist,
@@ -747,7 +747,7 @@ class ScreenMonitor:
                 text = detection[1]
                 confidence = detection[2]
                 
-                # Filtra por confiança
+                # Filter by confidence
                 if confidence >= self.config.char_detection_threshold:
                     candidate = text.strip()
 
@@ -780,11 +780,11 @@ class ScreenMonitor:
 
             return self.pair_guilds_with_characters(characters, guilds)
         except Exception as e:
-            print(f'[✗] Erro ao detectar personagens em {window.position}: {e}')
+            print(f'[ERROR] Character detection error in {window.position}: {e}')
             return []
     
     async def notify_character_found(self, char_name: str, map_name: str, guild_name: Optional[str] = None):
-        """Notifica quando um personagem é detectado"""
+        """Notifies when a character is detected."""
         should_log = True
         if self.detection_callback is not None:
             callback_result = self.detection_callback(char_name, map_name, guild_name)
@@ -797,17 +797,17 @@ class ScreenMonitor:
             return
 
         timestamp = datetime.now().strftime('%H:%M:%S')
-        print(f'[🎯] [{timestamp}] Personagem detectado!')
+        print(f'[INFO] [{timestamp}] Character detected!')
         if guild_name:
             print(f'    Guild: {guild_name}')
-        print(f'    Nome: {char_name}')
-        print(f'    Mapa: {map_name}\n')
+        print(f'    Name: {char_name}')
+        print(f'    Map: {map_name}\n')
         
-        # Aqui a notificação WhatsApp será enviada
-        # (será implementada em whatsapp_notifier.py)
+        # WhatsApp notification should be sent here.
+        # (to be implemented in whatsapp_notifier.py)
     
     async def stop_monitoring(self):
-        """Para o monitoramento"""
-        print('\n[⏹️] Parando monitoramento...')
+        """Stops monitoring."""
+        print('\n[INFO] Stopping monitoring...')
         self.is_running = False
-        print('[✓] Monitoramento encerrado')
+        print('[INFO] Monitoring stopped')

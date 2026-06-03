@@ -7,7 +7,7 @@ import tkinter as tk
 import tkinter.filedialog as filedialog
 from datetime import datetime
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import messagebox, simpledialog, ttk
 
 from action_controller import ActionController
 from area_selector import select_area_with_parent, select_points_with_parent
@@ -19,6 +19,29 @@ from screen_monitor import ScreenMonitor
 class MonitorUI:
     def __init__(self):
         self.root = tk.Tk()
+        self._colors = {
+            'bg': '#111418',
+            'panel': '#171b21',
+            'panel_alt': '#1d232b',
+            'border': '#2b3440',
+            'text': '#e7ecf3',
+            'muted': '#9aa7b7',
+            'accent': '#2f81f7',
+            'accent_hover': '#1f6fe0',
+            'danger': '#c2494b',
+            'danger_hover': '#a6383b',
+            'success': '#26a269',
+            'warning': '#e3b341',
+            'input_bg': '#0f1318',
+        }
+        self._font_ui = ('Segoe UI', 10)
+        self._font_title = ('Segoe UI Semibold', 17)
+        self._font_title_sm = ('Segoe UI Semibold', 13)
+
+        self._app_icon: tk.PhotoImage | None = None
+        self._load_app_icon()
+        self._apply_app_icon(self.root)
+        self._setup_theme()
         self.root.withdraw()  # hidden until license is confirmed
 
         if not self._check_license_startup():
@@ -30,7 +53,7 @@ class MonitorUI:
         self.root.minsize(520, 340)
 
         self.region: tuple[int, int, int, int] | None = None
-        self.escape_route: list[tuple[int, int]] = []
+        self.escape_route: list[dict[str, int | str]] = []
 
         self._event_queue: queue.Queue[tuple[str, object | None]] = queue.Queue()
         self._monitor_thread: threading.Thread | None = None
@@ -46,6 +69,101 @@ class MonitorUI:
         self.root.after(120, self._drain_events)
         self.root.protocol('WM_DELETE_WINDOW', self._on_close)
         self.root.deiconify()
+
+    def _setup_theme(self) -> None:
+        self.root.configure(bg=self._colors['bg'])
+        self.root.option_add('*Font', self._font_ui)
+
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use('clam')
+        except tk.TclError:
+            pass
+
+        style.configure(
+            'Dark.TCombobox',
+            fieldbackground=self._colors['input_bg'],
+            background=self._colors['panel_alt'],
+            foreground=self._colors['text'],
+            bordercolor=self._colors['border'],
+            lightcolor=self._colors['border'],
+            darkcolor=self._colors['border'],
+            arrowcolor=self._colors['muted'],
+            padding=(8, 5),
+        )
+        style.map(
+            'Dark.TCombobox',
+            fieldbackground=[('readonly', self._colors['input_bg'])],
+            selectbackground=[('readonly', self._colors['input_bg'])],
+            selectforeground=[('readonly', self._colors['text'])],
+            background=[('readonly', self._colors['panel_alt'])],
+            foreground=[('readonly', self._colors['text'])],
+            bordercolor=[('focus', self._colors['accent'])],
+            lightcolor=[('focus', self._colors['accent'])],
+            darkcolor=[('focus', self._colors['accent'])],
+            arrowcolor=[('active', self._colors['text']), ('readonly', self._colors['muted'])],
+        )
+
+    def _make_button(
+        self,
+        parent: tk.Misc,
+        text: str,
+        *,
+        width: int,
+        command,
+        accent: bool = False,
+        danger: bool = False,
+    ) -> tk.Button:
+        bg = self._colors['panel_alt']
+        hover_bg = '#2a313a'
+        fg = self._colors['text']
+
+        if accent:
+            bg = self._colors['accent']
+            hover_bg = self._colors['accent_hover']
+            fg = '#ffffff'
+        elif danger:
+            bg = self._colors['danger']
+            hover_bg = self._colors['danger_hover']
+            fg = '#ffffff'
+
+        button = tk.Button(
+            parent,
+            text=text,
+            width=width,
+            command=command,
+            relief=tk.FLAT,
+            bd=0,
+            cursor='hand2',
+            padx=8,
+            pady=6,
+            bg=bg,
+            fg=fg,
+            activebackground=hover_bg,
+            activeforeground='#ffffff',
+            highlightthickness=1,
+            highlightbackground=self._colors['border'],
+            highlightcolor=self._colors['accent'],
+        )
+        return button
+
+    def _load_app_icon(self) -> None:
+        icon_path = Path(__file__).resolve().parent.parent / 'icons' / 'watchtower.png'
+        if not icon_path.exists():
+            return
+        try:
+            self._app_icon = tk.PhotoImage(file=str(icon_path))
+        except Exception:
+            self._app_icon = None
+
+    def _apply_app_icon(self, window: tk.Misc) -> None:
+        if self._app_icon is None:
+            return
+        try:
+            window.iconphoto(True, self._app_icon)
+        except Exception:
+            # Keep default icon if this platform/window manager rejects iconphoto.
+            pass
 
     # ── License check ─────────────────────────────────────────────────────────
 
@@ -68,22 +186,34 @@ class MonitorUI:
         dlg.geometry('480x340')
         dlg.resizable(False, False)
         dlg.protocol('WM_DELETE_WINDOW', lambda: None)
+        self._apply_app_icon(dlg)
+        dlg.configure(bg=self._colors['bg'])
         dlg.lift()
         dlg.focus_force()
 
         tk.Label(
             dlg,
             text='Watchtower — Activation Required',
-            font=('Segoe UI', 13, 'bold'),
+            font=self._font_title_sm,
+            bg=self._colors['bg'],
+            fg=self._colors['text'],
         ).pack(pady=(18, 4))
 
         tk.Label(
             dlg,
             text='This software requires a valid license to run.',
-            font=('Segoe UI', 9),
+            font=('Segoe UI', 10),
+            bg=self._colors['bg'],
+            fg=self._colors['muted'],
         ).pack()
 
-        tk.Label(dlg, text='Your Machine ID:', font=('Segoe UI', 9, 'bold')).pack(pady=(14, 2))
+        tk.Label(
+            dlg,
+            text='Your Machine ID:',
+            font=('Segoe UI Semibold', 9),
+            bg=self._colors['bg'],
+            fg=self._colors['text'],
+        ).pack(pady=(14, 2))
 
         mid_var = tk.StringVar(value=machine_id)
         mid_entry = tk.Entry(
@@ -93,6 +223,13 @@ class MonitorUI:
             font=('Consolas', 12),
             justify='center',
             width=24,
+            bg=self._colors['input_bg'],
+            fg=self._colors['text'],
+            readonlybackground=self._colors['input_bg'],
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=self._colors['border'],
+            highlightcolor=self._colors['accent'],
         )
         mid_entry.pack()
 
@@ -102,21 +239,23 @@ class MonitorUI:
             btn_copy.configure(text='Copied!')
             dlg.after(1500, lambda: btn_copy.configure(text='Copy Machine ID'))
 
-        btn_copy = tk.Button(dlg, text='Copy Machine ID', command=_copy_id)
+        btn_copy = self._make_button(dlg, text='Copy Machine ID', width=20, command=_copy_id)
         btn_copy.pack(pady=(5, 0))
 
         tk.Label(
             dlg,
             text='Send this ID to the distributor to receive your license.dat',
             font=('Segoe UI', 8),
-            fg='gray',
+            fg=self._colors['muted'],
+            bg=self._colors['bg'],
         ).pack(pady=(3, 10))
 
         status_var = tk.StringVar(value=initial_message.split('\n\n')[0])
         tk.Label(
             dlg,
             textvariable=status_var,
-            fg='#c00000',
+            fg='#ff8080',
+            bg=self._colors['bg'],
             wraplength=440,
             font=('Segoe UI', 8),
             justify='center',
@@ -147,12 +286,20 @@ class MonitorUI:
         def _exit_app() -> None:
             dlg.destroy()
 
-        btn_row = tk.Frame(dlg)
+        btn_row = tk.Frame(dlg, bg=self._colors['bg'])
         btn_row.pack(pady=(0, 18))
-        tk.Button(btn_row, text='Browse for license.dat…', width=26, command=_browse_license).pack(
+        self._make_button(
+            btn_row,
+            text='Browse for license.dat…',
+            width=26,
+            command=_browse_license,
+            accent=True,
+        ).pack(
             side=tk.LEFT, padx=8
         )
-        tk.Button(btn_row, text='Exit', width=10, command=_exit_app).pack(side=tk.LEFT, padx=8)
+        self._make_button(btn_row, text='Exit', width=10, command=_exit_app, danger=True).pack(
+            side=tk.LEFT, padx=8
+        )
 
         self.root.wait_window(dlg)
         return result['activated']
@@ -160,30 +307,50 @@ class MonitorUI:
     # ── UI construction ───────────────────────────────────────────────────────
 
     def _build_ui(self):
-        container = tk.Frame(self.root, padx=12, pady=12)
+        container = tk.Frame(
+            self.root,
+            padx=14,
+            pady=14,
+            bg=self._colors['panel'],
+            highlightthickness=1,
+            highlightbackground=self._colors['border'],
+        )
         container.pack(fill=tk.BOTH, expand=True)
 
-        title = tk.Label(container, text='Watchtower', font=('Segoe UI', 15, 'bold'))
+        title = tk.Label(
+            container,
+            text='Watchtower',
+            font=self._font_title,
+            bg=self._colors['panel'],
+            fg=self._colors['text'],
+        )
         title.pack(anchor=tk.W)
 
-        mode_row = tk.Frame(container)
+        mode_row = tk.Frame(container, bg=self._colors['panel'])
         mode_row.pack(fill=tk.X, pady=(10, 4))
 
-        tk.Label(mode_row, text='Operation Mode:', anchor=tk.W).pack(side=tk.LEFT)
+        tk.Label(
+            mode_row,
+            text='Operation Mode:',
+            anchor=tk.W,
+            bg=self._colors['panel'],
+            fg=self._colors['muted'],
+        ).pack(side=tk.LEFT)
         self.cmb_mode = ttk.Combobox(
             mode_row,
             state='readonly',
             textvariable=self._mode_var,
             values=['SPOT TOWER', 'SAFE TOWER'],
             width=18,
+            style='Dark.TCombobox',
         )
         self.cmb_mode.pack(side=tk.LEFT, padx=(8, 0))
         self.cmb_mode.bind('<<ComboboxSelected>>', self._on_mode_changed)
 
-        controls = tk.Frame(container)
+        controls = tk.Frame(container, bg=self._colors['panel'])
         controls.pack(fill=tk.X, pady=(10, 8))
 
-        self.btn_select_area = tk.Button(
+        self.btn_select_area = self._make_button(
             controls,
             text='Select Area',
             width=16,
@@ -191,7 +358,7 @@ class MonitorUI:
         )
         self.btn_select_area.grid(row=0, column=0, padx=(0, 8), pady=4)
 
-        self.btn_select_route = tk.Button(
+        self.btn_select_route = self._make_button(
             controls,
             text='Create Escape Route',
             width=20,
@@ -199,40 +366,81 @@ class MonitorUI:
         )
         self.btn_select_route.grid(row=0, column=1, padx=(0, 8), pady=4)
 
-        self.btn_toggle_scan = tk.Button(
+        self.btn_toggle_scan = self._make_button(
             controls,
             text='Start Scanner',
             width=16,
             command=self._on_toggle_scanner,
+            accent=True,
         )
         self.btn_toggle_scan.grid(row=1, column=0, padx=(0, 8), pady=4)
 
-        self.btn_rearm = tk.Button(
+        self.btn_rearm = self._make_button(
             controls,
             text='Rearm Scanner',
             width=20,
-            state=tk.DISABLED,
             command=self._on_rearm,
         )
+        self.btn_rearm.configure(state=tk.DISABLED)
         self.btn_rearm.grid(row=1, column=1, padx=(0, 8), pady=4)
 
-        state_row = tk.Frame(container)
+        state_row = tk.Frame(container, bg=self._colors['panel'])
         state_row.pack(fill=tk.X, pady=(6, 6))
 
-        self.led = tk.Canvas(state_row, width=18, height=18, highlightthickness=0)
+        self.led = tk.Canvas(
+            state_row,
+            width=18,
+            height=18,
+            highlightthickness=0,
+            bg=self._colors['panel'],
+            bd=0,
+        )
         self.led.pack(side=tk.LEFT)
         self.led_circle = self.led.create_oval(2, 2, 16, 16, fill='#7a7a7a', outline='#1f1f1f')
 
-        self.lbl_state = tk.Label(state_row, text='State: Idle', font=('Segoe UI', 10, 'bold'))
+        self.lbl_state = tk.Label(
+            state_row,
+            text='State: Idle',
+            font=('Segoe UI Semibold', 10),
+            bg=self._colors['panel'],
+            fg=self._colors['text'],
+        )
         self.lbl_state.pack(side=tk.LEFT, padx=(8, 0))
 
-        self.lbl_region = tk.Label(container, text='Region: not selected', anchor=tk.W)
+        self.lbl_region = tk.Label(
+            container,
+            text='Region: not selected',
+            anchor=tk.W,
+            bg=self._colors['panel'],
+            fg=self._colors['muted'],
+        )
         self.lbl_region.pack(fill=tk.X)
 
-        self.lbl_route = tk.Label(container, text='Escape route: not selected', anchor=tk.W)
+        self.lbl_route = tk.Label(
+            container,
+            text='Escape route: not selected',
+            anchor=tk.W,
+            bg=self._colors['panel'],
+            fg=self._colors['muted'],
+        )
         self.lbl_route.pack(fill=tk.X, pady=(2, 8))
 
-        self.log = tk.Text(container, height=10, wrap=tk.WORD, state=tk.DISABLED)
+        self.log = tk.Text(
+            container,
+            height=10,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+            bg=self._colors['input_bg'],
+            fg=self._colors['text'],
+            insertbackground=self._colors['text'],
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=self._colors['border'],
+            highlightcolor=self._colors['accent'],
+            padx=10,
+            pady=8,
+        )
         self.log.pack(fill=tk.BOTH, expand=True)
 
         self._refresh_mode_ui()
@@ -284,11 +492,19 @@ class MonitorUI:
             self._log('Mode set to SAFE TOWER.')
         else:
             self.btn_select_route.configure(state=tk.NORMAL)
-            if len(self.escape_route) == 2:
-                self.lbl_route.configure(text=f'Escape route: {self.escape_route[0]} -> {self.escape_route[1]}')
-            else:
-                self.lbl_route.configure(text='Escape route: not selected')
+            self._update_route_label()
             self._log('Mode set to SPOT TOWER.')
+
+    def _update_route_label(self):
+        if not self.escape_route:
+            self.lbl_route.configure(text='Escape route: not selected')
+            return
+
+        click_count = sum(1 for item in self.escape_route if str(item.get('type', '')).lower() == 'click')
+        key_count = sum(1 for item in self.escape_route if str(item.get('type', '')).lower() == 'key')
+        self.lbl_route.configure(
+            text=f'Escape route: {len(self.escape_route)} step(s) ({click_count} click, {key_count} key)'
+        )
 
     def _on_mode_changed(self, _event=None):
         if self._monitor_thread and self._monitor_thread.is_alive():
@@ -325,18 +541,172 @@ class MonitorUI:
             messagebox.showwarning('Scanner active', 'Stop scanner before editing escape route.')
             return
 
-        points = select_points_with_parent(
-            self.root,
-            count=2,
-            help_text='Select 2 escape clicks | Enter confirm | Esc cancel',
-        )
-        if len(points) != 2:
-            self._log('Escape route selection cancelled.')
-            return
+        self._open_escape_route_editor()
 
-        self.escape_route = points
-        self.lbl_route.configure(text=f'Escape route: {points[0]} -> {points[1]}')
-        self._log('Escape route saved.')
+    def _open_escape_route_editor(self):
+        working_route = [dict(step) for step in self.escape_route]
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title('Escape Route Editor')
+        dlg.geometry('520x360')
+        dlg.resizable(False, False)
+        dlg.configure(bg=self._colors['bg'])
+        self._apply_app_icon(dlg)
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        tk.Label(
+            dlg,
+            text='Configure ordered escape actions (clicks and keys).',
+            font=('Segoe UI', 10),
+            anchor='w',
+            bg=self._colors['bg'],
+            fg=self._colors['text'],
+        ).pack(fill=tk.X, padx=12, pady=(12, 6))
+
+        list_frame = tk.Frame(dlg, bg=self._colors['bg'])
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=12)
+
+        steps_list = tk.Listbox(
+            list_frame,
+            height=10,
+            activestyle='dotbox',
+            bg=self._colors['input_bg'],
+            fg=self._colors['text'],
+            selectbackground=self._colors['accent'],
+            selectforeground='#ffffff',
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=self._colors['border'],
+            highlightcolor=self._colors['accent'],
+        )
+        steps_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        scrollbar = tk.Scrollbar(
+            list_frame,
+            orient=tk.VERTICAL,
+            command=steps_list.yview,
+            bg=self._colors['panel_alt'],
+            troughcolor=self._colors['input_bg'],
+            activebackground=self._colors['accent'],
+        )
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        steps_list.configure(yscrollcommand=scrollbar.set)
+
+        def _describe_step(index: int, step: dict[str, int | str]) -> str:
+            step_type = str(step.get('type', '')).lower()
+            if step_type == 'click':
+                x = int(step.get('x', 0))
+                y = int(step.get('y', 0))
+                return f'{index}. Click at ({x}, {y})'
+            if step_type == 'key':
+                key = str(step.get('key', '')).strip() or '<empty>'
+                return f'{index}. Press key: {key}'
+            return f'{index}. Unknown step'
+
+        def _refresh_list():
+            steps_list.delete(0, tk.END)
+            for idx, step in enumerate(working_route, start=1):
+                steps_list.insert(tk.END, _describe_step(idx, step))
+
+        def _selected_index() -> int | None:
+            selected = steps_list.curselection()
+            if not selected:
+                return None
+            return int(selected[0])
+
+        def _add_click_step() -> None:
+            points = select_points_with_parent(
+                dlg,
+                count=1,
+                help_text='Select click point | Enter confirm | Esc cancel',
+            )
+            if len(points) != 1:
+                return
+            x, y = points[0]
+            working_route.append({'type': 'click', 'x': int(x), 'y': int(y)})
+            _refresh_list()
+            steps_list.selection_clear(0, tk.END)
+            steps_list.selection_set(tk.END)
+
+        def _add_key_step() -> None:
+            key_name = simpledialog.askstring(
+                'Add key press',
+                'Enter key name for pyautogui.press (examples: f1, esc, 1, enter):',
+                parent=dlg,
+            )
+            if key_name is None:
+                return
+            key_name = key_name.strip()
+            if not key_name:
+                messagebox.showwarning('Invalid key', 'Key name cannot be empty.', parent=dlg)
+                return
+            working_route.append({'type': 'key', 'key': key_name})
+            _refresh_list()
+            steps_list.selection_clear(0, tk.END)
+            steps_list.selection_set(tk.END)
+
+        def _remove_selected() -> None:
+            idx = _selected_index()
+            if idx is None:
+                return
+            del working_route[idx]
+            _refresh_list()
+
+        def _move_selected(delta: int) -> None:
+            idx = _selected_index()
+            if idx is None:
+                return
+            new_idx = idx + delta
+            if new_idx < 0 or new_idx >= len(working_route):
+                return
+            working_route[idx], working_route[new_idx] = working_route[new_idx], working_route[idx]
+            _refresh_list()
+            steps_list.selection_set(new_idx)
+
+        def _clear_all() -> None:
+            if not working_route:
+                return
+            if not messagebox.askyesno('Clear route', 'Remove all escape steps?', parent=dlg):
+                return
+            working_route.clear()
+            _refresh_list()
+
+        def _save() -> None:
+            self.escape_route = working_route
+            self._update_route_label()
+            self._log(f'Escape route saved with {len(self.escape_route)} step(s).')
+            dlg.destroy()
+
+        buttons = tk.Frame(dlg, bg=self._colors['bg'])
+        buttons.pack(fill=tk.X, padx=12, pady=(8, 0))
+
+        self._make_button(buttons, text='Add Click', width=12, command=_add_click_step).pack(
+            side=tk.LEFT, padx=(0, 6)
+        )
+        self._make_button(buttons, text='Add Key', width=12, command=_add_key_step).pack(
+            side=tk.LEFT, padx=(0, 6)
+        )
+        self._make_button(buttons, text='Remove', width=12, command=_remove_selected).pack(
+            side=tk.LEFT, padx=(0, 6)
+        )
+        self._make_button(buttons, text='Move Up', width=12, command=lambda: _move_selected(-1)).pack(
+            side=tk.LEFT, padx=(0, 6)
+        )
+        self._make_button(buttons, text='Move Down', width=12, command=lambda: _move_selected(1)).pack(
+            side=tk.LEFT
+        )
+
+        footer = tk.Frame(dlg, bg=self._colors['bg'])
+        footer.pack(fill=tk.X, padx=12, pady=(10, 12))
+        self._make_button(footer, text='Clear', width=10, command=_clear_all).pack(side=tk.LEFT)
+        self._make_button(footer, text='Cancel', width=10, command=dlg.destroy, danger=True).pack(
+            side=tk.RIGHT, padx=(6, 0)
+        )
+        self._make_button(footer, text='Save', width=10, command=_save, accent=True).pack(side=tk.RIGHT)
+
+        _refresh_list()
+        self.root.wait_window(dlg)
 
     def _on_toggle_scanner(self):
         if self._monitor_thread and self._monitor_thread.is_alive():
@@ -357,7 +727,7 @@ class MonitorUI:
         if self.region is None:
             messagebox.showwarning('Missing area', 'Select area before starting scanner.')
             return
-        if self._selected_mode() == 'spot-tower' and len(self.escape_route) != 2:
+        if self._selected_mode() == 'spot-tower' and not self.escape_route:
             messagebox.showwarning('Missing route', 'Create escape route before starting scanner.')
             return
 
@@ -393,16 +763,20 @@ class MonitorUI:
         try:
             assert self.region is not None
             if mode == 'spot-tower':
+                marker_template = Path(__file__).resolve().parent.parent / 'teste.png'
                 monitor = BlueBallMonitor(
                     self.region,
-                    interval_ms=160,
+                    interval_ms=65,
                     confirm_frames=2,
-                    min_movement_px=12.0,
-                    min_confidence=0.45,
-                    debug=False,
+                    min_movement_px=0.0,
+                    min_confidence=0.50,
+                    template_path=str(marker_template),
+                    template_match_threshold=0.50,
+                    startup_ignore_frames=12,
+                    debug=True,
                 )
                 self._blue_monitor = monitor
-                action_controller = ActionController(click_points=self.escape_route, cooldown_seconds=2.0)
+                action_controller = ActionController(actions=self.escape_route, cooldown_seconds=2.0)
 
                 async def on_detection(detection):
                     nonlocal triggered
@@ -461,7 +835,7 @@ class MonitorUI:
             if event == 'detected':
                 self._detected_waiting_rearm = True
                 self._set_state_detected()
-                self._log('Detected blue ball. Escape route executed. Waiting for rearm.')
+                self._log('Blue ball detected. Escape route executed. Waiting for rearm.')
             elif event == 'tower_detected':
                 info = payload if isinstance(payload, dict) else {}
                 char_name = info.get('char_name', 'Unknown')

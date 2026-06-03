@@ -24,18 +24,29 @@ DetectionCallback = Callable[[BlueBallDetection], Awaitable[None] | None]
 
 
 class BlueBallMonitor:
-    """Minimal blue-ball detector for a user-selected screen region."""
+    """Manual blue-blob detector: color + shape + local contrast."""
 
     def __init__(
         self,
         region: tuple[int, int, int, int],
         *,
         interval_ms: int = 180,
-        confirm_frames: int = 2,
-        min_movement_px: float = 12.0,
-        min_confidence: float = 0.55,
+        confirm_frames: int = 1,
+        min_movement_px: float = 0.0,
+        min_confidence: float = 0.60,
         blue_lower: tuple[int, int, int] = (92, 70, 70),
         blue_upper: tuple[int, int, int] = (135, 255, 255),
+        target_blue_hex: str = '#5C95BE',
+        target_hue_tolerance: int = 10,
+        target_sat_tolerance: int = 72,
+        target_val_tolerance: int = 78,
+        target_color_distance_max: float = 34.0,
+        target_color_ratio_min: float = 0.16,
+        target_blob_min_area_px: int = 4,
+        target_blob_max_area_px: int = 220,
+        template_path: str | None = None,
+        template_match_threshold: float = 0.56,
+        startup_ignore_frames: int = 10,
         debug: bool = False,
     ):
         x1, y1, x2, y2 = region
@@ -49,20 +60,61 @@ class BlueBallMonitor:
         self.min_confidence = float(min_confidence)
         self.blue_lower = np.array(blue_lower, dtype=np.uint8)
         self.blue_upper = np.array(blue_upper, dtype=np.uint8)
+        self.target_hsv = self._hex_to_hsv(target_blue_hex)
+
+        # Keep existing constructor inputs for compatibility.
+        self.target_blue_hex = target_blue_hex
+        self.target_hue_tolerance = int(target_hue_tolerance)
+        self.target_sat_tolerance = int(target_sat_tolerance)
+        self.target_val_tolerance = int(target_val_tolerance)
+        self.target_color_distance_max = float(target_color_distance_max)
+        self.target_color_ratio_min = float(target_color_ratio_min)
+        self.target_blob_min_area_px = int(target_blob_min_area_px)
+        self.target_blob_max_area_px = int(target_blob_max_area_px)
+
+        self.template_match_threshold = max(0.1, min(1.0, float(template_match_threshold)))
+        self.startup_ignore_frames = max(0, int(startup_ignore_frames))
         self.debug = debug
 
         self.detection_callback: Optional[DetectionCallback] = None
         self._running = False
-        self._streak = 0
         self._active = False
-        self._last_candidate: BlueBallDetection | None = None
-        self._movement_total = 0.0
-        self._missed_frames = 0
-        self._rearm_missing_frames = 2
+        self._frame_index = 0
+        self._confirm_streak = 0
+        self._last_bbox: tuple[int, int, int, int] | None = None
+        self._stable_iou_min = 0.25
+
+        # Keep template-related inputs for API compatibility, but manual mode ignores template matching.
+        self._template_path = template_path
+
+    def _reset_runtime_state(self) -> None:
+        self._running = False
+        self._active = False
+        self._frame_index = 0
+        self._confirm_streak = 0
+        self._last_bbox = None
+
+    @staticmethod
+    def _hex_to_hsv(hex_color: str) -> tuple[int, int, int]:
+        color = hex_color.strip().lstrip('#')
+        if len(color) != 6:
+            return (108, 133, 190)
+        try:
+            r = int(color[0:2], 16)
+            g = int(color[2:4], 16)
+            b = int(color[4:6], 16)
+        except ValueError:
+            return (108, 133, 190)
+
+        rgb = np.array([[[r, g, b]]], dtype=np.uint8)
+        hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)[0, 0]
+        return int(hsv[0]), int(hsv[1]), int(hsv[2])
+
 
     async def start(self):
+        self._reset_runtime_state()
         self._running = True
-        print('[📺] Watching selected region for a blue ball...')
+        print('[INFO] Spot detector polling started')
 
         with mss.MSS() as sct:
             while self._running:
@@ -78,203 +130,243 @@ class BlueBallMonitor:
                     if remaining > 0:
                         await asyncio.sleep(remaining)
                 except Exception as exc:
-                    print(f'[✗] Detection error: {exc}')
+                    print(f'[ERROR] Detection error: {exc}')
                     await asyncio.sleep(0.2)
 
     async def stop(self):
         self._running = False
+        self._active = False
+        self._confirm_streak = 0
+        self._last_bbox = None
 
     def _capture(self, sct: mss.MSS) -> Image.Image:
         x1, y1, x2, y2 = self.region
-        screenshot = sct.grab({
-            'left': x1,
-            'top': y1,
-            'width': x2 - x1,
-            'height': y2 - y1,
-        })
+        screenshot = sct.grab(
+            {
+                'left': x1,
+                'top': y1,
+                'width': x2 - x1,
+                'height': y2 - y1,
+            }
+        )
         return Image.frombytes('RGB', screenshot.size, screenshot.rgb)
 
     def detect(self, image: Image.Image) -> BlueBallDetection:
-        img = np.array(image)
-        hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
+        self._frame_index += 1
+        rgb = np.array(image)
+        hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
 
-        mask = cv2.inRange(hsv, self.blue_lower, self.blue_upper)
+        match = self._find_blue_blob_match(rgb, hsv)
+        if match is None:
+            if self.debug:
+                print(f'[DEBUG] frame={self._frame_index} found=False reason=no_candidate')
+            blue_mask = cv2.inRange(hsv, self.blue_lower, self.blue_upper)
+            blue_pixels = int(cv2.countNonZero(blue_mask))
+            return BlueBallDetection(False, 0.0, None, None, None, None, blue_pixels)
 
-        mask = cv2.GaussianBlur(mask, (3, 3), 0)
-        kernel = np.ones((2, 2), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+        score, x, y, w, h, blue_pixels, metrics = match
+        quality = bool(metrics.get('quality', 0.0) >= 0.5)
+        found = ((score + 1e-6) >= self.template_match_threshold) and quality
+
+        if self.debug:
+            print(
+                f'[DEBUG] frame={self._frame_index} score={score:.3f} '
+                f'threshold={self.template_match_threshold:.3f} found={found} '
+                f'bbox=({x},{y},{w},{h}) '
+                f'blue_ratio={metrics.get("blue_ratio", 0.0):.3f} '
+                f'circularity={metrics.get("circularity", 0.0):.3f} '
+                f'area={metrics.get("area", 0.0):.1f} '
+                f'contrast={metrics.get("contrast", 0.0):.3f} '
+                f'ring_blue={metrics.get("ring_blue", 0.0):.3f} '
+                f'sat={metrics.get("sat", 0.0):.3f} '
+                f'val={metrics.get("val", 0.0):.3f} '
+                f'quality={int(quality)} '
+                f'blue_pixels={blue_pixels}'
+            )
+
+        center_x = x + (w / 2.0)
+        center_y = y + (h / 2.0)
+
+        return BlueBallDetection(
+            found=found,
+            confidence=score,
+            center_x=float(center_x),
+            center_y=float(center_y),
+            radius=float(max(w, h) / 2.0),
+            bbox=(x, y, w, h),
+            blue_pixels=blue_pixels,
+        )
+
+    def _find_blue_blob_match(
+        self, rgb: np.ndarray, hsv: np.ndarray
+    ) -> tuple[float, int, int, int, int, int, dict[str, float]] | None:
+        generic_mask = cv2.inRange(hsv, self.blue_lower, self.blue_upper)
+
+        h0, s0, v0 = self.target_hsv
+        lower = np.array(
+            [
+                max(0, h0 - self.target_hue_tolerance),
+                max(0, s0 - self.target_sat_tolerance),
+                max(0, v0 - self.target_val_tolerance),
+            ],
+            dtype=np.uint8,
+        )
+        upper = np.array(
+            [
+                min(179, h0 + self.target_hue_tolerance),
+                min(255, s0 + self.target_sat_tolerance),
+                min(255, v0 + self.target_val_tolerance),
+            ],
+            dtype=np.uint8,
+        )
+        target_mask = cv2.inRange(hsv, lower, upper)
+        mask = cv2.bitwise_and(generic_mask, target_mask)
+
+        kernel = np.ones((3, 3), dtype=np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
         blue_pixels = int(cv2.countNonZero(mask))
-        height, width = mask.shape[:2]
-        roi_area = max(1, width * height)
-        min_side = max(1, min(width, height))
-
-        # Scale with the selected region so 2K screens and smaller captures use the same logic.
-        min_area = max(int(roi_area * 0.00018), 10)
-        max_area = max(int(roi_area * 0.0080), min_area * 6)
-        min_radius = max(2, int(min_side * 0.010))
-        max_radius = max(min_radius + 1, int(min_side * 0.055))
-
-        best = BlueBallDetection(False, 0.0, None, None, None, None, blue_pixels)
-        best_score = -1.0
-
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return None
+
+        min_area = max(28, self.target_blob_min_area_px)
+        max_area = max(min_area + 1, min(520, self.target_blob_max_area_px))
+
+        best_score = -1.0
+        best_box: tuple[int, int, int, int] | None = None
+        best_metrics: dict[str, float] | None = None
+
         for contour in contours:
-            candidate = self._score_contour(contour, min_area, max_area)
-            if candidate is None:
+            area = float(cv2.contourArea(contour))
+            if area < min_area or area > max_area:
                 continue
-            score, cx, cy, radius, bbox = candidate
-            if radius is not None and (radius < min_radius or radius > max_radius):
+
+            perimeter = float(cv2.arcLength(contour, True))
+            if perimeter <= 0:
                 continue
+
+            x, y, w, h = cv2.boundingRect(contour)
+            if w <= 0 or h <= 0:
+                continue
+            if w < 7 or h < 7:
+                continue
+            if w > 36 or h > 36:
+                continue
+
+            circularity = float((4.0 * np.pi * area) / (perimeter * perimeter))
+            aspect = min(w, h) / max(w, h)
+
+            roi_mask = mask[y : y + h, x : x + w]
+            bbox_area = float(max(1, w * h))
+            blue_ratio = float(cv2.countNonZero(roi_mask) / bbox_area)
+
+            pad = max(2, int(round(max(w, h) * 0.7)))
+            x0 = max(0, x - pad)
+            y0 = max(0, y - pad)
+            x1 = min(mask.shape[1], x + w + pad)
+            y1 = min(mask.shape[0], y + h + pad)
+            expanded = mask[y0:y1, x0:x1]
+            ring = np.ones_like(expanded, dtype=np.uint8) * 255
+            inner_x0 = x - x0
+            inner_y0 = y - y0
+            inner_x1 = inner_x0 + w
+            inner_y1 = inner_y0 + h
+            ring[inner_y0:inner_y1, inner_x0:inner_x1] = 0
+            ring_pixels = float(max(1, cv2.countNonZero(ring)))
+            ring_blue = float(cv2.countNonZero(cv2.bitwise_and(expanded, expanded, mask=ring)) / ring_pixels)
+            contrast = max(0.0, blue_ratio - ring_blue)
+
+            contour_mask = np.zeros(mask.shape, dtype=np.uint8)
+            cv2.drawContours(contour_mask, [contour], -1, 255, thickness=-1)
+            sat_mean = float(cv2.mean(hsv[:, :, 1], mask=contour_mask)[0] / 255.0)
+            val_mean = float(cv2.mean(hsv[:, :, 2], mask=contour_mask)[0] / 255.0)
+
+            score = (
+                (max(0.0, min(1.0, circularity)) * 0.30)
+                + (max(0.0, min(1.0, blue_ratio / 0.55)) * 0.22)
+                + (max(0.0, min(1.0, contrast / 0.18)) * 0.20)
+                + (max(0.0, min(1.0, sat_mean / 0.55)) * 0.13)
+                + (max(0.0, min(1.0, val_mean / 0.60)) * 0.08)
+                + (max(0.0, min(1.0, aspect)) * 0.07)
+            )
+
+            quality = (
+                circularity >= 0.42
+                and aspect >= 0.62
+                and blue_ratio >= self.target_color_ratio_min
+                and contrast >= 0.06
+                and ring_blue <= 0.18
+                and sat_mean >= 0.30
+            )
+
+            if not quality:
+                continue
+
             if score > best_score:
                 best_score = score
-                best = BlueBallDetection(True, score, cx, cy, radius, bbox, blue_pixels)
+                best_box = (x, y, w, h)
+                best_metrics = {
+                    'blue_ratio': blue_ratio,
+                    'circularity': circularity,
+                    'contrast': contrast,
+                    'ring_blue': ring_blue,
+                    'sat': sat_mean,
+                    'val': val_mean,
+                    'area': area,
+                    'quality': 1.0 if quality else 0.0,
+                }
 
-        hough_candidate = self._score_hough_circle(mask, min_area, max_area, min_radius, max_radius)
-        if hough_candidate is not None and hough_candidate.confidence > best.confidence:
-            best = hough_candidate
-
-        if self.debug and best.found:
-            print(
-                f"[dbg] blue_pixels={best.blue_pixels} conf={best.confidence:.2f} "
-                f"center=({best.center_x:.1f},{best.center_y:.1f}) radius={best.radius:.1f} bbox={best.bbox}"
-            )
-
-        return best
-
-    def _score_contour(
-        self,
-        contour: np.ndarray,
-        min_area: int,
-        max_area: int,
-    ) -> tuple[float, float, float, float, tuple[int, int, int, int]] | None:
-        area = float(cv2.contourArea(contour))
-        if not (min_area <= area <= max_area):
+        if best_box is None or best_metrics is None:
             return None
 
-        perimeter = float(cv2.arcLength(contour, True))
-        if perimeter <= 0:
-            return None
-
-        x, y, w, h = cv2.boundingRect(contour)
-        if w <= 0 or h <= 0:
-            return None
-
-        aspect_ratio = max(w, h) / max(1, min(w, h))
-        fill_ratio = area / max(1.0, float(w * h))
-        circularity = (4.0 * np.pi * area) / (perimeter * perimeter)
-
-        if aspect_ratio > 2.8 or fill_ratio < 0.18 or circularity < 0.22:
-            return None
-
-        cx = x + (w / 2.0)
-        cy = y + (h / 2.0)
-        radius = max(w, h) / 2.0
-
-        # Stronger weight on circularity and fill because the marker is a filled blue ball.
-        size_score = min(1.0, area / max(1.0, float(min_area) * 4.0)) * 0.15
-        shape_score = min(1.0, circularity / 0.45) * 0.55
-        fill_score = min(1.0, fill_ratio / 0.70) * 0.30
-        confidence = min(1.0, size_score + shape_score + fill_score)
-        return confidence, cx, cy, radius, (x, y, w, h)
-
-    def _score_hough_circle(
-        self,
-        mask: np.ndarray,
-        min_area: int,
-        max_area: int,
-        min_radius: int,
-        max_radius: int,
-    ) -> BlueBallDetection | None:
-        circles = cv2.HoughCircles(
-            mask,
-            cv2.HOUGH_GRADIENT,
-            dp=1.2,
-            minDist=max(4, min_radius * 2),
-            param1=45,
-            param2=10,
-            minRadius=min_radius,
-            maxRadius=max_radius,
+        return (
+            float(max(0.0, min(1.0, best_score))),
+            best_box[0],
+            best_box[1],
+            best_box[2],
+            best_box[3],
+            blue_pixels,
+            best_metrics,
         )
-        if circles is None:
-            return None
-
-        best: BlueBallDetection | None = None
-        best_score = -1.0
-        h, w = mask.shape[:2]
-
-        for raw in circles[0]:
-            cx, cy, radius = float(raw[0]), float(raw[1]), float(raw[2])
-            if radius <= 0:
-                continue
-
-            area = np.pi * (radius ** 2)
-            if not (min_area <= area <= max_area):
-                continue
-
-            x1 = max(0, int(cx - radius))
-            y1 = max(0, int(cy - radius))
-            x2 = min(w, int(cx + radius))
-            y2 = min(h, int(cy + radius))
-            if x2 <= x1 or y2 <= y1:
-                continue
-
-            circle_mask = np.zeros_like(mask)
-            cv2.circle(circle_mask, (int(cx), int(cy)), int(radius), 255, thickness=-1)
-            inside_pixels = int(cv2.countNonZero(cv2.bitwise_and(mask, circle_mask)))
-            circle_pixels = int(cv2.countNonZero(circle_mask))
-            if circle_pixels <= 0:
-                continue
-
-            fill_ratio = inside_pixels / float(circle_pixels)
-            confidence = min(1.0, (fill_ratio * 0.8) + min(0.2, radius / max(1.0, float(max_radius))) * 0.2)
-            if confidence > best_score:
-                best_score = confidence
-                best = BlueBallDetection(True, confidence, cx, cy, radius, (x1, y1, x2 - x1, y2 - y1), inside_pixels)
-
-        return best
 
     def _should_trigger(self, detection: BlueBallDetection) -> bool:
+        if self._frame_index <= self.startup_ignore_frames:
+            if self.debug:
+                print(
+                    f'[DEBUG] startup_guard: frame={self._frame_index}/{self.startup_ignore_frames} '
+                    f'conf={detection.confidence:.3f}'
+                )
+            self._active = False
+            self._confirm_streak = 0
+            self._last_bbox = None
+            return False
+
         if not detection.found or detection.confidence < self.min_confidence:
-            self._missed_frames += 1
-            if self._missed_frames >= self._rearm_missing_frames:
-                self._streak = 0
-                self._active = False
-                self._last_candidate = None
-                self._movement_total = 0.0
-            self._streak = 0
+            self._active = False
+            self._confirm_streak = 0
+            self._last_bbox = None
             return False
 
-        self._missed_frames = 0
-
-        if self._last_candidate is not None:
-            assert self._last_candidate.radius is not None
-            assert detection.radius is not None
-            center_delta = self._distance(
-                self._last_candidate.center_x or 0.0,
-                self._last_candidate.center_y or 0.0,
-                detection.center_x or 0.0,
-                detection.center_y or 0.0,
-            )
-            radius_scale = max(self._last_candidate.radius, detection.radius)
-            if center_delta > max(10.0, radius_scale * 1.10):
-                self._streak = 1
-                self._last_candidate = detection
-                self._movement_total = 0.0
-                return False
-
-            self._movement_total += center_delta
+        if detection.bbox is not None:
+            if self._last_bbox is None:
+                self._confirm_streak = 1
+            else:
+                if self._bbox_iou(self._last_bbox, detection.bbox) >= self._stable_iou_min:
+                    self._confirm_streak += 1
+                else:
+                    self._confirm_streak = 1
+            self._last_bbox = detection.bbox
         else:
-            self._movement_total = 0.0
+            self._confirm_streak += 1
 
-        self._streak += 1
-        self._last_candidate = detection
-
-        if self._streak < self.confirm_frames:
-            return False
-
-        if self._movement_total < self.min_movement_px:
+        if self._confirm_streak < self.confirm_frames:
+            if self.debug:
+                print(
+                    f'[DEBUG] confirm_streak={self._confirm_streak}/{self.confirm_frames} '
+                    f'conf={detection.confidence:.3f}'
+                )
             return False
 
         if self._active:
@@ -283,10 +375,32 @@ class BlueBallMonitor:
         self._active = True
         return True
 
+    @staticmethod
+    def _bbox_iou(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> float:
+        ax, ay, aw, ah = a
+        bx, by, bw, bh = b
+
+        ax2, ay2 = ax + aw, ay + ah
+        bx2, by2 = bx + bw, by + bh
+
+        ix1, iy1 = max(ax, bx), max(ay, by)
+        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+
+        iw = max(0, ix2 - ix1)
+        ih = max(0, iy2 - iy1)
+        inter = float(iw * ih)
+        if inter <= 0:
+            return 0.0
+
+        union = float((aw * ah) + (bw * bh) - inter)
+        if union <= 0:
+            return 0.0
+        return inter / union
+
     async def _emit_detection(self, detection: BlueBallDetection):
         print(
-            f"[🎯] Blue ball detected: conf={detection.confidence:.2f} "
-            f"center=({detection.center_x:.1f},{detection.center_y:.1f}) radius={detection.radius:.1f}"
+            f'[INFO] Marker detected: conf={detection.confidence:.3f} '
+            f'center=({detection.center_x:.1f},{detection.center_y:.1f}) bbox={detection.bbox}'
         )
 
         if self.detection_callback is None:
@@ -295,7 +409,3 @@ class BlueBallMonitor:
         result = self.detection_callback(detection)
         if asyncio.iscoroutine(result):
             await result
-
-    @staticmethod
-    def _distance(x1: float, y1: float, x2: float, y2: float) -> float:
-        return ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5

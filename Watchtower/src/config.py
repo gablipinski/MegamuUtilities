@@ -7,68 +7,68 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / 'configs' / 'conf
 
 @dataclass
 class WindowConfig:
-    """Configuração de uma janela de jogo"""
+    """Configuration for one game window."""
     position: str  # "top-left", "top-right", "bottom-left", "bottom-right"
     x: int
     y: int
     width: int
     height: int
-    map_name: str  # Nome do mapa neste quadrante
+    map_name: str  # Map name for this quadrant
 
 @dataclass
 class NotificationConfig:
-    """Configuração de notificações"""
+    """Notification configuration."""
     enabled: bool
     whatsapp_group_id: Optional[str]
     whatsapp_token: Optional[str]
-    notification_message: str  # Template com {char_name} e {map}
+    notification_message: str  # Template with {char_name} and {map}
 
 @dataclass
 class MonitorConfig:
-    """Configuração completa do monitor"""
+    """Full monitor configuration."""
     windows: list[WindowConfig]
     notification: NotificationConfig
-    ocr_language: str  # Idioma para OCR
-    capture_interval_ms: int  # Intervalo de captura
-    char_detection_threshold: float  # Confiança mínima para OCR
-    scan_region: dict[str, float]  # Região relativa para OCR (evita chat/UI)
-    track_match_distance_px: int  # Distância máxima para considerar a mesma entidade
-    track_expiry_ms: int  # Tempo sem ver a entidade para descartá-la
-    min_observations_to_notify: int  # Quantas leituras antes de alertar
-    movement_retrigger_px: int  # Deslocamento mínimo para re-alertar personagem parado
-    character_color_filter_enabled: bool  # Usa filtro HSV para isolar nomes amarelos
-    character_hsv_lower: tuple[int, int, int]  # Limite inferior HSV do nome
-    character_hsv_upper: tuple[int, int, int]  # Limite superior HSV do nome
-    character_ocr_allowlist: str  # Caracteres permitidos para OCR de nome
-    self_name_similarity_threshold: float  # Similaridade minima para considerar leitura como nome proprio
-    external_name_similarity_threshold: float  # Similaridade para agrupar variacoes OCR do mesmo alvo externo
-    external_detection_streak: int  # Quantas leituras seguidas para confirmar alvo externo
-    external_candidate_ttl_ms: int  # Janela maxima entre leituras para manter streak
-    live_use_minimap_detection: bool  # Usa detecção por bolinhas azuis do minimapa no modo live
-    minimap_blue_hsv_lower: tuple[int, int, int]  # Limite inferior HSV para azul do minimapa
-    minimap_blue_hsv_upper: tuple[int, int, int]  # Limite superior HSV para azul do minimapa
-    minimap_min_blob_area_px: int  # Area minima do blob azul para considerar marcador
-    minimap_max_blob_area_px: int  # Area maxima do blob azul para considerar marcador
-    minimap_min_markers_to_trigger: int  # Quantidade minima de marcadores azuis para alertar
-    minimap_confirm_frames: int  # Quantos frames consecutivos para confirmar presença
-    minimap_inner_margin_pct: float  # Margem interna para ignorar bordas do minimapa
-    minimap_ignore_edge_touching: bool  # Ignora blobs que tocam a borda da area analisada
-    minimap_center_zone_pct: float  # Zona central minima para aceitar o marcador do jogador
-    minimap_min_confidence: float  # Confiança minima para aceitar o marcador do jogador
-    minimap_center_tolerance_px: int  # Quanto o centro pode variar entre frames consecutivos
+    ocr_language: str  # OCR language
+    capture_interval_ms: int  # Capture interval
+    char_detection_threshold: float  # Minimum OCR confidence
+    scan_region: dict[str, float]  # Relative OCR region (avoids chat/UI)
+    track_match_distance_px: int  # Max distance to treat as the same entity
+    track_expiry_ms: int  # Time without sighting before discarding an entity
+    min_observations_to_notify: int  # Number of reads before alerting
+    movement_retrigger_px: int  # Minimum movement to re-alert a stationary character
+    character_color_filter_enabled: bool  # Use HSV filter to isolate yellow names
+    character_hsv_lower: tuple[int, int, int]  # Lower HSV bound for names
+    character_hsv_upper: tuple[int, int, int]  # Upper HSV bound for names
+    character_ocr_allowlist: str  # Allowed characters for name OCR
+    self_name_similarity_threshold: float  # Similarity threshold to treat a read as own name
+    external_name_similarity_threshold: float  # Similarity threshold to group OCR variants of the same external target
+    external_detection_streak: int  # Consecutive reads required to confirm external target
+    external_candidate_ttl_ms: int  # Maximum window between reads to keep streak
+    live_use_minimap_detection: bool  # Use minimap blue marker detection in live mode
+    minimap_blue_hsv_lower: tuple[int, int, int]  # Lower HSV bound for minimap blue
+    minimap_blue_hsv_upper: tuple[int, int, int]  # Upper HSV bound for minimap blue
+    minimap_min_blob_area_px: int  # Minimum blue blob area to count as marker
+    minimap_max_blob_area_px: int  # Maximum blue blob area to count as marker
+    minimap_min_markers_to_trigger: int  # Minimum blue marker count to alert
+    minimap_confirm_frames: int  # Consecutive frames required to confirm presence
+    minimap_inner_margin_pct: float  # Inner margin to ignore minimap edges
+    minimap_ignore_edge_touching: bool  # Ignore blobs touching the analyzed region edge
+    minimap_center_zone_pct: float  # Minimum center zone to accept the player marker
+    minimap_min_confidence: float  # Minimum confidence to accept the player marker
+    minimap_center_tolerance_px: int  # Allowed center movement across consecutive frames
 
 def load_config(config_file: Optional[str] = None) -> MonitorConfig:
-    """Carrega configurações do arquivo JSON"""
+    """Loads configuration from a JSON file."""
     
     config_path = Path(config_file) if config_file else DEFAULT_CONFIG_PATH
     
     if not config_path.exists():
-        raise FileNotFoundError(f"Arquivo de configuração '{config_path}' não encontrado")
+        raise FileNotFoundError(f"Configuration file '{config_path}' was not found")
     
     with open(config_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
     
-    # Parse das janelas
+    # Parse windows
     windows = []
     for win in data.get('windows', []):
         window = WindowConfig(
@@ -81,12 +81,12 @@ def load_config(config_file: Optional[str] = None) -> MonitorConfig:
         )
         windows.append(window)
     
-    # Parse de notificações
+    # Parse notifications
     notification = NotificationConfig(
         enabled=data.get('notification', {}).get('enabled', False),
         whatsapp_group_id=data.get('notification', {}).get('whatsapp_group_id'),
         whatsapp_token=data.get('notification', {}).get('whatsapp_token'),
-        notification_message=data.get('notification', {}).get('message', 'Alguém apareceu em {map}: {char_name}')
+        notification_message=data.get('notification', {}).get('message', 'Someone appeared in {map}: {char_name}')
     )
     
     return MonitorConfig(

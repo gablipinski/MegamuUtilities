@@ -160,7 +160,7 @@ class ScreenPointOverlay:
 
     def on_confirm(self, _event):
         if len(self.points) != self.count:
-            print(f"[!] Selecione exatamente {self.count} ponto(s) antes de confirmar.")
+            print(f"[WARN] Select exactly {self.count} point(s) before confirming.")
             return
 
         self.selected = [
@@ -216,13 +216,13 @@ def select_points_with_parent(parent: tk.Misc, count: int = 2, help_text: Option
 
 
 def build_windows_interactively() -> list[WindowConfig]:
-    """Wizard interativo: usuário seleciona região e informa o mapa de cada janela."""
+    """Interactive wizard: user selects regions and enters each window map name."""
     windows: list[WindowConfig] = []
     index = 1
 
     while True:
-        print(f"\n[🧭] Selecione a REGIAO #{index} na tela.")
-        print("    Dica: selecione somente a área onde nomes aparecem.")
+        print(f"\n[INFO] Select SCREEN REGION #{index}.")
+        print("    Tip: select only the area where names appear.")
 
         selection = select_area(
             help_text=f"Region #{index}: drag to select | Enter: confirm | Esc: cancel"
@@ -230,11 +230,11 @@ def build_windows_interactively() -> list[WindowConfig]:
 
         if selection is None:
             if windows:
-                start_now = input("[?] Seleção cancelada. Iniciar scan com regiões já adicionadas? (y/n): ").strip().lower()
+                start_now = input("[?] Selection canceled. Start scan with already added regions? (y/n): ").strip().lower()
                 if start_now in {"y", "yes", "s", "sim"}:
                     break
 
-            print("[!] Nenhuma nova região adicionada.")
+            print("[WARN] No new region was added.")
             continue
 
         x1, y1, x2, y2 = selection
@@ -242,10 +242,10 @@ def build_windows_interactively() -> list[WindowConfig]:
         height = y2 - y1
 
         while True:
-            map_name = input(f"[?] Nome do mapa para a REGIAO #{index}: ").strip()
+            map_name = input(f"[?] Map name for REGION #{index}: ").strip()
             if map_name:
                 break
-            print("[!] Nome do mapa não pode ser vazio.")
+            print("[WARN] Map name cannot be empty.")
 
         window = WindowConfig(
             position=f"region-{index}",
@@ -258,11 +258,11 @@ def build_windows_interactively() -> list[WindowConfig]:
         windows.append(window)
 
         print(
-            f"[✓] Região #{index} adicionada | mapa='{map_name}' | "
+            f"[OK] Region #{index} added | map='{map_name}' | "
             f"x={window.x}, y={window.y}, w={window.width}, h={window.height}"
         )
 
-        add_more = input("[?] Deseja adicionar outra região? (y/n): ").strip().lower()
+        add_more = input("[?] Add another region? (y/n): ").strip().lower()
         if add_more not in {"y", "yes", "s", "sim"}:
             break
 
