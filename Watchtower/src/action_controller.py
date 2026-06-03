@@ -5,7 +5,7 @@ import pyautogui
 
 
 class ActionController:
-    """Executa sequencias de clique para respostas automaticas no modo live-telas."""
+    """Executa sequencias de clique para respostas automaticas no modo spot-tower."""
 
     def __init__(self, click_points: list[tuple[int, int]], cooldown_seconds: float = 8.0):
         if len(click_points) != 2:
@@ -24,7 +24,7 @@ class ActionController:
             return
 
         self._last_execution = now
-        print(f"[🛡️] Acao live-telas: {reason}")
+        print(f"[🛡️] Acao spot-tower: {reason}")
 
         # Executa os cliques no thread pool para nao bloquear o loop assíncrono.
         await asyncio.to_thread(self._perform_clicks)

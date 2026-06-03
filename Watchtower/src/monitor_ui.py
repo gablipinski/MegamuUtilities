@@ -1,8 +1,12 @@
 import asyncio
 import queue
+import shutil
+import sys
 import threading
 import tkinter as tk
+import tkinter.filedialog as filedialog
 from datetime import datetime
+from pathlib import Path
 from tkinter import messagebox, ttk
 
 from action_controller import ActionController
@@ -15,7 +19,13 @@ from screen_monitor import ScreenMonitor
 class MonitorUI:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title('Safe Monitor Controller')
+        self.root.withdraw()  # hidden until license is confirmed
+
+        if not self._check_license_startup():
+            self.root.destroy()
+            sys.exit(0)
+
+        self.root.title('Watchtower Controller')
         self.root.geometry('560x360')
         self.root.minsize(520, 340)
 
@@ -26,21 +36,134 @@ class MonitorUI:
         self._monitor_thread: threading.Thread | None = None
         self._monitor_loop: asyncio.AbstractEventLoop | None = None
         self._blue_monitor: BlueBallMonitor | None = None
-        self._safe_monitor: ScreenMonitor | None = None
+        self._tower_monitor: ScreenMonitor | None = None
         self._detected_waiting_rearm = False
-        self._mode_var = tk.StringVar(value='Live Telas')
-        self._last_mode_selection = 'Live Telas'
+        self._mode_var = tk.StringVar(value='SPOT TOWER')
+        self._last_mode_selection = 'SPOT TOWER'
 
         self._build_ui()
         self._set_state_idle('Idle')
         self.root.after(120, self._drain_events)
         self.root.protocol('WM_DELETE_WINDOW', self._on_close)
+        self.root.deiconify()
+
+    # ── License check ─────────────────────────────────────────────────────────
+
+    def _check_license_startup(self) -> bool:
+        from license_manager import get_license_path, validate_license
+
+        valid, message = validate_license(get_license_path())
+        if valid:
+            return True
+        return self._show_activation_dialog(message)
+
+    def _show_activation_dialog(self, initial_message: str) -> bool:
+        from license_manager import get_license_path, get_machine_id, validate_license
+
+        result: dict[str, bool] = {'activated': False}
+        machine_id = get_machine_id()
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title('Watchtower — Activation Required')
+        dlg.geometry('480x340')
+        dlg.resizable(False, False)
+        dlg.protocol('WM_DELETE_WINDOW', lambda: None)
+        dlg.lift()
+        dlg.focus_force()
+
+        tk.Label(
+            dlg,
+            text='Watchtower — Activation Required',
+            font=('Segoe UI', 13, 'bold'),
+        ).pack(pady=(18, 4))
+
+        tk.Label(
+            dlg,
+            text='This software requires a valid license to run.',
+            font=('Segoe UI', 9),
+        ).pack()
+
+        tk.Label(dlg, text='Your Machine ID:', font=('Segoe UI', 9, 'bold')).pack(pady=(14, 2))
+
+        mid_var = tk.StringVar(value=machine_id)
+        mid_entry = tk.Entry(
+            dlg,
+            textvariable=mid_var,
+            state='readonly',
+            font=('Consolas', 12),
+            justify='center',
+            width=24,
+        )
+        mid_entry.pack()
+
+        def _copy_id() -> None:
+            dlg.clipboard_clear()
+            dlg.clipboard_append(machine_id)
+            btn_copy.configure(text='Copied!')
+            dlg.after(1500, lambda: btn_copy.configure(text='Copy Machine ID'))
+
+        btn_copy = tk.Button(dlg, text='Copy Machine ID', command=_copy_id)
+        btn_copy.pack(pady=(5, 0))
+
+        tk.Label(
+            dlg,
+            text='Send this ID to the distributor to receive your license.dat',
+            font=('Segoe UI', 8),
+            fg='gray',
+        ).pack(pady=(3, 10))
+
+        status_var = tk.StringVar(value=initial_message.split('\n\n')[0])
+        tk.Label(
+            dlg,
+            textvariable=status_var,
+            fg='#c00000',
+            wraplength=440,
+            font=('Segoe UI', 8),
+            justify='center',
+        ).pack(pady=(0, 10))
+
+        def _browse_license() -> None:
+            path_str = filedialog.askopenfilename(
+                parent=dlg,
+                title='Select license.dat',
+                filetypes=[('License file', '*.dat'), ('All files', '*.*')],
+            )
+            if not path_str:
+                return
+            selected = Path(path_str)
+            valid, msg = validate_license(selected)
+            if not valid:
+                status_var.set(msg.split('\n')[0])
+                return
+            target = get_license_path()
+            try:
+                shutil.copy(selected, target)
+            except Exception as exc:
+                status_var.set(f'Could not copy license: {exc}\nCopy manually to: {target}')
+                return
+            result['activated'] = True
+            dlg.destroy()
+
+        def _exit_app() -> None:
+            dlg.destroy()
+
+        btn_row = tk.Frame(dlg)
+        btn_row.pack(pady=(0, 18))
+        tk.Button(btn_row, text='Browse for license.dat…', width=26, command=_browse_license).pack(
+            side=tk.LEFT, padx=8
+        )
+        tk.Button(btn_row, text='Exit', width=10, command=_exit_app).pack(side=tk.LEFT, padx=8)
+
+        self.root.wait_window(dlg)
+        return result['activated']
+
+    # ── UI construction ───────────────────────────────────────────────────────
 
     def _build_ui(self):
         container = tk.Frame(self.root, padx=12, pady=12)
         container.pack(fill=tk.BOTH, expand=True)
 
-        title = tk.Label(container, text='Safe Monitor', font=('Segoe UI', 15, 'bold'))
+        title = tk.Label(container, text='Watchtower', font=('Segoe UI', 15, 'bold'))
         title.pack(anchor=tk.W)
 
         mode_row = tk.Frame(container)
@@ -51,7 +174,7 @@ class MonitorUI:
             mode_row,
             state='readonly',
             textvariable=self._mode_var,
-            values=['Live Telas', 'Safe Monitor'],
+            values=['SPOT TOWER', 'SAFE TOWER'],
             width=18,
         )
         self.cmb_mode.pack(side=tk.LEFT, padx=(8, 0))
@@ -132,7 +255,7 @@ class MonitorUI:
         self._set_led('#7a7a7a')
         self.lbl_state.configure(text=f'State: Idle ({reason})')
         self.btn_toggle_scan.configure(text='Start Scanner')
-        if self._selected_mode() == 'live-telas':
+        if self._selected_mode() == 'spot-tower':
             self.btn_rearm.configure(state=tk.DISABLED)
         else:
             self.btn_rearm.configure(state=tk.DISABLED)
@@ -150,22 +273,22 @@ class MonitorUI:
         self.btn_rearm.configure(state=tk.NORMAL)
 
     def _selected_mode(self) -> str:
-        return 'safe-monitor' if self._mode_var.get() == 'Safe Monitor' else 'live-telas'
+        return 'safe-tower' if self._mode_var.get() == 'SAFE TOWER' else 'spot-tower'
 
     def _refresh_mode_ui(self):
         mode = self._selected_mode()
-        if mode == 'safe-monitor':
+        if mode == 'safe-tower':
             self.btn_select_route.configure(state=tk.DISABLED)
-            self.lbl_route.configure(text='Escape route: not required in Safe Monitor mode')
+            self.lbl_route.configure(text='Escape route: not required in SAFE TOWER mode')
             self.btn_rearm.configure(state=tk.DISABLED)
-            self._log('Mode set to Safe Monitor.')
+            self._log('Mode set to SAFE TOWER.')
         else:
             self.btn_select_route.configure(state=tk.NORMAL)
             if len(self.escape_route) == 2:
                 self.lbl_route.configure(text=f'Escape route: {self.escape_route[0]} -> {self.escape_route[1]}')
             else:
                 self.lbl_route.configure(text='Escape route: not selected')
-            self._log('Mode set to Live Telas.')
+            self._log('Mode set to SPOT TOWER.')
 
     def _on_mode_changed(self, _event=None):
         if self._monitor_thread and self._monitor_thread.is_alive():
@@ -196,7 +319,7 @@ class MonitorUI:
         self._log('Area selected.')
 
     def _on_select_route(self):
-        if self._selected_mode() != 'live-telas':
+        if self._selected_mode() != 'spot-tower':
             return
         if self._monitor_thread and self._monitor_thread.is_alive():
             messagebox.showwarning('Scanner active', 'Stop scanner before editing escape route.')
@@ -223,7 +346,7 @@ class MonitorUI:
         self._start_scanner()
 
     def _on_rearm(self):
-        if self._selected_mode() != 'live-telas':
+        if self._selected_mode() != 'spot-tower':
             return
         if not self._detected_waiting_rearm:
             return
@@ -234,7 +357,7 @@ class MonitorUI:
         if self.region is None:
             messagebox.showwarning('Missing area', 'Select area before starting scanner.')
             return
-        if self._selected_mode() == 'live-telas' and len(self.escape_route) != 2:
+        if self._selected_mode() == 'spot-tower' and len(self.escape_route) != 2:
             messagebox.showwarning('Missing route', 'Create escape route before starting scanner.')
             return
 
@@ -252,8 +375,8 @@ class MonitorUI:
         if self._monitor_loop is not None:
             if self._blue_monitor is not None:
                 asyncio.run_coroutine_threadsafe(self._blue_monitor.stop(), self._monitor_loop)
-            if self._safe_monitor is not None:
-                asyncio.run_coroutine_threadsafe(self._safe_monitor.stop_monitoring(), self._monitor_loop)
+            if self._tower_monitor is not None:
+                asyncio.run_coroutine_threadsafe(self._tower_monitor.stop_monitoring(), self._monitor_loop)
 
         if manual_stop:
             self._detected_waiting_rearm = False
@@ -269,7 +392,7 @@ class MonitorUI:
         triggered = False
         try:
             assert self.region is not None
-            if mode == 'live-telas':
+            if mode == 'spot-tower':
                 monitor = BlueBallMonitor(
                     self.region,
                     interval_ms=160,
@@ -311,20 +434,20 @@ class MonitorUI:
                     'right_pct': 1.0,
                     'bottom_pct': 1.0,
                 }
-                safe_monitor = ScreenMonitor(config)
-                self._safe_monitor = safe_monitor
+                tower_monitor = ScreenMonitor(config)
+                self._tower_monitor = tower_monitor
 
-                async def on_safe_detection(char_name: str, map_name: str, guild_name: str | None):
+                async def on_tower_detection(char_name: str, map_name: str, guild_name: str | None):
                     self._event_queue.put(
-                        ('safe_detected', {'char_name': char_name, 'map_name': map_name, 'guild_name': guild_name})
+                        ('tower_detected', {'char_name': char_name, 'map_name': map_name, 'guild_name': guild_name})
                     )
                     return True
 
-                safe_monitor.detection_callback = on_safe_detection
-                await safe_monitor.start_monitoring()
+                tower_monitor.detection_callback = on_tower_detection
+                await tower_monitor.start_monitoring()
         finally:
             self._blue_monitor = None
-            self._safe_monitor = None
+            self._tower_monitor = None
             self._monitor_loop = None
             self._event_queue.put(('stopped', {'triggered': triggered, 'mode': mode}))
 
@@ -339,19 +462,19 @@ class MonitorUI:
                 self._detected_waiting_rearm = True
                 self._set_state_detected()
                 self._log('Detected blue ball. Escape route executed. Waiting for rearm.')
-            elif event == 'safe_detected':
+            elif event == 'tower_detected':
                 info = payload if isinstance(payload, dict) else {}
                 char_name = info.get('char_name', 'Unknown')
                 map_name = info.get('map_name', 'Unknown')
                 guild_name = info.get('guild_name')
                 if guild_name:
-                    self._log(f'Safe detection: {char_name} [{guild_name}] in {map_name}.')
+                    self._log(f'SAFE TOWER detection: {char_name} [{guild_name}] in {map_name}.')
                 else:
-                    self._log(f'Safe detection: {char_name} in {map_name}.')
+                    self._log(f'SAFE TOWER detection: {char_name} in {map_name}.')
             elif event == 'stopped':
                 info = payload if isinstance(payload, dict) else {}
-                mode = info.get('mode', 'live-telas')
-                if mode == 'live-telas' and info.get('triggered'):
+                mode = info.get('mode', 'spot-tower')
+                if mode == 'spot-tower' and info.get('triggered'):
                     self._detected_waiting_rearm = True
                     self._set_state_detected()
                 else:

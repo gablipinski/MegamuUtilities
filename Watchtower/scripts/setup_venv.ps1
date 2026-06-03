@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    Cria e ativa um ambiente virtual Python para Safe Monitor
+    Cria e ativa um ambiente virtual Python para Watchtower
 .DESCRIPTION
     Este script cria um novo ambiente virtual Python na pasta 'venv'
     e ativa automaticamente ao final
@@ -173,7 +173,7 @@ function Install-TorchRuntime {
     }
 }
 
-Write-Host "`n🐍 Criando ambiente virtual Python para Safe Monitor..." -ForegroundColor Cyan
+Write-Host "`n🐍 Criando ambiente virtual Python para Watchtower..." -ForegroundColor Cyan
 
 # Verifica se já existe um venv
 if (Test-Path $VenvPath) {
@@ -229,4 +229,4 @@ Install-TorchRuntime -PythonExe $VenvPython
 
 Write-Host "`n[✓] Setup concluído com sucesso!" -ForegroundColor Green
 Write-Host "[ℹ️]  Para ativar o venv novamente, execute: .\scripts\activate_venv.ps1" -ForegroundColor Cyan
-Write-Host "[ℹ️]  Para rodar o monitor, execute: .\scripts\run_monitor.ps1`n" -ForegroundColor Cyan
+Write-Host "[ℹ️]  Para rodar o monitor, execute: .\scripts\run_watchtower.ps1`n" -ForegroundColor Cyan

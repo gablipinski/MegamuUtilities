@@ -16,7 +16,7 @@ class ScreenAreaOverlay:
         self.help_text = help_text or "Drag to select scan area | Enter: confirm | Esc: cancel"
 
         self.root = tk.Toplevel(parent) if parent is not None else tk.Tk()
-        self.root.title("Safe Monitor - Select Scan Area")
+        self.root.title("Watchtower - Select Scan Area")
         self.root.attributes("-fullscreen", True)
         self.root.attributes("-topmost", True)
 
@@ -111,7 +111,7 @@ class ScreenPointOverlay:
         self.selected: list[tuple[int, int]] = []
 
         self.root = tk.Toplevel(parent) if parent is not None else tk.Tk()
-        self.root.title("Safe Monitor - Select Click Points")
+        self.root.title("Watchtower - Select Click Points")
         self.root.attributes("-fullscreen", True)
         self.root.attributes("-topmost", True)
 

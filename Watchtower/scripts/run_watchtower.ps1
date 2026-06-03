@@ -1,11 +1,11 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    Ativa o ambiente virtual e inicia o Safe Monitor
+    Ativa o ambiente virtual e inicia o Watchtower
 .DESCRIPTION
     Este script ativa o venv Python e executa a interface grafica do monitor
 .EXAMPLE
-    .\run_monitor.ps1
+    .\run_watchtower.ps1
 #>
 
 param()
@@ -29,7 +29,7 @@ if (-not (Test-Path $ConfigPath)) {
     exit 1
 }
 
-Write-Host "`n📺 Iniciando Safe Monitor...`n" -ForegroundColor Green
+Write-Host "`n📺 Iniciando Watchtower...`n" -ForegroundColor Green
 
 # Ativa o venv
 & $VenvActivate

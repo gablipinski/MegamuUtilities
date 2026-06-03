@@ -25,4 +25,4 @@ Write-Host "[✓] Ativando ambiente virtual..." -ForegroundColor Green
 
 Write-Host "`n[✓] Ambiente virtual ativado!" -ForegroundColor Green
 Write-Host "[ℹ️]  Para rodar o monitor: python src\main.py" -ForegroundColor Cyan
-Write-Host "[ℹ️]  Ou execute: .\scripts\run_monitor.ps1`n" -ForegroundColor Cyan
+Write-Host "[ℹ️]  Ou execute: .\scripts\run_watchtower.ps1`n" -ForegroundColor Cyan
