@@ -36,6 +36,26 @@ class MonitorConfig:
     track_expiry_ms: int  # Tempo sem ver a entidade para descartá-la
     min_observations_to_notify: int  # Quantas leituras antes de alertar
     movement_retrigger_px: int  # Deslocamento mínimo para re-alertar personagem parado
+    character_color_filter_enabled: bool  # Usa filtro HSV para isolar nomes amarelos
+    character_hsv_lower: tuple[int, int, int]  # Limite inferior HSV do nome
+    character_hsv_upper: tuple[int, int, int]  # Limite superior HSV do nome
+    character_ocr_allowlist: str  # Caracteres permitidos para OCR de nome
+    self_name_similarity_threshold: float  # Similaridade minima para considerar leitura como nome proprio
+    external_name_similarity_threshold: float  # Similaridade para agrupar variacoes OCR do mesmo alvo externo
+    external_detection_streak: int  # Quantas leituras seguidas para confirmar alvo externo
+    external_candidate_ttl_ms: int  # Janela maxima entre leituras para manter streak
+    live_use_minimap_detection: bool  # Usa detecção por bolinhas azuis do minimapa no modo live
+    minimap_blue_hsv_lower: tuple[int, int, int]  # Limite inferior HSV para azul do minimapa
+    minimap_blue_hsv_upper: tuple[int, int, int]  # Limite superior HSV para azul do minimapa
+    minimap_min_blob_area_px: int  # Area minima do blob azul para considerar marcador
+    minimap_max_blob_area_px: int  # Area maxima do blob azul para considerar marcador
+    minimap_min_markers_to_trigger: int  # Quantidade minima de marcadores azuis para alertar
+    minimap_confirm_frames: int  # Quantos frames consecutivos para confirmar presença
+    minimap_inner_margin_pct: float  # Margem interna para ignorar bordas do minimapa
+    minimap_ignore_edge_touching: bool  # Ignora blobs que tocam a borda da area analisada
+    minimap_center_zone_pct: float  # Zona central minima para aceitar o marcador do jogador
+    minimap_min_confidence: float  # Confiança minima para aceitar o marcador do jogador
+    minimap_center_tolerance_px: int  # Quanto o centro pode variar entre frames consecutivos
 
 def load_config(config_file: Optional[str] = None) -> MonitorConfig:
     """Carrega configurações do arquivo JSON"""
@@ -85,4 +105,24 @@ def load_config(config_file: Optional[str] = None) -> MonitorConfig:
         track_expiry_ms=data.get('track_expiry_ms', 120000),
         min_observations_to_notify=data.get('min_observations_to_notify', 1),
         movement_retrigger_px=data.get('movement_retrigger_px', 120),
+        character_color_filter_enabled=data.get('character_color_filter_enabled', True),
+        character_hsv_lower=tuple(data.get('character_hsv_lower', [18, 70, 70])),
+        character_hsv_upper=tuple(data.get('character_hsv_upper', [42, 255, 255])),
+        character_ocr_allowlist=data.get('character_ocr_allowlist', 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'),
+        self_name_similarity_threshold=float(data.get('self_name_similarity_threshold', 0.80)),
+        external_name_similarity_threshold=float(data.get('external_name_similarity_threshold', 0.72)),
+        external_detection_streak=int(data.get('external_detection_streak', 2)),
+        external_candidate_ttl_ms=int(data.get('external_candidate_ttl_ms', 1400)),
+        live_use_minimap_detection=bool(data.get('live_use_minimap_detection', True)),
+        minimap_blue_hsv_lower=tuple(data.get('minimap_blue_hsv_lower', [88, 80, 80])),
+        minimap_blue_hsv_upper=tuple(data.get('minimap_blue_hsv_upper', [130, 255, 255])),
+        minimap_min_blob_area_px=int(data.get('minimap_min_blob_area_px', 8)),
+        minimap_max_blob_area_px=int(data.get('minimap_max_blob_area_px', 220)),
+        minimap_min_markers_to_trigger=int(data.get('minimap_min_markers_to_trigger', 1)),
+        minimap_confirm_frames=int(data.get('minimap_confirm_frames', 2)),
+        minimap_inner_margin_pct=float(data.get('minimap_inner_margin_pct', 0.18)),
+        minimap_ignore_edge_touching=bool(data.get('minimap_ignore_edge_touching', True)),
+        minimap_center_zone_pct=float(data.get('minimap_center_zone_pct', 0.28)),
+        minimap_min_confidence=float(data.get('minimap_min_confidence', 0.65)),
+        minimap_center_tolerance_px=int(data.get('minimap_center_tolerance_px', 5)),
     )

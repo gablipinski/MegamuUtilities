@@ -3,10 +3,12 @@
 .SYNOPSIS
     Ativa o ambiente virtual e inicia o Safe Monitor
 .DESCRIPTION
-    Este script ativa o venv Python e executa o monitor de tela
+    Este script ativa o venv Python e executa a interface grafica do monitor
 .EXAMPLE
     .\run_monitor.ps1
 #>
+
+param()
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $VenvActivate = Join-Path $ProjectRoot "venv\Scripts\Activate.ps1"
@@ -32,7 +34,7 @@ Write-Host "`n📺 Iniciando Safe Monitor...`n" -ForegroundColor Green
 # Ativa o venv
 & $VenvActivate
 
-# Executa o monitor
+Write-Host "[✓] Modo de inicializacao: UI" -ForegroundColor Green
 python $MainPath
 
 # Se o monitor foi encerrado, exibe mensagem

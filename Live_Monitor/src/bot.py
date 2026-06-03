@@ -56,6 +56,10 @@ class TwitchBot(commands.Cog):
         self.won_last_triggered: dict[str, tuple[float, str]] = {}
         # Cooldown between won-trigger responses (seconds)
         self.WON_COOLDOWN_S: float = self.config.runtime.won_cooldown_s
+        # Short dedup window: if the same bot sender fires a won trigger across channels
+        # within this window it is treated as a shared-chat mirror and ignored.
+        # After this window the same sender can legitimately announce a win on a different channel.
+        self.BOT_SENDER_DEDUP_S: float = 10.0
         # Giveaway stays active after the first winner announcement is seen.
         self.GIVEAWAY_END_AFTER_FIRST_WIN_S: float = self.config.runtime.giveaway_end_after_win_s
 
@@ -370,11 +374,11 @@ class TwitchBot(commands.Cog):
         else:
             last_won_ts, last_channel = 0.0, ""
 
-        if last_won_ts > 0 and (now - last_won_ts) < self.WON_COOLDOWN_S:
-            remaining = int(self.WON_COOLDOWN_S - (now - last_won_ts))
+        if last_won_ts > 0 and (now - last_won_ts) < self.BOT_SENDER_DEDUP_S:
+            remaining = int(self.BOT_SENDER_DEDUP_S - (now - last_won_ts)) + 1
             shared_chat_note = f" (last seen in #{last_channel})" if last_channel else ""
             log_line(
-                f"Won trigger from {sender} on cooldown ({remaining}s left){shared_chat_note} - skipping",
+                f"Won trigger from {sender} ignored - shared-chat duplicate from #{last_channel} ({remaining}s window){shared_chat_note}",
                 "cooldown",
                 channel_name,
                 account=self.account_name,

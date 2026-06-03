@@ -52,6 +52,7 @@ _RICH_COLOR: dict[str, str] = {
 }
 
 GIVEAWAY_SESSION_DURATION_S = 300.0  # default; overridden from config at app startup
+IDLE_ALERT_THRESHOLD_S = 3600.0
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +129,10 @@ class ChannelPanel(Widget):
         background: $success-darken-2;
         color: $text;
     }
+    ChannelPanel .ch-header.status-idle-stale {
+        background: #7f1d1d;
+        color: $text;
+    }
     ChannelPanel RichLog {
         background: #111111;
         scrollbar-size: 1 1;
@@ -146,13 +151,21 @@ class ChannelPanel(Widget):
         self.channel_name = channel_name
         self._is_online = is_online
         self._status = self._STATUS_IDLE
-        self._status_since: float = 0.0
+        self._status_since: float = time.monotonic()
         self._log_buffer: list[str] = []
         self._pending_widget_logs: list[tuple[str, str]] = []
         self._session_giveaways = 0
         self._session_wins = 0
         self._session_win_recorded = False
         self._win_at: float = 0.0  # monotonic timestamp of last win (0 = none)
+        self._idle_alert_active = False
+
+    def _is_idle_stale(self, now: float) -> bool:
+        return (
+            self._status == self._STATUS_IDLE
+            and self._status_since > 0.0
+            and (now - self._status_since) >= IDLE_ALERT_THRESHOLD_S
+        )
 
     def _render_header_text(self, now: float | None = None) -> str:
         online_dot = "🟢" if self._is_online else "🔴"
@@ -189,13 +202,20 @@ class ChannelPanel(Widget):
         except NoMatches:
             return
 
+        now_value = now if now is not None else time.monotonic()
+        idle_stale = self._is_idle_stale(now_value)
+        self._idle_alert_active = idle_stale
+
         header.remove_class("status-joined")
         header.remove_class("status-ongoing")
+        header.remove_class("status-idle-stale")
         if self._status == self._STATUS_JOINED:
             header.add_class("status-joined")
         elif self._status == self._STATUS_ONGOING:
             header.add_class("status-ongoing")
-        header.update(self._render_header_text(now))
+        elif idle_stale:
+            header.add_class("status-idle-stale")
+        header.update(self._render_header_text(now_value))
 
     def _flush_pending_widget_logs(self) -> None:
         if not self._pending_widget_logs:
@@ -251,7 +271,8 @@ class ChannelPanel(Widget):
         self._session_win_recorded = False
         self._win_at = 0.0
         self._status = self._STATUS_IDLE
-        self._status_since = 0.0
+        self._status_since = time.monotonic()
+        self._idle_alert_active = False
         try:
             log = self.query_one(f"#log_{self.channel_name}", RichLog)
             log.clear()
@@ -287,6 +308,9 @@ class ChannelPanel(Widget):
                 self._set_status(self._STATUS_IDLE)
                 return
             needs_refresh = True
+        elif self._status == self._STATUS_IDLE:
+            if (not self._idle_alert_active) and self._is_idle_stale(now):
+                needs_refresh = True
         if self._win_at > 0 and (now - self._win_at) >= GIVEAWAY_SESSION_DURATION_S:
             self._win_at = 0.0
             needs_refresh = True
