@@ -38,7 +38,38 @@ $SetupIss       = Join-Path $ProjectRoot "installer\setup.iss"
 $PrivateKeyPath = Join-Path $ProjectRoot "licenses\keys\private_key.pem"
 $IconPngPath    = Join-Path $ProjectRoot "icons\watchtower.png"
 $IconIcoPath    = Join-Path $ProjectRoot "icons\watchtower.ico"
-$InnoCompiler   = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+
+function Get-InnoCompilerPath {
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
+        (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe'),
+        (Join-Path $env:ProgramW6432 'Inno Setup 6\ISCC.exe')
+    )
+
+    foreach ($candidate in $candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            continue
+        }
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+
+    try {
+        $cmd = Get-Command ISCC.exe -ErrorAction Stop
+        if ($cmd -and (Test-Path $cmd.Source)) {
+            return $cmd.Source
+        }
+    }
+    catch {
+        # ISCC.exe is not available in PATH.
+    }
+
+    return $null
+}
+
+$InnoCompiler = Get-InnoCompilerPath
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Green
@@ -135,14 +166,15 @@ Write-Host "[OK] Executable: $DistDir\Watchtower.exe" -ForegroundColor Green
 if ($SkipInstaller) {
     Write-Host "[4/4] Installer skipped (-SkipInstaller)." -ForegroundColor DarkGray
 }
-elseif (-not (Test-Path $InnoCompiler)) {
+elseif (-not $InnoCompiler) {
     Write-Host "[4/4] Inno Setup 6 not found - skipping installer." -ForegroundColor Yellow
     Write-Host "      Install from: https://jrsoftware.org/isdl.php" -ForegroundColor Yellow
     Write-Host "      Then re-run, or run manually:" -ForegroundColor Yellow
-    Write-Host "      `"$InnoCompiler`" `"$SetupIss`"" -ForegroundColor Yellow
+    Write-Host "      ISCC.exe `"$SetupIss`"" -ForegroundColor Yellow
 }
 else {
     Write-Host "[4/4] Creating installer with Inno Setup 6..." -ForegroundColor Cyan
+    Write-Host "      Using compiler: $InnoCompiler" -ForegroundColor DarkGray
     New-Item -ItemType Directory -Force -Path $InstallerOut | Out-Null
 
     & "$InnoCompiler" "$SetupIss"
@@ -164,7 +196,7 @@ Write-Host ""
 Write-Host "Outputs:" -ForegroundColor Cyan
 Write-Host "  Executable : $DistDir\Watchtower.exe"
 
-if (-not $SkipInstaller -and (Test-Path $InnoCompiler)) {
+if (-not $SkipInstaller -and $InnoCompiler) {
     Write-Host "  Installer  : $InstallerOut\Watchtower_Setup_1.0.0.exe"
 }
 
