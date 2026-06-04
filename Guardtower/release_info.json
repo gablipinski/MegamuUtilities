@@ -1,0 +1,9 @@
+{
+  "app_name": "Guardtower",
+  "version": "1.0.0",
+  "publisher": "Megamu Utilities",
+  "patch_notes": [
+    "Initial commercial release.",
+    "Centralized version metadata for build, installer, and UI."
+  ]
+}

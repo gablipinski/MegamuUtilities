@@ -9,6 +9,7 @@ import asyncio
 import argparse
 import sys
 from twitchio.ext import commands
+from app_version import APP_VERSION
 from config import load_config
 from bot import TwitchBot
 from console_log import log_line
@@ -17,6 +18,11 @@ from startup_logs import emit_startup_logs
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Run Twitch bot runtime.')
+    parser.add_argument(
+        '--version',
+        action='version',
+        version=f'%(prog)s {APP_VERSION}',
+    )
     parser.add_argument(
         '--log',
         action='store_true',

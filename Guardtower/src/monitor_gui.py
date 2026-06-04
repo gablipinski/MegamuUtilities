@@ -25,6 +25,7 @@ from tkinter import messagebox
 
 from twitchio.ext import commands  # type: ignore[import]
 
+from app_version import APP_NAME, APP_VERSION
 from bot import TwitchBot
 from config import BotConfig, resolve_default_config_path
 from console_log import set_gui_hook
@@ -122,7 +123,7 @@ class MonitorUI:
         self._create_channel_cards()
         self._reorder_channel_cards(set())
 
-        self.root.title("Guardtower Monitor")
+        self.root.title(f"{APP_NAME} Monitor v{APP_VERSION}")
         self.root.geometry("1220x820")
         self.root.minsize(980, 620)
         self.root.configure(bg=self._colors["bg"])
@@ -176,7 +177,7 @@ class MonitorUI:
         machine_id = get_machine_id()
 
         dialog = tk.Toplevel(self.root)
-        dialog.title("Guardtower - Activation Required")
+        dialog.title(f"{APP_NAME} v{APP_VERSION} - Activation Required")
         dialog.geometry("480x340")
         dialog.resizable(False, False)
         dialog.protocol("WM_DELETE_WINDOW", lambda: None)
@@ -187,7 +188,7 @@ class MonitorUI:
 
         tk.Label(
             dialog,
-            text="Guardtower - Activation Required",
+            text=f"{APP_NAME} v{APP_VERSION} - Activation Required",
             font=self._font_title_sm,
             bg=self._colors["bg"],
             fg=self._colors["text"],
@@ -354,7 +355,7 @@ class MonitorUI:
 
         tk.Label(
             title_row,
-            text="Guardtower",
+            text=f"{APP_NAME} v{APP_VERSION}",
             bg=self._colors["panel"],
             fg=self._colors["text"],
             font=self._font_title,

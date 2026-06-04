@@ -7,7 +7,7 @@
     Step 1 - Validate prerequisites (venv, private key)
     Step 2 - Install / upgrade build dependencies (Nuitka, etc.)
     Step 3 - Compile src/main.py -> dist/Guardtower.exe  (Nuitka native binary)
-    Step 4 - Create installer_output/Guardtower_Setup_1.0.0.exe  (Inno Setup 6)
+    Step 4 - Create installer_output/Guardtower_Setup_<version>.exe  (Inno Setup 6)
 
 .PARAMETER SkipInstaller
     Skip the Inno Setup step (useful for quick iteration builds).
@@ -29,8 +29,10 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $ProjectRoot    = Split-Path -Parent $PSScriptRoot
+$SyncReleaseScript = Join-Path $ProjectRoot 'scripts\sync_release.ps1'
 $VenvActivate   = Join-Path $ProjectRoot 'venv\Scripts\Activate.ps1'
 $VenvPython     = Join-Path $ProjectRoot 'venv\Scripts\python.exe'
+$ReleaseInfoPath = Join-Path $ProjectRoot 'release_info.json'
 $MainPath       = Join-Path $ProjectRoot 'src\main.py'
 $DistDir        = Join-Path $ProjectRoot 'dist'
 $BuildDir       = Join-Path $ProjectRoot 'build'
@@ -40,6 +42,46 @@ $PrivateKeyPath = Join-Path $ProjectRoot 'licenses\keys\private_key.pem'
 $ConfigPath     = Join-Path $ProjectRoot 'configs\config.json'
 $IconPngPath    = Join-Path $ProjectRoot 'icons\guardtower.png'
 $IconIcoPath    = Join-Path $ProjectRoot 'icons\guardtower.ico'
+
+function Get-AppMetadata {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ReleaseInfoPath
+    )
+
+    if (-not (Test-Path $ReleaseInfoPath)) {
+        throw "Release metadata file not found: $ReleaseInfoPath"
+    }
+
+    $release = Get-Content -Raw -Path $ReleaseInfoPath | ConvertFrom-Json
+
+    if (-not $release.app_name -or -not $release.version -or -not $release.publisher) {
+        throw "release_info.json must contain app_name, version, and publisher"
+    }
+
+    return @{
+        Name = [string]$release.app_name
+        Version = [string]$release.version
+        Publisher = [string]$release.publisher
+    }
+}
+
+function Convert-ToWindowsVersion {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version
+    )
+
+    if ($Version -match '^(\d+)\.(\d+)\.(\d+)\.(\d+)$') {
+        return $Version
+    }
+
+    if ($Version -match '^(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?$') {
+        return "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
+    }
+
+    throw "Unsupported version format for Windows metadata: $Version"
+}
 
 function Get-InnoCompilerPath {
     $candidates = @(
@@ -73,9 +115,23 @@ function Get-InnoCompilerPath {
 
 $InnoCompiler = Get-InnoCompilerPath
 
+if (Test-Path $SyncReleaseScript) {
+    & $SyncReleaseScript
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[X] Failed to sync release metadata." -ForegroundColor Red
+        exit $LASTEXITCODE
+    }
+}
+
+$AppMetadata = Get-AppMetadata -ReleaseInfoPath $ReleaseInfoPath
+$AppName = $AppMetadata.Name
+$AppVersion = $AppMetadata.Version
+$AppPublisher = $AppMetadata.Publisher
+$WindowsVersion = Convert-ToWindowsVersion -Version $AppVersion
+
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Green
-Write-Host "  Guardtower - Build Pipeline           " -ForegroundColor Green
+Write-Host ("  {0} - Build Pipeline           " -f $AppName) -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
 
@@ -194,10 +250,15 @@ foreach ($pkg in $includePackages) {
     --python-flag=-O `
     --enable-plugin=tk-inter `
     --windows-console-mode=disable `
+    --company-name="$AppPublisher" `
+    --product-name="$AppName" `
+    --file-description="$AppName" `
+    --file-version="$WindowsVersion" `
+    --product-version="$WindowsVersion" `
     $nuitkaIncludeArgs `
     --windows-icon-from-ico="$IconIcoPath" `
     --output-dir="$DistDir" `
-    --output-filename="Guardtower.exe" `
+    --output-filename="$AppName.exe" `
     "$MainPath"
 
 if ($LASTEXITCODE -ne 0) {
@@ -205,7 +266,7 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-Write-Host "[OK] Executable: $DistDir\Guardtower.exe" -ForegroundColor Green
+Write-Host "[OK] Executable: $DistDir\$AppName.exe" -ForegroundColor Green
 
 Write-Host "[3/4] Copying editable configs and icons to dist..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path (Join-Path $DistDir 'configs') | Out-Null
@@ -230,13 +291,13 @@ else {
     Write-Host "      Using compiler: $InnoCompiler" -ForegroundColor DarkGray
     New-Item -ItemType Directory -Force -Path $InstallerOut | Out-Null
 
-    & "$InnoCompiler" "$SetupIss"
+    & "$InnoCompiler" "/DMyAppName=$AppName" "/DMyAppVersion=$AppVersion" "/DMyAppPublisher=$AppPublisher" "$SetupIss"
 
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[X] Inno Setup failed (exit code $LASTEXITCODE)." -ForegroundColor Red
         exit $LASTEXITCODE
     }
-    Write-Host "[OK] Installer: $InstallerOut\Guardtower_Setup_1.0.0.exe" -ForegroundColor Green
+    Write-Host "[OK] Installer: $InstallerOut\${AppName}_Setup_$AppVersion.exe" -ForegroundColor Green
 }
 
 Write-Host ""
@@ -245,15 +306,15 @@ Write-Host "  Build Complete                        " -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "Outputs:" -ForegroundColor Cyan
-Write-Host "  Executable : $DistDir\Guardtower.exe"
+Write-Host "  Executable : $DistDir\$AppName.exe"
 
 if (-not $SkipInstaller -and $InnoCompiler) {
-    Write-Host "  Installer  : $InstallerOut\Guardtower_Setup_1.0.0.exe"
+    Write-Host "  Installer  : $InstallerOut\${AppName}_Setup_$AppVersion.exe"
 }
 
 Write-Host ""
 Write-Host "Distribution checklist:" -ForegroundColor Yellow
-Write-Host "  1. Share Guardtower_Setup_1.0.0.exe with the user"
+Write-Host "  1. Share ${AppName}_Setup_$AppVersion.exe with the user"
 Write-Host "  2. User installs and launches the app"
 Write-Host "  3. App shows their Machine ID - they send it to you"
 Write-Host '  4. You run:  python tools\generate_license.py <machine_id> "<name>"'

@@ -1,4 +1,4 @@
-; ============================================================================
+﻿; ============================================================================
 ; Guardtower - Inno Setup 6 Installer Script
 ; ============================================================================
 ; Build command (from project root):
@@ -9,9 +9,15 @@
 ;   - Inno Setup 6 installed: https://jrsoftware.org/isdl.php
 ; ============================================================================
 
+#ifndef MyAppName
 #define MyAppName      "Guardtower"
-#define MyAppVersion    "1.0.0"
-#define MyAppPublisher  "Your Name"
+#endif
+#ifndef MyAppVersion
+#define MyAppVersion   "1.0.0"
+#endif
+#ifndef MyAppPublisher
+#define MyAppPublisher "Megamu Utilities"
+#endif
 #define MyAppExeName    "Guardtower.exe"
 #define SourcePath      ".."
 
@@ -80,3 +86,5 @@ begin
     );
   end;
 end;
+
+

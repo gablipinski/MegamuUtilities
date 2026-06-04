@@ -1,9 +1,22 @@
 import sys
+import argparse
 
+from app_version import APP_VERSION
 from monitor_ui import MonitorUI
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description='Run Watchtower monitor.')
+    parser.add_argument(
+        '--version',
+        action='version',
+        version=f'%(prog)s {APP_VERSION}',
+    )
+    return parser.parse_args()
+
+
 def main():
+    parse_args()
     ui = MonitorUI()
     ui.run()
 

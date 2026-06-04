@@ -4,6 +4,7 @@ from typing import Optional
 import mss
 from PIL import Image, ImageTk
 
+from app_version import APP_NAME
 from config import WindowConfig
 
 
@@ -25,7 +26,7 @@ class ScreenAreaOverlay:
         self.min_size = max(1, int(min_size))
 
         self.root = tk.Toplevel(parent) if parent is not None else tk.Tk()
-        self.root.title("Watchtower - Select Scan Area")
+        self.root.title(f"{APP_NAME} - Select Scan Area")
         self.root.attributes("-fullscreen", True)
         self.root.attributes("-topmost", True)
 
@@ -120,7 +121,7 @@ class ScreenPointOverlay:
         self.selected: list[tuple[int, int]] = []
 
         self.root = tk.Toplevel(parent) if parent is not None else tk.Tk()
-        self.root.title("Watchtower - Select Click Points")
+        self.root.title(f"{APP_NAME} - Select Click Points")
         self.root.attributes("-fullscreen", True)
         self.root.attributes("-topmost", True)
 

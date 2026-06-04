@@ -7,7 +7,7 @@
     Step 1 — Validate prerequisites (venv, private key)
     Step 2 — Install / upgrade build dependencies (Nuitka, etc.)
     Step 3 — Compile src/main.py → dist/Watchtower.exe  (Nuitka native binary)
-    Step 4 — Create installer_output/Watchtower_Setup_1.0.0.exe  (Inno Setup 6)
+    Step 4 — Create installer_output/Watchtower_Setup_<version>.exe  (Inno Setup 6)
 
 .PARAMETER SkipInstaller
     Skip the Inno Setup step (useful for quick iteration builds).
@@ -29,7 +29,10 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $ProjectRoot    = Split-Path -Parent $PSScriptRoot
+$SyncReleaseScript = Join-Path $ProjectRoot 'scripts\sync_release.ps1'
 $VenvActivate   = Join-Path $ProjectRoot "venv\Scripts\Activate.ps1"
+$VenvPython     = Join-Path $ProjectRoot "venv\Scripts\python.exe"
+$ReleaseInfoPath = Join-Path $ProjectRoot 'release_info.json'
 $MainPath       = Join-Path $ProjectRoot "src\main.py"
 $DistDir        = Join-Path $ProjectRoot "dist"
 $BuildDir       = Join-Path $ProjectRoot "build"
@@ -38,6 +41,45 @@ $SetupIss       = Join-Path $ProjectRoot "installer\setup.iss"
 $PrivateKeyPath = Join-Path $ProjectRoot "licenses\keys\private_key.pem"
 $IconPngPath    = Join-Path $ProjectRoot "icons\watchtower.png"
 $IconIcoPath    = Join-Path $ProjectRoot "icons\watchtower.ico"
+
+function Get-AppMetadata {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ReleaseInfoPath
+    )
+
+    if (-not (Test-Path $ReleaseInfoPath)) {
+        throw "Release metadata file not found: $ReleaseInfoPath"
+    }
+
+    $release = Get-Content -Raw -Path $ReleaseInfoPath | ConvertFrom-Json
+    if (-not $release.app_name -or -not $release.version -or -not $release.publisher) {
+        throw "release_info.json must contain app_name, version, and publisher"
+    }
+
+    return @{
+        Name = [string]$release.app_name
+        Version = [string]$release.version
+        Publisher = [string]$release.publisher
+    }
+}
+
+function Convert-ToWindowsVersion {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version
+    )
+
+    if ($Version -match '^(\d+)\.(\d+)\.(\d+)\.(\d+)$') {
+        return $Version
+    }
+
+    if ($Version -match '^(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?$') {
+        return "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
+    }
+
+    throw "Unsupported version format for Windows metadata: $Version"
+}
 
 function Get-InnoCompilerPath {
     $candidates = @(
@@ -71,9 +113,23 @@ function Get-InnoCompilerPath {
 
 $InnoCompiler = Get-InnoCompilerPath
 
+if (Test-Path $SyncReleaseScript) {
+    & $SyncReleaseScript
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[X] Failed to sync release metadata." -ForegroundColor Red
+        exit $LASTEXITCODE
+    }
+}
+
+$AppMetadata = Get-AppMetadata -ReleaseInfoPath $ReleaseInfoPath
+$AppName = $AppMetadata.Name
+$AppVersion = $AppMetadata.Version
+$AppPublisher = $AppMetadata.Publisher
+$WindowsVersion = Convert-ToWindowsVersion -Version $AppVersion
+
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Green
-Write-Host "  Watchtower - Build Pipeline           " -ForegroundColor Green
+Write-Host ("  {0} - Build Pipeline           " -f $AppName) -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
 
@@ -99,6 +155,12 @@ if (-not (Test-Path $PrivateKeyPath)) {
 
 & $VenvActivate
 
+if (-not (Test-Path $VenvPython)) {
+    Write-Host "[X] Python executable not found in venv: $VenvPython" -ForegroundColor Red
+    Write-Host "    Recreate venv with .\scripts\setup_venv.ps1" -ForegroundColor Cyan
+    exit 1
+}
+
 # ── Step 1: Clean previous artifacts ──────────────────────────────────────────
 
 if ($Clean) {
@@ -114,8 +176,8 @@ New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 # ── Step 2: Install build dependencies ────────────────────────────────────────
 
 Write-Host "[2/4] Updating build dependencies..." -ForegroundColor Cyan
-python -m pip install --upgrade pip --quiet
-python -m pip install --upgrade nuitka ordered-set zstandard pillow --quiet
+& "$VenvPython" -m pip install --upgrade pip --quiet
+& "$VenvPython" -m pip install --upgrade nuitka ordered-set zstandard pillow --quiet
 
 if (-not (Test-Path $IconPngPath)) {
     Write-Host "[X] Icon source not found: $IconPngPath" -ForegroundColor Red
@@ -124,7 +186,7 @@ if (-not (Test-Path $IconPngPath)) {
 
 if (-not (Test-Path $IconIcoPath)) {
     Write-Host "[2/4] Creating icons\watchtower.ico from PNG..." -ForegroundColor Cyan
-    python -c "from PIL import Image; Image.open(r'$IconPngPath').save(r'$IconIcoPath', format='ICO', sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)])"
+    & "$VenvPython" -c "from PIL import Image; Image.open(r'$IconPngPath').save(r'$IconIcoPath', format='ICO', sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)])"
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $IconIcoPath)) {
         Write-Host "[X] Failed to generate ICO file from PNG icon." -ForegroundColor Red
         exit 1
@@ -135,7 +197,7 @@ if (-not (Test-Path $IconIcoPath)) {
 
 Write-Host "[3/4] Compiling with Nuitka (this may take a few minutes)..." -ForegroundColor Cyan
 
-python -m nuitka `
+& "$VenvPython" -m nuitka `
     --onefile `
     --standalone `
     --assume-yes-for-downloads `
@@ -145,13 +207,18 @@ python -m nuitka `
     --python-flag=-O `
     --enable-plugin=tk-inter `
     --windows-console-mode=disable `
+    --company-name="$AppPublisher" `
+    --product-name="$AppName" `
+    --file-description="$AppName" `
+    --file-version="$WindowsVersion" `
+    --product-version="$WindowsVersion" `
     --include-package=pyautogui `
     --include-package=pyscreeze `
     --include-package=mouseinfo `
     --include-package=cryptography `
     --windows-icon-from-ico="$IconIcoPath" `
     --output-dir="$DistDir" `
-    --output-filename="Watchtower.exe" `
+    --output-filename="$AppName.exe" `
     "$MainPath"
 
 if ($LASTEXITCODE -ne 0) {
@@ -159,7 +226,7 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-Write-Host "[OK] Executable: $DistDir\Watchtower.exe" -ForegroundColor Green
+Write-Host "[OK] Executable: $DistDir\$AppName.exe" -ForegroundColor Green
 
 # ── Step 4: Create installer with Inno Setup ──────────────────────────────────
 
@@ -177,13 +244,13 @@ else {
     Write-Host "      Using compiler: $InnoCompiler" -ForegroundColor DarkGray
     New-Item -ItemType Directory -Force -Path $InstallerOut | Out-Null
 
-    & "$InnoCompiler" "$SetupIss"
+    & "$InnoCompiler" "/DMyAppName=$AppName" "/DMyAppVersion=$AppVersion" "/DMyAppPublisher=$AppPublisher" "$SetupIss"
 
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[X] Inno Setup failed (exit code $LASTEXITCODE)." -ForegroundColor Red
         exit $LASTEXITCODE
     }
-    Write-Host "[OK] Installer: $InstallerOut\Watchtower_Setup_1.0.0.exe" -ForegroundColor Green
+    Write-Host "[OK] Installer: $InstallerOut\${AppName}_Setup_$AppVersion.exe" -ForegroundColor Green
 }
 
 # ── Summary ────────────────────────────────────────────────────────────────────
@@ -194,15 +261,15 @@ Write-Host "  Build Complete                        " -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "Outputs:" -ForegroundColor Cyan
-Write-Host "  Executable : $DistDir\Watchtower.exe"
+Write-Host "  Executable : $DistDir\$AppName.exe"
 
 if (-not $SkipInstaller -and $InnoCompiler) {
-    Write-Host "  Installer  : $InstallerOut\Watchtower_Setup_1.0.0.exe"
+    Write-Host "  Installer  : $InstallerOut\${AppName}_Setup_$AppVersion.exe"
 }
 
 Write-Host ""
 Write-Host "Distribution checklist:" -ForegroundColor Yellow
-Write-Host "  1. Share Watchtower_Setup_1.0.0.exe with the user"
+Write-Host "  1. Share ${AppName}_Setup_$AppVersion.exe with the user"
 Write-Host "  2. User installs and launches the app"
 Write-Host "  3. App shows their Machine ID - they send it to you"
 Write-Host "  4. You run:  python tools\generate_license.py <machine_id> ""<name>"""

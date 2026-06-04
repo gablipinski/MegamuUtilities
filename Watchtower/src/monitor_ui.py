@@ -11,6 +11,7 @@ from tkinter import messagebox, simpledialog, ttk
 
 from action_controller import ActionController
 from area_selector import capture_virtual_screen, select_area_with_parent, select_points_with_parent
+from app_version import APP_NAME, APP_VERSION
 from player_monitor import PlayerMonitor
 from config import WindowConfig, load_config
 from screen_monitor import ScreenMonitor
@@ -48,7 +49,7 @@ class MonitorUI:
             self.root.destroy()
             sys.exit(0)
 
-        self.root.title('Watchtower Controller')
+        self.root.title(f'{APP_NAME} Controller v{APP_VERSION}')
         self.root.geometry('560x360')
         self.root.minsize(520, 340)
 
@@ -188,7 +189,7 @@ class MonitorUI:
         machine_id = get_machine_id()
 
         dlg = tk.Toplevel(self.root)
-        dlg.title('Watchtower — Activation Required')
+        dlg.title(f'{APP_NAME} v{APP_VERSION} - Activation Required')
         dlg.geometry('480x340')
         dlg.resizable(False, False)
         dlg.protocol('WM_DELETE_WINDOW', lambda: None)
@@ -199,7 +200,7 @@ class MonitorUI:
 
         tk.Label(
             dlg,
-            text='Watchtower — Activation Required',
+            text=f'{APP_NAME} v{APP_VERSION} - Activation Required',
             font=self._font_title_sm,
             bg=self._colors['bg'],
             fg=self._colors['text'],
@@ -325,7 +326,7 @@ class MonitorUI:
 
         title = tk.Label(
             container,
-            text='Watchtower',
+            text=f'{APP_NAME} v{APP_VERSION}',
             font=self._font_title,
             bg=self._colors['panel'],
             fg=self._colors['text'],
