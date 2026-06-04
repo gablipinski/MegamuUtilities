@@ -1,4 +1,4 @@
-# Build script for creating a standalone EXE in Live_Monitor\bin
+# Build script for creating a standalone EXE in Guardtower\bin
 # Usage: .\scripts\build_exe.ps1
 
 $ErrorActionPreference = 'Stop'
@@ -9,7 +9,7 @@ $SpecDir = Join-Path $BinDir 'spec'
 $DistDir = Join-Path $BinDir
 $ConfigsSource = Join-Path $ProjectRoot 'configs'
 $ConfigsDest = Join-Path $BinDir 'configs'
-$ExeName = 'LiveMonitor'
+$ExeName = 'Guardtower'
 
 # Always use the explicit venv Python to avoid PATH ambiguity
 $VenvRoot = Join-Path $ProjectRoot 'venv'
