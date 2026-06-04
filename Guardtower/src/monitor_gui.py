@@ -10,10 +10,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import shutil
 import queue
+import sys
 import threading
 import time
 import tkinter as tk
+import tkinter.filedialog as filedialog
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -25,6 +28,7 @@ from twitchio.ext import commands  # type: ignore[import]
 from bot import TwitchBot
 from config import BotConfig, resolve_default_config_path
 from console_log import set_gui_hook
+from license_manager import get_license_path, get_machine_id, validate_license
 from startup_logs import emit_startup_logs
 
 GIVEAWAY_SESSION_DURATION_S = 300.0
@@ -110,6 +114,10 @@ class MonitorUI:
 
         self._load_app_icon()
         self._apply_app_icon(self.root)
+        self.root.withdraw()
+        if not self._check_license_startup():
+            self.root.destroy()
+            sys.exit(0)
         self._build_ui()
         self._create_channel_cards()
         self._reorder_channel_cards(set())
@@ -126,21 +134,27 @@ class MonitorUI:
         self.root.after(120, self._drain_events)
         self.root.after(1000, self._tick_statuses)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.root.deiconify()
 
     def run(self) -> None:
         self.root.mainloop()
 
     def _load_app_icon(self) -> None:
-        icons_dir = Path(__file__).resolve().parent.parent / "icons"
-        for name in ("guardtower.webp", "guardtower.png"):
-            icon_path = icons_dir / name
-            if not icon_path.exists():
-                continue
-            try:
-                self._app_icon = tk.PhotoImage(file=str(icon_path))
-                return
-            except Exception:
-                continue
+        icons_dirs = []
+        if getattr(sys, "frozen", False):
+            icons_dirs.append(Path(sys.executable).resolve().parent / "icons")
+        icons_dirs.append(Path(__file__).resolve().parent.parent / "icons")
+
+        for icons_dir in icons_dirs:
+            for name in ("guardtower.png", "guardtower.webp"):
+                icon_path = icons_dir / name
+                if not icon_path.exists():
+                    continue
+                try:
+                    self._app_icon = tk.PhotoImage(file=str(icon_path))
+                    return
+                except Exception:
+                    continue
         self._app_icon = None
 
     def _apply_app_icon(self, window: tk.Misc) -> None:
@@ -151,7 +165,147 @@ class MonitorUI:
         except Exception:
             pass
 
-    def _make_button(self, parent: tk.Misc, text: str, *, width: int, command, accent: bool = False) -> tk.Button:
+    def _check_license_startup(self) -> bool:
+        valid, message = validate_license(get_license_path())
+        if valid:
+            return True
+        return self._show_activation_dialog(message)
+
+    def _show_activation_dialog(self, initial_message: str) -> bool:
+        result: dict[str, bool] = {"activated": False}
+        machine_id = get_machine_id()
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Guardtower - Activation Required")
+        dialog.geometry("480x340")
+        dialog.resizable(False, False)
+        dialog.protocol("WM_DELETE_WINDOW", lambda: None)
+        self._apply_app_icon(dialog)
+        dialog.configure(bg=self._colors["bg"])
+        dialog.lift()
+        dialog.focus_force()
+
+        tk.Label(
+            dialog,
+            text="Guardtower - Activation Required",
+            font=self._font_title_sm,
+            bg=self._colors["bg"],
+            fg=self._colors["text"],
+        ).pack(pady=(18, 4))
+
+        tk.Label(
+            dialog,
+            text="This software requires a valid license to run.",
+            font=("Segoe UI", 10),
+            bg=self._colors["bg"],
+            fg=self._colors["muted"],
+        ).pack()
+
+        tk.Label(
+            dialog,
+            text="Your Machine ID:",
+            font=("Segoe UI Semibold", 9),
+            bg=self._colors["bg"],
+            fg=self._colors["text"],
+        ).pack(pady=(14, 2))
+
+        mid_var = tk.StringVar(value=machine_id)
+        mid_entry = tk.Entry(
+            dialog,
+            textvariable=mid_var,
+            state="readonly",
+            font=("Consolas", 12),
+            justify="center",
+            width=24,
+            bg=self._colors["input_bg"],
+            fg=self._colors["text"],
+            readonlybackground=self._colors["input_bg"],
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=self._colors["border"],
+            highlightcolor=self._colors["accent"],
+        )
+        mid_entry.pack()
+
+        def _copy_id() -> None:
+            dialog.clipboard_clear()
+            dialog.clipboard_append(machine_id)
+            btn_copy.configure(text="Copied!")
+            dialog.after(1500, lambda: btn_copy.configure(text="Copy Machine ID"))
+
+        btn_copy = self._make_button(dialog, text="Copy Machine ID", width=20, command=_copy_id)
+        btn_copy.pack(pady=(5, 0))
+
+        tk.Label(
+            dialog,
+            text="Send this ID to the distributor to receive your license.dat",
+            font=("Segoe UI", 8),
+            fg=self._colors["muted"],
+            bg=self._colors["bg"],
+        ).pack(pady=(3, 10))
+
+        status_var = tk.StringVar(value=initial_message.split("\n\n")[0])
+        tk.Label(
+            dialog,
+            textvariable=status_var,
+            fg="#ff8080",
+            bg=self._colors["bg"],
+            wraplength=440,
+            font=("Segoe UI", 8),
+            justify="center",
+        ).pack(pady=(0, 10))
+
+        def _browse_license() -> None:
+            path_str = filedialog.askopenfilename(
+                parent=dialog,
+                title="Select license.dat",
+                filetypes=[("License file", "*.dat"), ("All files", "*.*")],
+            )
+            if not path_str:
+                return
+            selected = Path(path_str)
+            valid, msg = validate_license(selected)
+            if not valid:
+                status_var.set(msg.split("\n")[0])
+                return
+            target = get_license_path()
+            try:
+                shutil.copy(selected, target)
+            except Exception as exc:
+                status_var.set(f"Could not copy license: {exc}\nCopy manually to: {target}")
+                return
+            result["activated"] = True
+            dialog.destroy()
+
+        def _exit_app() -> None:
+            dialog.destroy()
+
+        btn_row = tk.Frame(dialog, bg=self._colors["bg"])
+        btn_row.pack(pady=(0, 18))
+        self._make_button(
+            btn_row,
+            text="Browse for license.dat...",
+            width=26,
+            command=_browse_license,
+            accent=True,
+        ).pack(side=tk.LEFT, padx=8)
+        self._make_button(btn_row, text="Exit", width=10, command=_exit_app, danger=True).pack(
+            side=tk.LEFT, padx=8
+        )
+
+        self.root.wait_window(dialog)
+        return result["activated"]
+
+    def _make_button(
+        self,
+        parent: tk.Misc,
+        text: str,
+        *,
+        width: int,
+        command,
+        accent: bool = False,
+        danger: bool = False,
+    ) -> tk.Button:
         bg = self._colors["panel_alt"]
         hover_bg = "#2a313a"
         fg = self._colors["text"]
@@ -159,6 +313,10 @@ class MonitorUI:
         if accent:
             bg = self._colors["accent"]
             hover_bg = self._colors["accent_hover"]
+            fg = "#ffffff"
+        elif danger:
+            bg = self._colors["danger"]
+            hover_bg = self._colors["danger_hover"]
             fg = "#ffffff"
 
         return tk.Button(

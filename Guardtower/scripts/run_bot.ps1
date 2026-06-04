@@ -46,7 +46,7 @@ raise SystemExit(1 if missing else 0)
 
 $RequiredModules = @('twitchio')
 if ($Gui) {
-    $RequiredModules += 'textual'
+    $RequiredModules += 'cryptography'
 }
 
 $PythonExe = $null
@@ -82,7 +82,7 @@ if ($Log) {
 }
 if ($Gui) {
     $MainArgs += "--gui"
-    Write-Host "Modo selecionado: TUI monitor" -ForegroundColor Cyan
+    Write-Host "Modo selecionado: GUI monitor" -ForegroundColor Cyan
 }
 if ($LogOnly) {
     $MainArgs += "--log-only"

@@ -7,6 +7,8 @@ ENV/
 # Binaries
 bin/
 *.rar
+nuitka-crash-report.xml
+installer_output/
 
 # Logs 
 logs/
@@ -41,3 +43,8 @@ wheels/
 *~
 .DS_Store
 wins.log
+
+# Auth
+*.pem
+*.dat
+licenses/

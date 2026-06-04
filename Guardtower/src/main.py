@@ -3,6 +3,8 @@
 Twitch bot that automatically joins giveaways across multiple channels using multiple accounts.
 """
 
+from __future__ import annotations
+
 import asyncio
 import argparse
 import sys
@@ -10,6 +12,7 @@ from twitchio.ext import commands
 from config import load_config
 from bot import TwitchBot
 from console_log import log_line
+from license_manager import get_license_path, validate_license
 from startup_logs import emit_startup_logs
 
 def parse_args() -> argparse.Namespace:
@@ -64,6 +67,11 @@ async def main():
     args = parse_args()
 
     try:
+        valid, message = validate_license(get_license_path())
+        if not valid:
+            log_line(message, 'ignore')
+            sys.exit(1)
+
         config = load_config()
         emit_startup_logs(config, args)
         print()

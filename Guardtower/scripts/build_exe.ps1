@@ -1,141 +1,262 @@
-# Build script for creating a standalone EXE in Guardtower\bin
-# Usage: .\scripts\build_exe.ps1
+#!/usr/bin/env pwsh
+<#
+.SYNOPSIS
+    Full build pipeline: compile Guardtower.exe and create a Windows installer.
+
+.DESCRIPTION
+    Step 1 - Validate prerequisites (venv, private key)
+    Step 2 - Install / upgrade build dependencies (Nuitka, etc.)
+    Step 3 - Compile src/main.py -> dist/Guardtower.exe  (Nuitka native binary)
+    Step 4 - Create installer_output/Guardtower_Setup_1.0.0.exe  (Inno Setup 6)
+
+.PARAMETER SkipInstaller
+    Skip the Inno Setup step (useful for quick iteration builds).
+
+.PARAMETER Clean
+    Delete dist/ and build/ before compiling (default: true).
+
+.EXAMPLE
+    .\scripts\build_exe.ps1
+    .\scripts\build_exe.ps1 -SkipInstaller
+    .\scripts\build_exe.ps1 -Clean:$false -SkipInstaller
+#>
+
+param(
+    [switch]$SkipInstaller = $false,
+    [switch]$Clean = $true
+)
 
 $ErrorActionPreference = 'Stop'
-$ProjectRoot = Split-Path -Parent $PSScriptRoot
-$BinDir = Join-Path $ProjectRoot 'bin'
-$BuildDir = Join-Path $BinDir 'build'
-$SpecDir = Join-Path $BinDir 'spec'
-$DistDir = Join-Path $BinDir
-$ConfigsSource = Join-Path $ProjectRoot 'configs'
-$ConfigsDest = Join-Path $BinDir 'configs'
-$ExeName = 'Guardtower'
 
-# Always use the explicit venv Python to avoid PATH ambiguity
-$VenvRoot = Join-Path $ProjectRoot 'venv'
-$PythonExe = Join-Path $VenvRoot 'Scripts\python.exe'
-if (-not (Test-Path $PythonExe)) {
-    Write-Error "[✗] Python not found at $PythonExe. Run setup_venv.ps1 first."
+$ProjectRoot    = Split-Path -Parent $PSScriptRoot
+$VenvActivate   = Join-Path $ProjectRoot 'venv\Scripts\Activate.ps1'
+$VenvPython     = Join-Path $ProjectRoot 'venv\Scripts\python.exe'
+$MainPath       = Join-Path $ProjectRoot 'src\main.py'
+$DistDir        = Join-Path $ProjectRoot 'dist'
+$BuildDir       = Join-Path $ProjectRoot 'build'
+$InstallerOut   = Join-Path $ProjectRoot 'installer_output'
+$SetupIss       = Join-Path $ProjectRoot 'installer\setup.iss'
+$PrivateKeyPath = Join-Path $ProjectRoot 'licenses\keys\private_key.pem'
+$ConfigPath     = Join-Path $ProjectRoot 'configs\config.json'
+$IconPngPath    = Join-Path $ProjectRoot 'icons\guardtower.png'
+$IconIcoPath    = Join-Path $ProjectRoot 'icons\guardtower.ico'
+
+function Get-InnoCompilerPath {
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
+        (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe'),
+        (Join-Path $env:ProgramW6432 'Inno Setup 6\ISCC.exe')
+    )
+
+    foreach ($candidate in $candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) {
+            continue
+        }
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+
+    try {
+        $cmd = Get-Command ISCC.exe -ErrorAction Stop
+        if ($cmd -and (Test-Path $cmd.Source)) {
+            return $cmd.Source
+        }
+    }
+    catch {
+        # ISCC.exe is not available in PATH.
+    }
+
+    return $null
+}
+
+$InnoCompiler = Get-InnoCompilerPath
+
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Green
+Write-Host "  Guardtower - Build Pipeline           " -ForegroundColor Green
+Write-Host "========================================" -ForegroundColor Green
+Write-Host ""
+
+if (-not (Test-Path $VenvActivate)) {
+    Write-Host "[X] Virtual environment not found." -ForegroundColor Red
+    Write-Host "    Run .\scripts\setup_venv.ps1 first." -ForegroundColor Cyan
     exit 1
 }
-Write-Host "[✓] Using Python: $PythonExe" -ForegroundColor Green
 
-Write-Host '[⏳] Installing/updating build dependency (pyinstaller)...' -ForegroundColor Cyan
-& $PythonExe -m pip install --upgrade pyinstaller
-
-Write-Host '[⏳] Preparing bin folders...' -ForegroundColor Cyan
-New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
-New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
-New-Item -ItemType Directory -Force -Path $SpecDir | Out-Null
-
-# Generate a proper .spec file so collect_all() runs inside Python (more reliable than CLI flags)
-$SpecFile = Join-Path $SpecDir "$ExeName.spec"
-$SrcDir = Join-Path $ProjectRoot 'src'
-$MainPy = Join-Path $SrcDir 'main.py'
-
-Write-Host '[⏳] Generating .spec file...' -ForegroundColor Cyan
-$SpecContent = @"
-# -*- mode: python ; coding: utf-8 -*-
-import os
-from PyInstaller.utils.hooks import collect_all
-
-block_cipher = None
-
-# Collect every submodule + data file from twitchio and its key dependencies
-tw_d,  tw_b,  tw_h  = collect_all('twitchio')
-aio_d, aio_b, aio_h = collect_all('aiohttp')
-cn_d,  cn_b,  cn_h  = collect_all('charset_normalizer')
-yr_d,  yr_b,  yr_h  = collect_all('yarl')
-md_d,  md_b,  md_h  = collect_all('multidict')
-tx_d,  tx_b,  tx_h  = collect_all('textual')
-ri_d,  ri_b,  ri_h  = collect_all('rich')
-
-all_datas    = tw_d  + aio_d + cn_d + yr_d + md_d + tx_d + ri_d
-all_binaries = tw_b  + aio_b + cn_b + yr_b + md_b + tx_b + ri_b
-all_hidden   = tw_h  + aio_h + cn_h + yr_h + md_h + tx_h + ri_h + [
-    'twitchio',
-    'twitchio.ext',
-    'twitchio.ext.commands',
-    'twitchio.ext.commands.core',
-    'twitchio.ext.commands.bot',
-    'aiohttp',
-    'aiohttp.web',
-    'aiohttp._websocket',
-    'aiohttp.client',
-    'aiohttp.connector',
-    'frozenlist',
-    'aiosignal',
-    'async_timeout',
-    'certifi',
-    'ssl',
-    'json',
-]
-
-icon_source = r'$ProjectRoot\icons\guardtower.webp'
-if os.path.exists(icon_source):
-    all_datas.append((icon_source, 'icons'))
-
-a = Analysis(
-    [r'$MainPy'],
-    pathex=[r'$SrcDir'],
-    binaries=all_binaries,
-    datas=all_datas,
-    hiddenimports=all_hidden,
-    hookspath=[],
-    hooksconfig={},
-    runtime_hooks=[],
-    excludes=[],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=block_cipher,
-    noarchive=False,
-)
-
-pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
-
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    [],
-    name='$ExeName',
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
-    console=True,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-)
-"@
-Set-Content -Path $SpecFile -Value $SpecContent -Encoding UTF8
-
-Write-Host '[⏳] Building EXE from .spec file...' -ForegroundColor Cyan
-& $PythonExe -m PyInstaller `
-    --noconfirm `
-    --clean `
-    --distpath $DistDir `
-    --workpath $BuildDir `
-    $SpecFile
-
-Write-Host '[⏳] Copying editable configs to bin\configs...' -ForegroundColor Cyan
-New-Item -ItemType Directory -Force -Path $ConfigsDest | Out-Null
-Copy-Item -Force (Join-Path $ConfigsSource 'config.json') (Join-Path $ConfigsDest 'config.json')
-if (Test-Path (Join-Path $ConfigsSource 'config_example.json')) {
-    Copy-Item -Force (Join-Path $ConfigsSource 'config_example.json') (Join-Path $ConfigsDest 'config_example.json')
+if (-not (Test-Path $MainPath)) {
+    Write-Host "[X] src\main.py not found." -ForegroundColor Red
+    exit 1
 }
 
-Write-Host ''
-Write-Host "[✓] Build complete: $DistDir\$ExeName.exe" -ForegroundColor Green
-Write-Host "[✓] Editable config: $ConfigsDest\config.json" -ForegroundColor Green
-Write-Host ''
-Write-Host 'Run:' -ForegroundColor Yellow
-Write-Host "  cd $BinDir" -ForegroundColor Yellow
-Write-Host "  .\$ExeName.exe" -ForegroundColor Yellow
+if (-not (Test-Path $PrivateKeyPath)) {
+    Write-Host "[X] Private key not found: $PrivateKeyPath" -ForegroundColor Red
+    Write-Host "    Run: python tools\generate_keys.py" -ForegroundColor Cyan
+    Write-Host "    This embeds the public key in src\license_manager.py" -ForegroundColor Cyan
+    exit 1
+}
+
+if (-not (Test-Path $ConfigPath)) {
+    Write-Host "[X] Config not found: $ConfigPath" -ForegroundColor Red
+    exit 1
+}
+
+& $VenvActivate
+
+if (-not (Test-Path $VenvPython)) {
+    Write-Host "[X] Python executable not found in venv: $VenvPython" -ForegroundColor Red
+    Write-Host "    Recreate venv with .\scripts\setup_venv.ps1" -ForegroundColor Cyan
+    exit 1
+}
+
+$PythonVersion = & "$VenvPython" -c "import sys; print(f'{sys.version_info[0]}.{sys.version_info[1]}')"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[X] Could not determine Python version from venv." -ForegroundColor Red
+    exit 1
+}
+
+if ($PythonVersion -ne "3.12") {
+    Write-Host "[X] Venv Python version is $PythonVersion." -ForegroundColor Red
+    Write-Host "[X] Build requires Python 3.12 to avoid Nuitka linker failures." -ForegroundColor Red
+    Write-Host "    Run .\scripts\setup_venv.ps1 to recreate the environment with 3.12." -ForegroundColor Cyan
+    exit 1
+}
+
+if ($Clean) {
+    Write-Host "[1/4] Cleaning previous build artifacts..." -ForegroundColor Cyan
+    if (Test-Path $DistDir)  { Remove-Item -Recurse -Force $DistDir }
+    if (Test-Path $BuildDir) { Remove-Item -Recurse -Force $BuildDir }
+} else {
+    Write-Host "[1/4] Skipping clean (-Clean:`$false)." -ForegroundColor DarkGray
+}
+
+New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
+
+Write-Host "[2/4] Updating build dependencies..." -ForegroundColor Cyan
+& "$VenvPython" -m pip install --upgrade pip --quiet
+& "$VenvPython" -m pip install --upgrade nuitka ordered-set zstandard pillow --quiet
+
+if (-not (Test-Path $IconPngPath)) {
+    Write-Host "[X] Icon source not found: $IconPngPath" -ForegroundColor Red
+    exit 1
+}
+
+if (-not (Test-Path $IconIcoPath)) {
+    Write-Host "[2/4] Creating icons\guardtower.ico from PNG..." -ForegroundColor Cyan
+    & "$VenvPython" -c "from PIL import Image; Image.open(r'$IconPngPath').save(r'$IconIcoPath', format='ICO', sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)])"
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $IconIcoPath)) {
+        Write-Host "[X] Failed to generate ICO file from PNG icon." -ForegroundColor Red
+        exit 1
+    }
+}
+
+Write-Host "[3/4] Compiling with Nuitka (this may take a few minutes)..." -ForegroundColor Cyan
+
+function Test-PythonModule {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ModuleName
+    )
+
+    & "$VenvPython" -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('$ModuleName') else 1)" *> $null
+    return ($LASTEXITCODE -eq 0)
+}
+
+$includePackages = @(
+    'twitchio',
+    'aiohttp',
+    'multidict',
+    'yarl',
+    'frozenlist',
+    'aiosignal',
+    'winotify',
+    'cryptography'
+)
+
+$nuitkaIncludeArgs = @()
+foreach ($pkg in $includePackages) {
+    if (Test-PythonModule -ModuleName $pkg) {
+        $nuitkaIncludeArgs += "--include-package=$pkg"
+    }
+    else {
+        Write-Host "[3/4] Optional package '$pkg' is not installed - skipping explicit include." -ForegroundColor Yellow
+    }
+}
+
+& "$VenvPython" -m nuitka `
+    --onefile `
+    --standalone `
+    --assume-yes-for-downloads `
+    --remove-output `
+    --lto=yes `
+    --python-flag=no_docstrings `
+    --python-flag=-O `
+    --enable-plugin=tk-inter `
+    --windows-console-mode=disable `
+    $nuitkaIncludeArgs `
+    --windows-icon-from-ico="$IconIcoPath" `
+    --output-dir="$DistDir" `
+    --output-filename="Guardtower.exe" `
+    "$MainPath"
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[X] Compilation failed (exit code $LASTEXITCODE)." -ForegroundColor Red
+    exit $LASTEXITCODE
+}
+
+Write-Host "[OK] Executable: $DistDir\Guardtower.exe" -ForegroundColor Green
+
+Write-Host "[3/4] Copying editable configs and icons to dist..." -ForegroundColor Cyan
+New-Item -ItemType Directory -Force -Path (Join-Path $DistDir 'configs') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $DistDir 'icons') | Out-Null
+Copy-Item -Force $ConfigPath (Join-Path $DistDir 'configs\config.json')
+Copy-Item -Force $IconPngPath (Join-Path $DistDir 'icons\guardtower.png')
+if (Test-Path $IconIcoPath) {
+    Copy-Item -Force $IconIcoPath (Join-Path $DistDir 'icons\guardtower.ico')
+}
+
+if ($SkipInstaller) {
+    Write-Host "[4/4] Installer skipped (-SkipInstaller)." -ForegroundColor DarkGray
+}
+elseif (-not $InnoCompiler) {
+    Write-Host "[4/4] Inno Setup 6 not found - skipping installer." -ForegroundColor Yellow
+    Write-Host "      Install from: https://jrsoftware.org/isdl.php" -ForegroundColor Yellow
+    Write-Host "      Then re-run, or run manually:" -ForegroundColor Yellow
+    Write-Host "      ISCC.exe `"$SetupIss`"" -ForegroundColor Yellow
+}
+else {
+    Write-Host "[4/4] Creating installer with Inno Setup 6..." -ForegroundColor Cyan
+    Write-Host "      Using compiler: $InnoCompiler" -ForegroundColor DarkGray
+    New-Item -ItemType Directory -Force -Path $InstallerOut | Out-Null
+
+    & "$InnoCompiler" "$SetupIss"
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[X] Inno Setup failed (exit code $LASTEXITCODE)." -ForegroundColor Red
+        exit $LASTEXITCODE
+    }
+    Write-Host "[OK] Installer: $InstallerOut\Guardtower_Setup_1.0.0.exe" -ForegroundColor Green
+}
+
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Green
+Write-Host "  Build Complete                        " -ForegroundColor Green
+Write-Host "========================================" -ForegroundColor Green
+Write-Host ""
+Write-Host "Outputs:" -ForegroundColor Cyan
+Write-Host "  Executable : $DistDir\Guardtower.exe"
+
+if (-not $SkipInstaller -and $InnoCompiler) {
+    Write-Host "  Installer  : $InstallerOut\Guardtower_Setup_1.0.0.exe"
+}
+
+Write-Host ""
+Write-Host "Distribution checklist:" -ForegroundColor Yellow
+Write-Host "  1. Share Guardtower_Setup_1.0.0.exe with the user"
+Write-Host "  2. User installs and launches the app"
+Write-Host "  3. App shows their Machine ID - they send it to you"
+Write-Host '  4. You run:  python tools\generate_license.py <machine_id> "<name>"'
+Write-Host "  5. You send the generated license.dat to the user"
+Write-Host "  6. User places license.dat in: %APPDATA%\Guardtower\"
+Write-Host ""
