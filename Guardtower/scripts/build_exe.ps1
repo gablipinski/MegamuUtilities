@@ -36,6 +36,7 @@ $MainPy = Join-Path $SrcDir 'main.py'
 Write-Host '[⏳] Generating .spec file...' -ForegroundColor Cyan
 $SpecContent = @"
 # -*- mode: python ; coding: utf-8 -*-
+import os
 from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
@@ -69,6 +70,10 @@ all_hidden   = tw_h  + aio_h + cn_h + yr_h + md_h + tx_h + ri_h + [
     'ssl',
     'json',
 ]
+
+icon_source = r'$ProjectRoot\icons\guardtower.webp'
+if os.path.exists(icon_source):
+    all_datas.append((icon_source, 'icons'))
 
 a = Analysis(
     [r'$MainPy'],

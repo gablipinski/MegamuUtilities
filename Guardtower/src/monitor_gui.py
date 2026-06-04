@@ -1,731 +1,1090 @@
 """
-Textual TUI for the Twitch Giveaway Monitor.
+Tkinter GUI for the Twitch Giveaway Monitor.
 
-Each Twitch channel gets its own panel showing live log lines and a status
-badge (IDLE / ACTIVE / ENDING).  A small system panel at the top shows
-startup and non-channel messages.
-
-Launch via:  python main.py --gui
+This module ports the monitor from Textual to Tkinter while preserving the
+existing layout behavior and runtime features.
 """
 
 from __future__ import annotations
 
-import asyncio
-import subprocess
-import time
 import argparse
-import math
+import asyncio
 import json
+import queue
+import threading
+import time
+import tkinter as tk
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass, field
+from pathlib import Path
+from tkinter import messagebox
 
-from textual.app import App, ComposeResult
-from textual.binding import Binding
-from textual.containers import Container, Horizontal, VerticalScroll
-from textual.css.query import NoMatches
-from textual.message import Message
-from textual.widget import Widget
-from textual.widgets import Footer, Header, RichLog, Static
-
-from console_log import set_gui_hook
-from config import BotConfig
-from startup_logs import emit_startup_logs
 from twitchio.ext import commands  # type: ignore[import]
+
 from bot import TwitchBot
+from config import BotConfig, resolve_default_config_path
+from console_log import set_gui_hook
+from startup_logs import emit_startup_logs
 
-
-# ---------------------------------------------------------------------------
-# Colour map: log kind → Rich markup colour
-# ---------------------------------------------------------------------------
-_RICH_COLOR: dict[str, str] = {
-    "join":             "dim white",
-    "monitor_start":    "dim white",
-    "ignore":           "bold red",
-    "win":              "bold green",
-    "notification":     "bright_cyan",
-    "send":             "bold white",
-    "giveaway_active":  "bold magenta",
-    "giveaway_inactive":"magenta",
-    "decision":         "bright_blue",
-    "cooldown":         "yellow",
-    "other":            "dim white",
-}
-
-GIVEAWAY_SESSION_DURATION_S = 300.0  # default; overridden from config at app startup
+GIVEAWAY_SESSION_DURATION_S = 300.0
 IDLE_ALERT_THRESHOLD_S = 3600.0
 
 
-# ---------------------------------------------------------------------------
-# Internal message: routes a log_line call into the Textual event loop
-# ---------------------------------------------------------------------------
-class LogEvent(Message):
-    def __init__(self, message: str, kind: str, channel: str | None, account: str | None) -> None:
-        super().__init__()
-        self.log_message = message
-        self.kind = kind
-        self.channel = channel
-        self.account = account
+@dataclass
+class ChannelView:
+    name: str
+    frame: tk.Frame
+    header_row: tk.Frame
+    header: tk.Label
+    led: tk.Canvas
+    led_circle: int
+    log_widget: tk.Text
+    log_lines: list[tuple[str, str]] = field(default_factory=list)
+    is_online: bool = False
+    status: str = "idle"
+    status_since: float = 0.0
+    session_giveaways: int = 0
+    session_wins: int = 0
+    session_win_recorded: bool = False
+    win_at: float = 0.0
+    idle_alert_active: bool = False
 
 
-class ResetChannelEvent(Message):
-    """Fired by a ChannelPanel to ask the app to reset bot state for one streamer."""
-    def __init__(self, channel_name: str) -> None:
-        super().__init__()
-        self.channel_name = channel_name
-
-
-class ReloadTriggersEvent(Message):
-    """Fired by a ChannelPanel to ask the app to reload triggers from config.json."""
-    def __init__(self, channel_name: str) -> None:
-        super().__init__()
-        self.channel_name = channel_name
-
-
-# ---------------------------------------------------------------------------
-# Per-channel panel
-# ---------------------------------------------------------------------------
-def _copy_to_clipboard(text: str) -> bool:
-    """Copy text to Windows clipboard. Returns True on success."""
-    try:
-        subprocess.run(['clip'], input=text, encoding='utf-8', check=True)
-        return True
-    except Exception:
-        return False
-
-
-class ChannelPanel(Widget):
-    """Compact panel for one Twitch channel: header badge + scrollable log."""
-
-    can_focus = True
-
-    BINDINGS = [
-        Binding("c", "copy_log", "Copy log"),
-        Binding("r", "refresh_channel", "Refresh"),
-        Binding("t", "reload_triggers", "Reload triggers"),
-    ]
-
-    DEFAULT_CSS = """
-    ChannelPanel {
-        border: solid $primary-darken-3;
-        width: 1fr;
-        height: 9;
-        margin: 0 1 1 0;
-    }
-    ChannelPanel:focus {
-        border: solid $accent;
-    }
-    ChannelPanel .ch-header {
-        background: #1a3a5c;
-        color: $text-muted;
-        height: 1;
-        padding: 0 1;
-        text-style: bold;
-    }
-    ChannelPanel .ch-header.status-joined {
-        background: #5b2c8e;
-        color: $text;
-    }
-    ChannelPanel .ch-header.status-ongoing {
-        background: $success-darken-2;
-        color: $text;
-    }
-    ChannelPanel .ch-header.status-idle-stale {
-        background: #7f1d1d;
-        color: $text;
-    }
-    ChannelPanel RichLog {
-        background: #111111;
-        scrollbar-size: 1 1;
-        height: 1fr;
-    }
-    """
-
-    _STATUS_IDLE = "idle"
-    _STATUS_JOINED = "joined"
-    _STATUS_ONGOING = "ongoing"
-
-    _LOG_BUFFER_MAX = 500
-
-    def __init__(self, channel_name: str, is_online: bool = False, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self.channel_name = channel_name
-        self._is_online = is_online
-        self._status = self._STATUS_IDLE
-        self._status_since: float = time.monotonic()
-        self._log_buffer: list[str] = []
-        self._pending_widget_logs: list[tuple[str, str]] = []
-        self._session_giveaways = 0
-        self._session_wins = 0
-        self._session_win_recorded = False
-        self._win_at: float = 0.0  # monotonic timestamp of last win (0 = none)
-        self._idle_alert_active = False
-
-    def _is_idle_stale(self, now: float) -> bool:
-        return (
-            self._status == self._STATUS_IDLE
-            and self._status_since > 0.0
-            and (now - self._status_since) >= IDLE_ALERT_THRESHOLD_S
-        )
-
-    def _render_header_text(self, now: float | None = None) -> str:
-        online_dot = "🟢" if self._is_online else "🔴"
-        stats = f"({self._session_giveaways}/{self._session_wins})"
-        now_value = now if now is not None else time.monotonic()
-        win_badge = "  🏆 WIN" if (self._win_at > 0 and (now_value - self._win_at) < GIVEAWAY_SESSION_DURATION_S) else ""
-        if self._status == self._STATUS_JOINED:
-            return f"{online_dot} {self.channel_name} {stats}   ● JOINED{win_badge}"
-        if self._status == self._STATUS_ONGOING:
-            remaining = max(0, int(math.ceil(GIVEAWAY_SESSION_DURATION_S - (now_value - self._status_since))))
-            return f"{online_dot} {self.channel_name} {stats}   ⏱ ONGOING  {remaining:>3}s{win_badge}"
-        return f"{online_dot} {self.channel_name} {stats}   ○ idle{win_badge}"
-
-    def compose(self) -> ComposeResult:
-        yield Static(
-            self._render_header_text(),
-            classes="ch-header",
-            id=f"hdr_{self.channel_name}",
-        )
-        yield RichLog(
-            highlight=False,
-            markup=True,
-            wrap=True,
-            id=f"log_{self.channel_name}",
-        )
-
-    def on_mount(self) -> None:
-        self._refresh_header()
-        self._flush_pending_widget_logs()
-
-    def _refresh_header(self, now: float | None = None) -> None:
-        try:
-            header = self.query_one(f"#hdr_{self.channel_name}", Static)
-        except NoMatches:
-            return
-
-        now_value = now if now is not None else time.monotonic()
-        idle_stale = self._is_idle_stale(now_value)
-        self._idle_alert_active = idle_stale
-
-        header.remove_class("status-joined")
-        header.remove_class("status-ongoing")
-        header.remove_class("status-idle-stale")
-        if self._status == self._STATUS_JOINED:
-            header.add_class("status-joined")
-        elif self._status == self._STATUS_ONGOING:
-            header.add_class("status-ongoing")
-        elif idle_stale:
-            header.add_class("status-idle-stale")
-        header.update(self._render_header_text(now_value))
-
-    def _flush_pending_widget_logs(self) -> None:
-        if not self._pending_widget_logs:
-            return
-        try:
-            log = self.query_one(f"#log_{self.channel_name}", RichLog)
-        except NoMatches:
-            return
-
-        pending = self._pending_widget_logs
-        self._pending_widget_logs = []
-        for pending_message, pending_kind in pending:
-            pending_color = _RICH_COLOR.get(pending_kind, "dim white")
-            log.write(f"[{pending_color}]{pending_message}[/{pending_color}]")
-
-    def add_log(self, message: str, kind: str) -> None:
-        self._log_buffer.append(message)
-        if len(self._log_buffer) > self._LOG_BUFFER_MAX:
-            self._log_buffer = self._log_buffer[-self._LOG_BUFFER_MAX:]
-
-        color = _RICH_COLOR.get(kind, "dim white")
-        try:
-            log = self.query_one(f"#log_{self.channel_name}", RichLog)
-        except NoMatches:
-            self._pending_widget_logs.append((message, kind))
-        else:
-            if self._pending_widget_logs:
-                self._flush_pending_widget_logs()
-            log.write(f"[{color}]{message}[/{color}]")
-
-        if kind == "giveaway_active":
-            if self._status != self._STATUS_JOINED:
-                self._session_giveaways += 1
-                self._session_win_recorded = False
-            self._set_status(self._STATUS_JOINED)
-        elif kind == "giveaway_inactive":
-            self._set_status(self._STATUS_ONGOING)
-        elif kind == "win" and not self._session_win_recorded:
-            self._session_wins += 1
-            self._session_win_recorded = True
-            # Only show win badge if we're in ONGOING (winner already announced)
-            if self._status != self._STATUS_ONGOING:
-                self._set_status(self._STATUS_ONGOING)
-            self._win_at = time.monotonic()
-            self._refresh_header()
-
-    def reset(self) -> None:
-        """Clear log, reset status and session counters."""
-        self._log_buffer.clear()
-        self._pending_widget_logs.clear()
-        self._session_giveaways = 0
-        self._session_wins = 0
-        self._session_win_recorded = False
-        self._win_at = 0.0
-        self._status = self._STATUS_IDLE
-        self._status_since = time.monotonic()
-        self._idle_alert_active = False
-        try:
-            log = self.query_one(f"#log_{self.channel_name}", RichLog)
-            log.clear()
-        except NoMatches:
-            pass
-        self._refresh_header()
-
-    def action_refresh_channel(self) -> None:
-        self.reset()
-        self.post_message(ResetChannelEvent(self.channel_name))
-        self.notify(f"#{self.channel_name} reset", timeout=2)
-
-    def action_reload_triggers(self) -> None:
-        self.post_message(ReloadTriggersEvent(self.channel_name))
-
-    def action_copy_log(self) -> None:
-        content = "\n".join(self._log_buffer)
-        if _copy_to_clipboard(content):
-            self.notify(f"Copied {len(self._log_buffer)} lines from #{self.channel_name}", timeout=2)
-        else:
-            self.notify("Clipboard copy failed", severity="error", timeout=2)
-
-    def _set_status(self, status: str) -> None:
-        self._status = status
-        self._status_since = time.monotonic()
-        self._refresh_header()
-
-    def tick(self, now: float) -> None:
-        """Called by the app timer; resets ONGOING → IDLE after session expires and clears win badge."""
-        needs_refresh = False
-        if self._status == self._STATUS_ONGOING:
-            if now - self._status_since >= GIVEAWAY_SESSION_DURATION_S:
-                self._set_status(self._STATUS_IDLE)
-                return
-            needs_refresh = True
-        elif self._status == self._STATUS_IDLE:
-            if (not self._idle_alert_active) and self._is_idle_stale(now):
-                needs_refresh = True
-        if self._win_at > 0 and (now - self._win_at) >= GIVEAWAY_SESSION_DURATION_S:
-            self._win_at = 0.0
-            needs_refresh = True
-        if needs_refresh:
-            self._refresh_header(now)
-
-
-# ---------------------------------------------------------------------------
-# System / global panel (startup + non-channel messages)
-# ---------------------------------------------------------------------------
-class SystemPanel(Widget):
-    can_focus = True
-
-    BINDINGS = [
-        Binding("c", "copy_log", "Copy log"),
-        Binding("u", "copy_url", "Copy URL"),
-    ]
-
-    DEFAULT_CSS = """
-    SystemPanel {
-        border: solid $accent-darken-2;
-        height: 15;
-        margin: 0 1 1 0;
-    }
-    SystemPanel:focus {
-        border: solid $accent;
-    }
-    SystemPanel .sys-header {
-        background: $accent-darken-2;
-        height: 1;
-        padding: 0 1;
-        text-style: bold;
-    }
-    SystemPanel .sys-link-bar {
-        background: #0d1b2a;
-        height: 1;
-        padding: 0 1;
-        color: $accent;
-    }
-    SystemPanel RichLog {
-        background: #111111;
-        scrollbar-size: 1 1;
-        margin: 0 1 0 1;
-    }
-    """
-
-    _LOG_BUFFER_MAX = 500
-
-    def __init__(self, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self._log_buffer: list[str] = []
-        self._link_url: str = ""
-
-    def compose(self) -> ComposeResult:
-        yield Static("⚙  System", classes="sys-header")
-        yield Static("MultiTwitch ► (aguardando...)", id="sys_link", classes="sys-link-bar")
-        yield RichLog(highlight=False, markup=True, wrap=True, id="sys_log")
-
-    def set_link(self, url: str) -> None:
-        self._link_url = url
-        self.query_one("#sys_link", Static).update(f"MultiTwitch ► {url}")
-
-    def action_copy_url(self) -> None:
-        if self._link_url:
-            if _copy_to_clipboard(self._link_url):
-                self.notify("MultiTwitch URL copiado", timeout=2)
-            else:
-                self.notify("Falha ao copiar", severity="error", timeout=2)
-        else:
-            self.notify("URL nao disponivel ainda", timeout=2)
-
-    def add_log(self, message: str, kind: str) -> None:
-        self._log_buffer.append(message)
-        if len(self._log_buffer) > self._LOG_BUFFER_MAX:
-            self._log_buffer = self._log_buffer[-self._LOG_BUFFER_MAX:]
-
-        color = _RICH_COLOR.get(kind, "dim white")
-        log = self.query_one("#sys_log", RichLog)
-        log.write(f"[{color}]{message}[/{color}]")
-
-    def action_copy_log(self) -> None:
-        content = "\n".join(self._log_buffer)
-        if _copy_to_clipboard(content):
-            self.notify(f"Copied {len(self._log_buffer)} lines", timeout=2)
-        else:
-            self.notify("Clipboard copy failed", severity="error", timeout=2)
-
-
-# ---------------------------------------------------------------------------
-# Main Textual application
-# ---------------------------------------------------------------------------
-class MonitorApp(App):
-    TITLE = "Twitch Giveaway Monitor"
-    DARK = True
-
-    CSS = """
-    Screen {
-        background: #0d0d0d;
-    }
-    #channel-scroll {
-        height: 1fr;
-        width: 100%;
-        overflow-y: auto;
-        padding: 0 1;
-        scrollbar-size: 1 1;
-    }
-    #channel-list {
-        layout: vertical;
-        width: 100%;
-        height: auto;
-    }
-    .channel-row {
-        layout: horizontal;
-        width: 100%;
-        height: auto;
-    }
-    """
-
-    BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("R", "refresh_all", "Refresh all", key_display="Shift+R"),
-    ]
-
-    # How often (seconds) to poll Twitch for online/offline changes.
-    _ONLINE_POLL_INTERVAL_S = 60
+class MonitorUI:
+    _ONLINE_POLL_INTERVAL_S = 60.0
+    _CHANNEL_LOG_BUFFER_MAX = 500
+    _SYSTEM_LOG_BUFFER_MAX = 500
 
     def __init__(self, config: BotConfig, args: argparse.Namespace) -> None:
-        super().__init__()
         self._bot_config = config
         self._bot_args = args
-        self._channel_panels: dict[str, ChannelPanel] = {}
-        self._bot_instances: list[TwitchBot] = []
-        self._online_channels: set[str] = set()
-        # Sync GUI countdown with the configured bot timer.
+
         global GIVEAWAY_SESSION_DURATION_S
         GIVEAWAY_SESSION_DURATION_S = config.runtime.giveaway_end_after_win_s
 
-    def compose(self) -> ComposeResult:
-        yield Header()
-        yield SystemPanel(id="sys_panel")
-        with VerticalScroll(id="channel-scroll"):
-            yield Container(id="channel-list")
-        yield Footer()
+        self.root = tk.Tk()
+        self._colors = {
+            "bg": "#111418",
+            "panel": "#171b21",
+            "panel_alt": "#1d232b",
+            "border": "#2b3440",
+            "text": "#e7ecf3",
+            "muted": "#9aa7b7",
+            "accent": "#2f81f7",
+            "accent_hover": "#1f6fe0",
+            "danger": "#c2494b",
+            "danger_hover": "#a6383b",
+            "success": "#26a269",
+            "input_bg": "#0f1318",
+        }
+        self._kind_fg = {
+            "join": "#9aa7b7",
+            "monitor_start": "#9aa7b7",
+            "ignore": "#ff6b6b",
+            "win": "#26a269",
+            "notification": "#6fe0ff",
+            "send": "#e7ecf3",
+            "giveaway_active": "#7fb2ff",
+            "giveaway_inactive": "#82d482",
+            "decision": "#7ab0ff",
+            "cooldown": "#e3b341",
+            "other": "#9aa7b7",
+        }
+        self._font_ui = ("Segoe UI", 10)
+        self._font_title = ("Segoe UI Semibold", 16)
+        self._font_title_sm = ("Segoe UI Semibold", 10)
 
-    def _add_system_log(self, message: str, kind: str) -> None:
-        try:
-            sys_panel = self.query_one("#sys_panel", SystemPanel)
-        except NoMatches:
-            print(message)
-            return
-        sys_panel.add_log(message, kind)
+        self._event_queue: queue.Queue[tuple[str, object | None]] = queue.Queue()
+        self._shutdown_event = threading.Event()
+        self._runtime_thread: threading.Thread | None = None
+        self._runtime_loop: asyncio.AbstractEventLoop | None = None
+        self._bot_instances: list[TwitchBot] = []
+        self._bot_clients: list[commands.Bot] = []
+        self._online_channels: set[str] = set()
 
-    def _normalize_bearer_token(self, token: str) -> str:
-        token_value = token.strip()
-        if token_value.lower().startswith("oauth:"):
-            return token_value.split(":", 1)[1].strip()
-        return token_value
+        self._app_icon: tk.PhotoImage | None = None
+        self._system_log_lines: list[tuple[str, str]] = []
+        self._multitwitch_url: str = "(no channels online)"
+        self._channel_views: dict[str, ChannelView] = {}
 
-    def _get_twitch_client_id_sync(self, token: str) -> str | None:
-        """Resolves Client-ID from OAuth token using Twitch validate endpoint."""
-        validate_url = "https://id.twitch.tv/oauth2/validate"
-        auth_variants = [f"OAuth {token}", f"Bearer {token}"]
+        self._load_app_icon()
+        self._apply_app_icon(self.root)
+        self._build_ui()
+        self._create_channel_cards()
+        self._reorder_channel_cards(set())
 
-        for authorization in auth_variants:
-            request = urllib.request.Request(
-                validate_url,
-                headers={"Authorization": authorization},
-            )
+        self.root.title("Guardtower Monitor")
+        self.root.geometry("1220x820")
+        self.root.minsize(980, 620)
+        self.root.configure(bg=self._colors["bg"])
+        self.root.option_add("*Font", self._font_ui)
+
+        set_gui_hook(self._queue_log_event)
+        self._start_runtime_thread()
+
+        self.root.after(120, self._drain_events)
+        self.root.after(1000, self._tick_statuses)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def run(self) -> None:
+        self.root.mainloop()
+
+    def _load_app_icon(self) -> None:
+        icons_dir = Path(__file__).resolve().parent.parent / "icons"
+        for name in ("guardtower.webp", "guardtower.png"):
+            icon_path = icons_dir / name
+            if not icon_path.exists():
+                continue
             try:
-                with urllib.request.urlopen(request, timeout=8) as response:
-                    payload = json.loads(response.read().decode("utf-8", errors="ignore"))
-            except Exception:
-                continue
-
-            client_id = str(payload.get("client_id", "")).strip()
-            if client_id:
-                return client_id
-
-        return None
-
-    def _fetch_online_channels_helix_sync(self, channel_names: list[str]) -> set[str]:
-        """Fetches online channels from Twitch Helix Streams endpoint."""
-        if not self._bot_config.accounts:
-            return set()
-
-        raw_token = self._bot_config.accounts[0].oauth_token
-        token = self._normalize_bearer_token(raw_token)
-        if not token:
-            return set()
-
-        client_id = self._get_twitch_client_id_sync(token)
-        if not client_id:
-            return set()
-
-        online: set[str] = set()
-        base_url = "https://api.twitch.tv/helix/streams"
-
-        # Helix accepts up to 100 user_login params per request.
-        for index in range(0, len(channel_names), 100):
-            chunk = channel_names[index:index + 100]
-            if not chunk:
-                continue
-
-            query = urllib.parse.urlencode([("user_login", name) for name in chunk])
-            request = urllib.request.Request(
-                f"{base_url}?{query}",
-                headers={
-                    "Client-ID": client_id,
-                    "Authorization": f"Bearer {token}",
-                },
-            )
-            try:
-                with urllib.request.urlopen(request, timeout=10) as response:
-                    payload = json.loads(response.read().decode("utf-8", errors="ignore"))
-            except Exception:
-                continue
-
-            entries = payload.get("data", []) if isinstance(payload, dict) else []
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    continue
-                login = str(entry.get("user_login", "")).strip().lower()
-                if login:
-                    online.add(login)
-
-        return online
-
-    async def _fetch_online_channels_startup(self, channel_names: list[str]) -> set[str]:
-        """Returns channels currently online (lowercase names), or empty set if unavailable."""
-        normalized = [name.strip().lower() for name in channel_names if name.strip()]
-        return await asyncio.to_thread(self._fetch_online_channels_helix_sync, normalized)
-
-    async def on_mount(self) -> None:
-        # Build channel panels inside scrollable two-column rows, static order by name.
-        channel_list = self.query_one("#channel-list", Container)
-        channel_names = [channel.name for channel in self._bot_config.channels]
-        online_channels = await self._fetch_online_channels_startup(channel_names)
-        self._online_channels = online_channels
-        sorted_channels = sorted(
-            self._bot_config.channels,
-            key=lambda channel: (
-                0 if channel.name.casefold() in online_channels else 1,
-                channel.name.casefold(),
-            ),
-        )
-
-        for index in range(0, len(sorted_channels), 3):
-            row = Horizontal(classes="channel-row")
-            await channel_list.mount(row)
-
-            for ch in sorted_channels[index:index + 3]:
-                panel = ChannelPanel(
-                    ch.name,
-                    is_online=(ch.name.casefold() in online_channels),
-                    id=f"cpanel_{ch.name}",
-                )
-                self._channel_panels[ch.name] = panel
-                await row.mount(panel)
-
-        # Hook log_line BEFORE starting the bot
-        app_ref = self
-
-        def _hook(message: str, kind: str, channel: str | None, account: str | None) -> None:
-            app_ref.post_message(LogEvent(message, kind, channel, account))
-
-        set_gui_hook(_hook)
-
-        # Generate the initial MultiTwitch link from online channels only.
-        self._update_multitwitch_link()
-
-        # Periodic status ticker (every 1 s) for live ENDING countdown.
-        self.set_interval(1.0, self._tick_statuses)
-
-        # Periodic online-status poller — reorders panels automatically.
-        asyncio.get_event_loop().create_task(self._poll_online_status())
-
-        # Launch bot tasks inside Textual's asyncio loop
-        asyncio.get_event_loop().create_task(self._run_bot())
-
-    def on_log_event(self, event: LogEvent) -> None:
-        channel = event.channel
-        if channel and channel in self._channel_panels:
-            self._channel_panels[channel].add_log(event.log_message, event.kind)
-        else:
-            # Ignore the startup Multitwitch log — we manage the link bar ourselves
-            # based on online channels only.
-            if not channel and event.log_message.startswith("Multitwitch: "):
+                self._app_icon = tk.PhotoImage(file=str(icon_path))
                 return
-            prefix = f"[{channel}] " if channel else ""
-            self._add_system_log(f"{prefix}{event.log_message}", event.kind)
+            except Exception:
+                continue
+        self._app_icon = None
 
-    def _tick_statuses(self) -> None:
-        now = time.monotonic()
-        for panel in self._channel_panels.values():
-            panel.tick(now)
-
-    def _update_multitwitch_link(self) -> None:
-        """Regenerate the MultiTwitch URL from currently online channels (alphabetical)."""
-        online_sorted = sorted(self._online_channels)
-        if online_sorted:
-            url = f"https://multitwitch.tv/{'/'.join(online_sorted)}"
-        else:
-            url = "(no channels online)"
+    def _apply_app_icon(self, window: tk.Misc) -> None:
+        if self._app_icon is None:
+            return
         try:
-            self.query_one("#sys_panel", SystemPanel).set_link(url)
-        except NoMatches:
+            window.iconphoto(True, self._app_icon)
+        except Exception:
             pass
 
-    async def _reorder_panels(self, online_channels: set[str]) -> None:
-        """Reparent channel panels into rows sorted by online status. No state is cleared."""
-        self._online_channels = online_channels
+    def _make_button(self, parent: tk.Misc, text: str, *, width: int, command, accent: bool = False) -> tk.Button:
+        bg = self._colors["panel_alt"]
+        hover_bg = "#2a313a"
+        fg = self._colors["text"]
 
-        # Update the online dot on every panel
-        for channel_name, panel in self._channel_panels.items():
-            panel._is_online = channel_name.casefold() in online_channels
-            panel._refresh_header()
+        if accent:
+            bg = self._colors["accent"]
+            hover_bg = self._colors["accent_hover"]
+            fg = "#ffffff"
 
-        sorted_channels = sorted(
-            self._bot_config.channels,
-            key=lambda ch: (
-                0 if ch.name.casefold() in online_channels else 1,
-                ch.name.casefold(),
-            ),
+        return tk.Button(
+            parent,
+            text=text,
+            width=width,
+            command=command,
+            relief=tk.FLAT,
+            bd=0,
+            cursor="hand2",
+            padx=8,
+            pady=6,
+            bg=bg,
+            fg=fg,
+            activebackground=hover_bg,
+            activeforeground="#ffffff",
+            highlightthickness=1,
+            highlightbackground=self._colors["border"],
+            highlightcolor=self._colors["accent"],
         )
 
-        channel_list = self.query_one("#channel-list", Container)
+    def _build_ui(self) -> None:
+        container = tk.Frame(
+            self.root,
+            padx=14,
+            pady=14,
+            bg=self._colors["panel"],
+            highlightthickness=1,
+            highlightbackground=self._colors["border"],
+        )
+        container.pack(fill=tk.BOTH, expand=True)
 
-        # Detach panels from their current rows (without destroying them)
-        for panel in self._channel_panels.values():
-            await panel.remove()
+        title_row = tk.Frame(container, bg=self._colors["panel"])
+        title_row.pack(fill=tk.X)
 
-        # Now remove the empty row containers
-        await channel_list.remove_children()
+        tk.Label(
+            title_row,
+            text="Guardtower",
+            bg=self._colors["panel"],
+            fg=self._colors["text"],
+            font=self._font_title,
+        ).pack(side=tk.LEFT)
 
-        # Rebuild rows and re-mount the existing panels (preserves log history)
-        for index in range(0, len(sorted_channels), 3):
-            row = Horizontal(classes="channel-row")
-            await channel_list.mount(row)
-            for ch in sorted_channels[index:index + 3]:
-                panel = self._channel_panels[ch.name]
-                await row.mount(panel)
+        self._make_button(title_row, text="Refresh All", width=14, command=self._refresh_all, accent=True).pack(
+            side=tk.RIGHT
+        )
 
+        self._make_button(
+            title_row,
+            text="Edit User Info",
+            width=14,
+            command=self._open_user_info_editor,
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
+        self._make_button(
+            title_row,
+            text="Edit Streamers",
+            width=14,
+            command=self._open_streamers_editor,
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
+        self._make_button(title_row, text="Copy MultiTwitch URL", width=20, command=self._copy_multitwitch_url).pack(
+            side=tk.RIGHT, padx=(0, 8)
+        )
+
+        system_panel = tk.Frame(
+            container,
+            bg=self._colors["panel"],
+            highlightthickness=1,
+            highlightbackground=self._colors["border"],
+        )
+        system_panel.pack(fill=tk.X, pady=(10, 10))
+
+        tk.Label(
+            system_panel,
+            text="System",
+            bg=self._colors["panel_alt"],
+            fg=self._colors["text"],
+            anchor="w",
+            padx=8,
+            pady=5,
+            font=self._font_title_sm,
+        ).pack(fill=tk.X)
+
+        self.lbl_multitwitch = tk.Label(
+            system_panel,
+            text="MultiTwitch -> (loading...)",
+            bg=self._colors["input_bg"],
+            fg=self._colors["accent"],
+            anchor="w",
+            padx=8,
+            pady=4,
+            cursor="hand2",
+        )
+        self.lbl_multitwitch.pack(fill=tk.X)
+        self.lbl_multitwitch.bind("<Button-1>", lambda _event: self._copy_multitwitch_url())
+
+        self.txt_system = tk.Text(
+            system_panel,
+            height=7,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+            bg=self._colors["input_bg"],
+            fg=self._colors["text"],
+            insertbackground=self._colors["text"],
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=0,
+            padx=8,
+            pady=8,
+        )
+        self.txt_system.pack(fill=tk.X)
+        self.txt_system.bind("<Control-c>", lambda _event: self._copy_system_log())
+        for kind, color in self._kind_fg.items():
+            self.txt_system.tag_configure(kind, foreground=color)
+
+        channels_shell = tk.Frame(container, bg=self._colors["panel"])
+        channels_shell.pack(fill=tk.BOTH, expand=True)
+
+        self.canvas = tk.Canvas(channels_shell, bg=self._colors["panel"], bd=0, highlightthickness=0)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        scrollbar = tk.Scrollbar(channels_shell, orient=tk.VERTICAL, command=self.canvas.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+
+        self.channels_container = tk.Frame(self.canvas, bg=self._colors["panel"])
+        self._canvas_window = self.canvas.create_window((0, 0), window=self.channels_container, anchor="nw")
+
+        self.channels_container.bind("<Configure>", self._on_channels_configure)
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+        self.canvas.bind_all("<MouseWheel>", self._on_mouse_wheel)
+
+    def _on_channels_configure(self, _event=None) -> None:
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _on_canvas_configure(self, event: tk.Event) -> None:
+        self.canvas.itemconfigure(self._canvas_window, width=event.width)
+
+    def _on_mouse_wheel(self, event: tk.Event) -> None:
+        if self.root.focus_displayof() is None:
+            return
+        delta = -1 * int(event.delta / 120)
+        self.canvas.yview_scroll(delta, "units")
+
+    def _create_channel_cards(self) -> None:
+        for channel in self._bot_config.channels:
+            view = self._create_channel_view(channel.name)
+            self._channel_views[channel.name] = view
+
+    def _create_channel_view(self, channel_name: str) -> ChannelView:
+        frame = tk.Frame(
+            self.channels_container,
+            bg=self._colors["panel"],
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=self._colors["border"],
+            padx=0,
+            pady=0,
+        )
+
+        header_row = tk.Frame(frame, bg=self._colors["panel_alt"])
+        header_row.pack(fill=tk.X)
+
+        led = tk.Canvas(
+            header_row,
+            width=16,
+            height=16,
+            bg=self._colors["panel_alt"],
+            highlightthickness=0,
+            bd=0,
+        )
+        led.pack(side=tk.LEFT, padx=(8, 4), pady=4)
+        led_circle = led.create_oval(2, 2, 14, 14, fill=self._colors["danger"], outline="#1f1f1f")
+
+        header = tk.Label(
+            header_row,
+            text="",
+            bg=self._colors["panel_alt"],
+            fg=self._colors["muted"],
+            anchor="w",
+            padx=4,
+            pady=4,
+            font=self._font_title_sm,
+        )
+        header.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        actions = tk.Frame(frame, bg=self._colors["panel"])
+        actions.pack(fill=tk.X, padx=8, pady=(6, 4))
+
+        self._make_button(actions, text="Refresh", width=10, command=lambda ch=channel_name: self._refresh_channel(ch)).pack(
+            side=tk.LEFT
+        )
+        self._make_button(
+            actions,
+            text="Reload",
+            width=10,
+            command=lambda ch=channel_name: self._reload_channel_triggers(ch),
+        ).pack(side=tk.LEFT, padx=(6, 0))
+        self._make_button(
+            actions,
+            text="Edit Triggers",
+            width=12,
+            command=lambda ch=channel_name: self._open_streamer_triggers_editor(ch),
+        ).pack(side=tk.LEFT, padx=(6, 0))
+        self._make_button(actions, text="Copy Log", width=10, command=lambda ch=channel_name: self._copy_channel_log(ch)).pack(
+            side=tk.LEFT, padx=(6, 0)
+        )
+
+        log_widget = tk.Text(
+            frame,
+            height=8,
+            wrap=tk.WORD,
+            state=tk.DISABLED,
+            bg=self._colors["input_bg"],
+            fg=self._colors["text"],
+            insertbackground=self._colors["text"],
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=0,
+            padx=8,
+            pady=8,
+        )
+        log_widget.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+        log_widget.bind("<Control-c>", lambda _event, ch=channel_name: self._copy_channel_log(ch))
+
+        for kind, color in self._kind_fg.items():
+            log_widget.tag_configure(kind, foreground=color)
+
+        view = ChannelView(
+            name=channel_name,
+            frame=frame,
+            header_row=header_row,
+            header=header,
+            led=led,
+            led_circle=led_circle,
+            log_widget=log_widget,
+            status_since=time.monotonic(),
+        )
+        self._refresh_channel_header(view)
+        return view
+
+    def _render_channel_header(self, view: ChannelView, now_value: float | None = None) -> str:
+        now = now_value if now_value is not None else time.monotonic()
+        online_prefix = "ONLINE" if view.is_online else "OFFLINE"
+        stats = f"({view.session_giveaways}/{view.session_wins})"
+        win_badge = " WIN" if (view.win_at > 0 and (now - view.win_at) < GIVEAWAY_SESSION_DURATION_S) else ""
+
+        if view.status == "joined":
+            return f"{online_prefix} {view.name} {stats} | JOINED{win_badge}"
+        if view.status == "ongoing":
+            remaining = max(0, int(GIVEAWAY_SESSION_DURATION_S - (now - view.status_since)))
+            return f"{online_prefix} {view.name} {stats} | ONGOING {remaining:>3}s{win_badge}"
+        return f"{online_prefix} {view.name} {stats} | idle{win_badge}"
+
+    def _is_idle_stale(self, view: ChannelView, now_value: float) -> bool:
+        return view.status == "idle" and (now_value - view.status_since) >= IDLE_ALERT_THRESHOLD_S
+
+    def _refresh_channel_header(self, view: ChannelView, now_value: float | None = None) -> None:
+        now = now_value if now_value is not None else time.monotonic()
+        idle_stale = self._is_idle_stale(view, now)
+        view.idle_alert_active = idle_stale
+
+        bg = self._colors["panel_alt"]
+        fg = self._colors["muted"]
+        if view.status == "joined":
+            bg = self._colors["accent"]
+            fg = "#ffffff"
+        elif view.status == "ongoing":
+            bg = self._colors["success"]
+            fg = "#ffffff"
+        elif idle_stale:
+            bg = self._colors["danger"]
+            fg = "#ffffff"
+
+        led_color = self._colors["success"] if view.is_online else self._colors["danger"]
+        view.led.itemconfigure(view.led_circle, fill=led_color)
+        view.led.configure(bg=bg)
+        view.header_row.configure(bg=bg)
+
+        view.header.configure(text=self._render_channel_header(view, now), bg=bg, fg=fg)
+
+    def _set_channel_status(self, view: ChannelView, status: str) -> None:
+        view.status = status
+        view.status_since = time.monotonic()
+        self._refresh_channel_header(view)
+
+    def _append_channel_log(self, view: ChannelView, message: str, kind: str) -> None:
+        view.log_lines.append((message, kind))
+        if len(view.log_lines) > self._CHANNEL_LOG_BUFFER_MAX:
+            view.log_lines = view.log_lines[-self._CHANNEL_LOG_BUFFER_MAX:]
+
+        self._append_text_line(view.log_widget, message, kind)
+
+        if kind == "giveaway_active":
+            if view.status != "joined":
+                view.session_giveaways += 1
+                view.session_win_recorded = False
+            self._set_channel_status(view, "joined")
+        elif kind == "giveaway_inactive":
+            self._set_channel_status(view, "ongoing")
+        elif kind == "win" and not view.session_win_recorded:
+            view.session_wins += 1
+            view.session_win_recorded = True
+            if view.status != "ongoing":
+                self._set_channel_status(view, "ongoing")
+            view.win_at = time.monotonic()
+            self._refresh_channel_header(view)
+
+    def _append_system_log(self, message: str, kind: str) -> None:
+        self._system_log_lines.append((message, kind))
+        if len(self._system_log_lines) > self._SYSTEM_LOG_BUFFER_MAX:
+            self._system_log_lines = self._system_log_lines[-self._SYSTEM_LOG_BUFFER_MAX:]
+        self._append_text_line(self.txt_system, message, kind)
+
+    def _append_text_line(self, widget: tk.Text, message: str, kind: str) -> None:
+        tag = kind if kind in self._kind_fg else "other"
+        widget.configure(state=tk.NORMAL)
+        widget.insert(tk.END, f"{message}\n", (tag,))
+        widget.see(tk.END)
+        widget.configure(state=tk.DISABLED)
+
+    def _clear_text_widget(self, widget: tk.Text) -> None:
+        widget.configure(state=tk.NORMAL)
+        widget.delete("1.0", tk.END)
+        widget.configure(state=tk.DISABLED)
+
+    def _refresh_channel(self, channel_name: str) -> None:
+        view = self._channel_views[channel_name]
+        self._reset_channel_view(view)
+        self._append_system_log(f"#{channel_name} reset", "notification")
+        self._call_runtime_thread(lambda: self._reset_bot_channel_runtime(channel_name))
+
+    def _reload_channel_triggers(self, channel_name: str) -> None:
+        def _job() -> None:
+            success = False
+            for twitch_bot in self._bot_instances:
+                if twitch_bot.reload_channel_triggers(channel_name):
+                    success = True
+            self._event_queue.put(("reload_result", {"channel": channel_name, "success": success}))
+
+        self._call_runtime_thread(_job)
+
+    def _copy_channel_log(self, channel_name: str) -> None:
+        view = self._channel_views[channel_name]
+        content = "\n".join(line for line, _kind in view.log_lines)
+        if self._copy_to_clipboard(content):
+            self._append_system_log(f"Copied {len(view.log_lines)} lines from #{channel_name}", "notification")
+        else:
+            self._append_system_log("Clipboard copy failed", "ignore")
+
+    def _copy_system_log(self) -> None:
+        content = "\n".join(line for line, _kind in self._system_log_lines)
+        if self._copy_to_clipboard(content):
+            self._append_system_log(f"Copied {len(self._system_log_lines)} system lines", "notification")
+        else:
+            self._append_system_log("Clipboard copy failed", "ignore")
+
+    def _copy_multitwitch_url(self) -> None:
+        if self._multitwitch_url.startswith("https://"):
+            if self._copy_to_clipboard(self._multitwitch_url):
+                self._append_system_log("MultiTwitch URL copied", "notification")
+                return
+            self._append_system_log("Clipboard copy failed", "ignore")
+            return
+        self._append_system_log("MultiTwitch URL not available yet", "other")
+
+    def _copy_to_clipboard(self, text: str) -> bool:
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.root.update_idletasks()
+            return True
+        except Exception:
+            return False
+
+    def _config_path(self) -> Path:
+        return resolve_default_config_path()
+
+    def _load_raw_config(self) -> tuple[Path, dict] | None:
+        config_path = self._config_path()
+        if not config_path.exists():
+            messagebox.showerror("Config not found", f"Config file not found:\n{config_path}", parent=self.root)
+            return None
+        try:
+            with open(config_path, "r", encoding="utf-8-sig") as file:
+                payload = json.load(file)
+        except Exception as exc:
+            messagebox.showerror("Config error", f"Failed to read config.json:\n{exc}", parent=self.root)
+            return None
+        if not isinstance(payload, dict):
+            messagebox.showerror("Config error", "Invalid config root format.", parent=self.root)
+            return None
+        return config_path, payload
+
+    def _save_raw_config(self, config_path: Path, payload: dict) -> bool:
+        try:
+            with open(config_path, "w", encoding="utf-8") as file:
+                json.dump(payload, file, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            messagebox.showerror("Save error", f"Failed to save config.json:\n{exc}", parent=self.root)
+            return False
+        return True
+
+    def _text_to_lines(self, widget: tk.Text) -> list[str]:
+        raw = widget.get("1.0", tk.END)
+        return [line.strip() for line in raw.splitlines() if line.strip()]
+
+    def _open_streamer_triggers_editor(self, channel_name: str) -> None:
+        loaded = self._load_raw_config()
+        if loaded is None:
+            return
+        config_path, payload = loaded
+
+        channels = payload.get("channels", [])
+        if not isinstance(channels, list):
+            messagebox.showerror("Config error", "channels is not a list", parent=self.root)
+            return
+
+        target_channel: dict | None = None
+        for channel in channels:
+            if isinstance(channel, dict) and str(channel.get("name", "")).strip() == channel_name:
+                target_channel = channel
+                break
+
+        if target_channel is None:
+            messagebox.showerror("Not found", f"Streamer '{channel_name}' not found in config.json", parent=self.root)
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Edit Triggers - {channel_name}")
+        dialog.geometry("640x560")
+        dialog.configure(bg=self._colors["panel"])
+        dialog.transient(self.root)
+        dialog.grab_set()
+        self._apply_app_icon(dialog)
+
+        frame = tk.Frame(dialog, bg=self._colors["panel"], padx=12, pady=12)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(frame, text=f"Streamer: {channel_name}", bg=self._colors["panel"], fg=self._colors["text"], anchor="w").pack(fill=tk.X)
+
+        tk.Label(frame, text="Giveaway Triggers (one per line)", bg=self._colors["panel"], fg=self._colors["muted"], anchor="w").pack(fill=tk.X, pady=(10, 2))
+        txt_giveaway = tk.Text(frame, height=6, bg=self._colors["input_bg"], fg=self._colors["text"], insertbackground=self._colors["text"], relief=tk.FLAT)
+        txt_giveaway.pack(fill=tk.X)
+        txt_giveaway.insert("1.0", "\n".join(str(x) for x in target_channel.get("giveaway_triggers", []) if str(x).strip()))
+
+        tk.Label(frame, text="Giveaway Message", bg=self._colors["panel"], fg=self._colors["muted"], anchor="w").pack(fill=tk.X, pady=(10, 2))
+        ent_message = tk.Entry(frame, bg=self._colors["input_bg"], fg=self._colors["text"], insertbackground=self._colors["text"], relief=tk.FLAT)
+        ent_message.pack(fill=tk.X)
+        ent_message.insert(0, str(target_channel.get("giveaway_message", "")))
+
+        delay_row = tk.Frame(frame, bg=self._colors["panel"])
+        delay_row.pack(fill=tk.X, pady=(10, 2))
+        tk.Label(delay_row, text="Delay min ms", bg=self._colors["panel"], fg=self._colors["muted"]).pack(side=tk.LEFT)
+        ent_delay_min = tk.Entry(delay_row, width=10, bg=self._colors["input_bg"], fg=self._colors["text"], insertbackground=self._colors["text"], relief=tk.FLAT)
+        ent_delay_min.pack(side=tk.LEFT, padx=(8, 16))
+        tk.Label(delay_row, text="Delay max ms", bg=self._colors["panel"], fg=self._colors["muted"]).pack(side=tk.LEFT)
+        ent_delay_max = tk.Entry(delay_row, width=10, bg=self._colors["input_bg"], fg=self._colors["text"], insertbackground=self._colors["text"], relief=tk.FLAT)
+        ent_delay_max.pack(side=tk.LEFT, padx=(8, 0))
+
+        delay_value = target_channel.get("delay_ms", [2000, 2000])
+        if isinstance(delay_value, list) and len(delay_value) == 2:
+            ent_delay_min.insert(0, str(delay_value[0]))
+            ent_delay_max.insert(0, str(delay_value[1]))
+        else:
+            ent_delay_min.insert(0, "2000")
+            ent_delay_max.insert(0, "2000")
+
+        tk.Label(frame, text="Won Triggers (one per line)", bg=self._colors["panel"], fg=self._colors["muted"], anchor="w").pack(fill=tk.X, pady=(10, 2))
+        txt_won = tk.Text(frame, height=6, bg=self._colors["input_bg"], fg=self._colors["text"], insertbackground=self._colors["text"], relief=tk.FLAT)
+        txt_won.pack(fill=tk.X)
+        txt_won.insert("1.0", "\n".join(str(x) for x in target_channel.get("won_triggers", []) if str(x).strip()))
+
+        tk.Label(frame, text="Won Prefix", bg=self._colors["panel"], fg=self._colors["muted"], anchor="w").pack(fill=tk.X, pady=(10, 2))
+        ent_won_prefix = tk.Entry(frame, bg=self._colors["input_bg"], fg=self._colors["text"], insertbackground=self._colors["text"], relief=tk.FLAT)
+        ent_won_prefix.pack(fill=tk.X)
+        ent_won_prefix.insert(0, str(target_channel.get("won_prefix", "")))
+
+        footer = tk.Frame(frame, bg=self._colors["panel"])
+        footer.pack(fill=tk.X, pady=(14, 0))
+
+        def _save() -> None:
+            giveaway_triggers = self._text_to_lines(txt_giveaway)
+            won_triggers = self._text_to_lines(txt_won)
+
+            try:
+                delay_min = int(ent_delay_min.get().strip() or "0")
+                delay_max = int(ent_delay_max.get().strip() or "0")
+            except ValueError:
+                messagebox.showerror("Invalid value", "Delay fields must be integers.", parent=dialog)
+                return
+
+            delay_min = max(0, delay_min)
+            delay_max = max(0, delay_max)
+            if delay_min > delay_max:
+                delay_min, delay_max = delay_max, delay_min
+
+            target_channel["giveaway_triggers"] = giveaway_triggers
+            target_channel["giveaway_message"] = ent_message.get().strip()
+            target_channel["delay_ms"] = [delay_min, delay_max]
+            target_channel["won_triggers"] = won_triggers
+            target_channel["won_prefix"] = ent_won_prefix.get().strip()
+
+            if not self._save_raw_config(config_path, payload):
+                return
+
+            self._append_system_log(f"Config saved for #{channel_name}", "notification")
+            self._reload_channel_triggers(channel_name)
+            dialog.destroy()
+
+        self._make_button(footer, text="Save", width=12, command=_save, accent=True).pack(side=tk.RIGHT)
+        self._make_button(footer, text="Cancel", width=12, command=dialog.destroy).pack(side=tk.RIGHT, padx=(0, 8))
+
+    def _open_streamers_editor(self) -> None:
+        loaded = self._load_raw_config()
+        if loaded is None:
+            return
+        config_path, payload = loaded
+
+        channels = payload.get("channels", [])
+        if not isinstance(channels, list):
+            messagebox.showerror("Config error", "channels is not a list", parent=self.root)
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Edit Streamers")
+        dialog.geometry("520x560")
+        dialog.configure(bg=self._colors["panel"])
+        dialog.transient(self.root)
+        dialog.grab_set()
+        self._apply_app_icon(dialog)
+
+        frame = tk.Frame(dialog, bg=self._colors["panel"], padx=12, pady=12)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(
+            frame,
+            text="Streamer list (one streamer name per line)",
+            bg=self._colors["panel"],
+            fg=self._colors["muted"],
+            anchor="w",
+        ).pack(fill=tk.X)
+
+        txt_names = tk.Text(
+            frame,
+            height=24,
+            bg=self._colors["input_bg"],
+            fg=self._colors["text"],
+            insertbackground=self._colors["text"],
+            relief=tk.FLAT,
+        )
+        txt_names.pack(fill=tk.BOTH, expand=True, pady=(8, 10))
+        current_names = [str(ch.get("name", "")).strip() for ch in channels if isinstance(ch, dict) and str(ch.get("name", "")).strip()]
+        txt_names.insert("1.0", "\n".join(current_names))
+
+        footer = tk.Frame(frame, bg=self._colors["panel"])
+        footer.pack(fill=tk.X)
+
+        def _default_channel_entry(name: str) -> dict:
+            return {
+                "name": name,
+                "giveaway_triggers": [],
+                "giveaway_message": "",
+                "delay_ms": [5000, 15000],
+                "won_triggers": [],
+                "won_prefix": "",
+            }
+
+        def _save() -> None:
+            names = [line.strip() for line in txt_names.get("1.0", tk.END).splitlines() if line.strip()]
+            if not names:
+                messagebox.showerror("Invalid value", "At least one streamer is required.", parent=dialog)
+                return
+            if len(set(names)) != len(names):
+                messagebox.showerror("Invalid value", "Duplicate streamer names found.", parent=dialog)
+                return
+
+            existing_by_name = {
+                str(ch.get("name", "")).strip(): ch
+                for ch in channels
+                if isinstance(ch, dict) and str(ch.get("name", "")).strip()
+            }
+            payload["channels"] = [existing_by_name.get(name, _default_channel_entry(name)) for name in names]
+
+            if not self._save_raw_config(config_path, payload):
+                return
+
+            self._append_system_log("Streamer list updated in config.json", "notification")
+            self._append_system_log("Restart the app to rebuild channel cards after streamer list changes.", "other")
+            dialog.destroy()
+
+        self._make_button(footer, text="Save", width=12, command=_save, accent=True).pack(side=tk.RIGHT)
+        self._make_button(footer, text="Cancel", width=12, command=dialog.destroy).pack(side=tk.RIGHT, padx=(0, 8))
+
+    def _open_user_info_editor(self) -> None:
+        loaded = self._load_raw_config()
+        if loaded is None:
+            return
+        config_path, payload = loaded
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Edit User Info")
+        dialog.geometry("560x460")
+        dialog.configure(bg=self._colors["panel"])
+        dialog.transient(self.root)
+        dialog.grab_set()
+        self._apply_app_icon(dialog)
+
+        frame = tk.Frame(dialog, bg=self._colors["panel"], padx=12, pady=12)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        accounts = payload.get("accounts", [])
+        using_accounts = isinstance(accounts, list) and len(accounts) > 0 and isinstance(accounts[0], dict)
+
+        selected_index = tk.IntVar(value=0)
+        var_username = tk.StringVar()
+        var_oauth = tk.StringVar()
+        var_nickname = tk.StringVar()
+
+        txt_ignored = tk.Text(
+            frame,
+            height=6,
+            bg=self._colors["input_bg"],
+            fg=self._colors["text"],
+            insertbackground=self._colors["text"],
+            relief=tk.FLAT,
+        )
+
+        if using_accounts:
+            account_names = [str(acc.get("username", f"account-{idx+1}")) for idx, acc in enumerate(accounts)]
+            row_account = tk.Frame(frame, bg=self._colors["panel"])
+            row_account.pack(fill=tk.X)
+            tk.Label(row_account, text="Account", bg=self._colors["panel"], fg=self._colors["muted"]).pack(side=tk.LEFT)
+            account_menu = tk.OptionMenu(row_account, selected_index, *range(len(account_names)))
+            account_menu.configure(bg=self._colors["panel_alt"], fg=self._colors["text"], highlightthickness=0, bd=0)
+            account_menu.pack(side=tk.LEFT, padx=(8, 0))
+            tk.Label(row_account, text="(index)", bg=self._colors["panel"], fg=self._colors["muted"]).pack(side=tk.LEFT, padx=(8, 0))
+
+        def _load_account_fields(index: int) -> None:
+            if using_accounts:
+                account = accounts[index]
+                var_username.set(str(account.get("username", "")))
+                var_oauth.set(str(account.get("oauth_token", "")))
+                var_nickname.set(str(account.get("nickname", "")))
+                ignored = account.get("ignored_usernames", [])
+                lines = [str(item).strip() for item in ignored if str(item).strip()]
+            else:
+                twitch = payload.get("twitch", {}) if isinstance(payload.get("twitch", {}), dict) else {}
+                var_username.set(str(twitch.get("username", "")))
+                var_oauth.set(str(twitch.get("oauth_token", "")))
+                var_nickname.set(str(payload.get("nickname", "")))
+                lines = []
+
+            txt_ignored.delete("1.0", tk.END)
+            txt_ignored.insert("1.0", "\n".join(lines))
+
+        row_user = tk.Frame(frame, bg=self._colors["panel"])
+        row_user.pack(fill=tk.X, pady=(10, 4))
+        tk.Label(row_user, text="Username", bg=self._colors["panel"], fg=self._colors["muted"], width=14, anchor="w").pack(side=tk.LEFT)
+        tk.Entry(row_user, textvariable=var_username, bg=self._colors["input_bg"], fg=self._colors["text"], insertbackground=self._colors["text"], relief=tk.FLAT).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        row_oauth = tk.Frame(frame, bg=self._colors["panel"])
+        row_oauth.pack(fill=tk.X, pady=(4, 4))
+        tk.Label(row_oauth, text="OAuth Token", bg=self._colors["panel"], fg=self._colors["muted"], width=14, anchor="w").pack(side=tk.LEFT)
+        tk.Entry(row_oauth, textvariable=var_oauth, bg=self._colors["input_bg"], fg=self._colors["text"], insertbackground=self._colors["text"], relief=tk.FLAT).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        row_nick = tk.Frame(frame, bg=self._colors["panel"])
+        row_nick.pack(fill=tk.X, pady=(4, 4))
+        tk.Label(row_nick, text="Nickname", bg=self._colors["panel"], fg=self._colors["muted"], width=14, anchor="w").pack(side=tk.LEFT)
+        tk.Entry(row_nick, textvariable=var_nickname, bg=self._colors["input_bg"], fg=self._colors["text"], insertbackground=self._colors["text"], relief=tk.FLAT).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        tk.Label(frame, text="Ignored Usernames (one per line)", bg=self._colors["panel"], fg=self._colors["muted"], anchor="w").pack(fill=tk.X, pady=(8, 2))
+        txt_ignored.pack(fill=tk.BOTH, expand=True)
+
+        if using_accounts:
+            def _on_account_change(*_args) -> None:
+                _load_account_fields(int(selected_index.get()))
+
+            selected_index.trace_add("write", _on_account_change)
+
+        _load_account_fields(int(selected_index.get()))
+
+        footer = tk.Frame(frame, bg=self._colors["panel"])
+        footer.pack(fill=tk.X, pady=(12, 0))
+
+        def _save() -> None:
+            username = var_username.get().strip()
+            oauth_token = var_oauth.get().strip()
+            nickname = var_nickname.get().strip()
+            ignored = [line.strip() for line in txt_ignored.get("1.0", tk.END).splitlines() if line.strip()]
+
+            if not username or not oauth_token or not nickname:
+                messagebox.showerror("Invalid value", "Username, OAuth Token and Nickname are required.", parent=dialog)
+                return
+
+            if using_accounts:
+                index = int(selected_index.get())
+                account = accounts[index]
+                account["username"] = username
+                account["oauth_token"] = oauth_token
+                account["nickname"] = nickname
+                account["ignored_usernames"] = ignored
+            else:
+                twitch = payload.get("twitch", {})
+                if not isinstance(twitch, dict):
+                    twitch = {}
+                    payload["twitch"] = twitch
+                twitch["username"] = username
+                twitch["oauth_token"] = oauth_token
+                payload["nickname"] = nickname
+
+            if not self._save_raw_config(config_path, payload):
+                return
+
+            self._append_system_log("User info updated in config.json", "notification")
+            self._append_system_log("Restart the app to reload account credentials.", "other")
+            dialog.destroy()
+
+        self._make_button(footer, text="Save", width=12, command=_save, accent=True).pack(side=tk.RIGHT)
+        self._make_button(footer, text="Cancel", width=12, command=dialog.destroy).pack(side=tk.RIGHT, padx=(0, 8))
+
+    def _reset_channel_view(self, view: ChannelView) -> None:
+        view.log_lines.clear()
+        view.session_giveaways = 0
+        view.session_wins = 0
+        view.session_win_recorded = False
+        view.win_at = 0.0
+        view.status = "idle"
+        view.status_since = time.monotonic()
+        view.idle_alert_active = False
+        self._clear_text_widget(view.log_widget)
+        self._refresh_channel_header(view)
+
+    def _refresh_all(self) -> None:
+        self._append_system_log("Refreshing all channels...", "other")
+        for view in self._channel_views.values():
+            self._reset_channel_view(view)
+
+        self._call_runtime_thread(self._reset_all_bot_channels_runtime)
+        threading.Thread(target=self._refresh_online_once_worker, daemon=True).start()
+
+    def _refresh_online_once_worker(self) -> None:
+        channel_names = [ch.name for ch in self._bot_config.channels]
+        online = self._fetch_online_channels_helix_sync(channel_names)
+        self._event_queue.put(("online_update", online))
+        self._event_queue.put(("refresh_done", len(online)))
+
+    def _queue_log_event(self, message: str, kind: str, channel: str | None, account: str | None) -> None:
+        self._event_queue.put(("log", {"message": message, "kind": kind, "channel": channel, "account": account}))
+
+    def _drain_events(self) -> None:
+        while True:
+            try:
+                event_name, payload = self._event_queue.get_nowait()
+            except queue.Empty:
+                break
+
+            if event_name == "log" and isinstance(payload, dict):
+                self._handle_log_event(payload)
+            elif event_name == "online_update" and isinstance(payload, set):
+                self._apply_online_channels(payload)
+            elif event_name == "refresh_done" and isinstance(payload, int):
+                total = len(self._bot_config.channels)
+                self._append_system_log(f"Refresh complete - {payload}/{total} online", "notification")
+            elif event_name == "reload_result" and isinstance(payload, dict):
+                channel_name = str(payload.get("channel", ""))
+                success = bool(payload.get("success", False))
+                if success:
+                    self._append_system_log(f"#{channel_name} triggers reloaded", "notification")
+                else:
+                    self._append_system_log(f"#{channel_name} trigger reload failed", "ignore")
+            elif event_name == "runtime_error" and isinstance(payload, str):
+                self._append_system_log(f"Bot error: {payload}", "ignore")
+
+        self.root.after(120, self._drain_events)
+
+    def _handle_log_event(self, payload: dict[str, object]) -> None:
+        message = str(payload.get("message", ""))
+        kind = str(payload.get("kind", "other"))
+        channel = payload.get("channel")
+        channel_name = str(channel) if isinstance(channel, str) else None
+
+        if channel_name and channel_name in self._channel_views:
+            self._append_channel_log(self._channel_views[channel_name], message, kind)
+            return
+
+        if not channel_name and message.startswith("Multitwitch: "):
+            return
+
+        prefix = f"[{channel_name}] " if channel_name else ""
+        self._append_system_log(f"{prefix}{message}", kind)
+
+    def _tick_statuses(self) -> None:
+        now_value = time.monotonic()
+        for view in self._channel_views.values():
+            refresh_needed = False
+            if view.status == "ongoing":
+                if now_value - view.status_since >= GIVEAWAY_SESSION_DURATION_S:
+                    self._set_channel_status(view, "idle")
+                    continue
+                refresh_needed = True
+            elif view.status == "idle":
+                if (not view.idle_alert_active) and self._is_idle_stale(view, now_value):
+                    refresh_needed = True
+
+            if view.win_at > 0 and (now_value - view.win_at) >= GIVEAWAY_SESSION_DURATION_S:
+                view.win_at = 0.0
+                refresh_needed = True
+
+            if refresh_needed:
+                self._refresh_channel_header(view, now_value)
+
+        self.root.after(1000, self._tick_statuses)
+
+    def _sorted_channel_names(self, online_channels: set[str]) -> list[str]:
+        return [
+            channel.name
+            for channel in sorted(
+                self._bot_config.channels,
+                key=lambda channel: (
+                    0 if channel.name.casefold() in online_channels else 1,
+                    channel.name.casefold(),
+                ),
+            )
+        ]
+
+    def _reorder_channel_cards(self, online_channels: set[str]) -> None:
+        ordered = self._sorted_channel_names(online_channels)
+        for name in ordered:
+            view = self._channel_views[name]
+            view.is_online = name.casefold() in online_channels
+            self._refresh_channel_header(view)
+
+        for index, name in enumerate(ordered):
+            view = self._channel_views[name]
+            row = index // 3
+            col = index % 3
+            view.frame.grid(row=row, column=col, sticky="nsew", padx=6, pady=6)
+
+        for col in range(3):
+            self.channels_container.grid_columnconfigure(col, weight=1, uniform="channel-col")
+
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _update_multitwitch_link(self) -> None:
+        online_sorted = sorted(self._online_channels)
+        if online_sorted:
+            self._multitwitch_url = f"https://multitwitch.tv/{'/'.join(online_sorted)}"
+        else:
+            self._multitwitch_url = "(no channels online)"
+        self.lbl_multitwitch.configure(text=f"MultiTwitch -> {self._multitwitch_url}")
+
+    def _apply_online_channels(self, online_channels: set[str]) -> None:
+        previous_online = self._online_channels
+        self._online_channels = online_channels
+
+        went_online = online_channels - previous_online
+        went_offline = previous_online - online_channels
+
+        for channel_name in sorted(went_online):
+            self._append_system_log(f"#{channel_name} went ONLINE", "notification")
+        for channel_name in sorted(went_offline):
+            self._append_system_log(f"#{channel_name} went OFFLINE", "other")
+
+        self._reorder_channel_cards(online_channels)
         self._update_multitwitch_link()
 
-    async def _poll_online_status(self) -> None:
-        """Periodically poll Twitch Helix and reorder panels on changes."""
-        while True:
-            await asyncio.sleep(self._ONLINE_POLL_INTERVAL_S)
-            try:
-                channel_names = [ch.name for ch in self._bot_config.channels]
-                new_online = await self._fetch_online_channels_startup(channel_names)
-            except Exception:
-                continue
+        total = len(self._bot_config.channels)
+        self._append_system_log(f"Layout reordered - {len(online_channels)}/{total} online", "notification")
 
-            if new_online == self._online_channels:
-                continue
+    def _call_runtime_thread(self, callback) -> None:
+        if self._runtime_loop is None:
+            return
+        self._runtime_loop.call_soon_threadsafe(callback)
 
-            went_online = new_online - self._online_channels
-            went_offline = self._online_channels - new_online
-
-            for name in sorted(went_online):
-                self._add_system_log(f"#{name} went ONLINE", "notification")
-            for name in sorted(went_offline):
-                self._add_system_log(f"#{name} went OFFLINE", "other")
-
-            await self._reorder_panels(new_online)
-
-            online_count = len(new_online)
-            total = len(channel_names)
-            self._add_system_log(f"Layout reordered — {online_count}/{total} online", "notification")
-
-    def _reset_bot_channel(self, channel_name: str) -> None:
-        """Reset giveaway/activity state for *channel_name* across all bot accounts."""
+    def _reset_bot_channel_runtime(self, channel_name: str) -> None:
         for twitch_bot in self._bot_instances:
             twitch_bot.reset_channel(channel_name)
 
-    def on_reset_channel_event(self, event: ResetChannelEvent) -> None:
-        self._reset_bot_channel(event.channel_name)
+    def _reset_all_bot_channels_runtime(self) -> None:
+        for channel in self._bot_config.channels:
+            self._reset_bot_channel_runtime(channel.name)
 
-    def on_reload_triggers_event(self, event: ReloadTriggersEvent) -> None:
-        success = False
-        for twitch_bot in self._bot_instances:
-            if twitch_bot.reload_channel_triggers(event.channel_name):
-                success = True
-        if success:
-            self.notify(f"#{event.channel_name} triggers reloaded", timeout=2)
-        else:
-            self.notify(f"#{event.channel_name} trigger reload failed", severity="error", timeout=3)
+    def _start_runtime_thread(self) -> None:
+        self._runtime_thread = threading.Thread(target=self._runtime_thread_main, daemon=True)
+        self._runtime_thread.start()
 
-    async def action_refresh_all(self) -> None:
-        """Global refresh: re-fetch online status, reset all panels, reorganise layout."""
-        self._add_system_log("Refreshing all channels...", "other")
+    def _runtime_thread_main(self) -> None:
+        loop = asyncio.new_event_loop()
+        self._runtime_loop = loop
+        asyncio.set_event_loop(loop)
 
-        # Reset every panel and bot state
-        for channel_name, panel in self._channel_panels.items():
-            panel.reset()
-            self._reset_bot_channel(channel_name)
+        try:
+            loop.run_until_complete(self._runtime_main())
+        finally:
+            try:
+                pending = asyncio.all_tasks(loop)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except Exception:
+                pass
+            loop.close()
 
-        # Re-fetch who is online and reorder (preserves log history via _reorder_panels)
-        channel_names = [ch.name for ch in self._bot_config.channels]
-        online_channels = await self._fetch_online_channels_startup(channel_names)
-        await self._reorder_panels(online_channels)
+    async def _runtime_main(self) -> None:
+        poll_task = asyncio.create_task(self._poll_online_status())
+        bot_task = asyncio.create_task(self._run_bot())
 
-        online_count = len(online_channels)
-        self._add_system_log(
-            f"Refresh complete — {online_count}/{len(channel_names)} online",
-            "notification",
-        )
-        self.notify(f"Refreshed — {online_count}/{len(channel_names)} online", timeout=3)
+        try:
+            await asyncio.gather(poll_task, bot_task)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            for task in (poll_task, bot_task):
+                if not task.done():
+                    task.cancel()
+            await self._shutdown_bots()
 
     async def _run_bot(self) -> None:
         try:
             emit_startup_logs(self._bot_config, self._bot_args)
 
-            tasks = []
+            start_tasks: list[asyncio.Task[None]] = []
             for account in self._bot_config.accounts:
                 bot = commands.Bot(
                     token=account.oauth_token,
@@ -743,15 +1102,128 @@ class MonitorApp(App):
                     enable_logging=(self._bot_args.log or self._bot_args.log_only),
                 )
                 self._bot_instances.append(twitch_bot)
+                self._bot_clients.append(bot)
                 bot.add_cog(twitch_bot)
-                tasks.append(bot.start())
-            await asyncio.gather(*tasks)
+                start_tasks.append(asyncio.create_task(bot.start()))
+
+            await asyncio.gather(*start_tasks)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._add_system_log(f"Bot error: {exc}", "ignore")
+            self._event_queue.put(("runtime_error", str(exc)))
+
+    async def _shutdown_bots(self) -> None:
+        close_tasks: list[asyncio.Task[None]] = []
+        for bot in self._bot_clients:
+            try:
+                close_tasks.append(asyncio.create_task(bot.close()))
+            except Exception:
+                continue
+
+        if close_tasks:
+            await asyncio.gather(*close_tasks, return_exceptions=True)
+
+    async def _poll_online_status(self) -> None:
+        first_pass = True
+        while not self._shutdown_event.is_set():
+            try:
+                channel_names = [ch.name for ch in self._bot_config.channels]
+                online = await asyncio.to_thread(self._fetch_online_channels_helix_sync, channel_names)
+                if first_pass or online != self._online_channels:
+                    self._event_queue.put(("online_update", online))
+            except Exception:
+                pass
+
+            first_pass = False
+            try:
+                await asyncio.sleep(self._ONLINE_POLL_INTERVAL_S)
+            except asyncio.CancelledError:
+                break
+
+    def _normalize_bearer_token(self, token: str) -> str:
+        token_value = token.strip()
+        if token_value.lower().startswith("oauth:"):
+            return token_value.split(":", 1)[1].strip()
+        return token_value
+
+    def _get_twitch_client_id_sync(self, token: str) -> str | None:
+        validate_url = "https://id.twitch.tv/oauth2/validate"
+        auth_variants = [f"OAuth {token}", f"Bearer {token}"]
+
+        for authorization in auth_variants:
+            request = urllib.request.Request(validate_url, headers={"Authorization": authorization})
+            try:
+                with urllib.request.urlopen(request, timeout=8) as response:
+                    payload = json.loads(response.read().decode("utf-8", errors="ignore"))
+            except Exception:
+                continue
+
+            client_id = str(payload.get("client_id", "")).strip()
+            if client_id:
+                return client_id
+
+        return None
+
+    def _fetch_online_channels_helix_sync(self, channel_names: list[str]) -> set[str]:
+        if not self._bot_config.accounts:
+            return set()
+
+        raw_token = self._bot_config.accounts[0].oauth_token
+        token = self._normalize_bearer_token(raw_token)
+        if not token:
+            return set()
+
+        client_id = self._get_twitch_client_id_sync(token)
+        if not client_id:
+            return set()
+
+        online: set[str] = set()
+        base_url = "https://api.twitch.tv/helix/streams"
+
+        normalized_names = [name.strip().lower() for name in channel_names if name.strip()]
+        for index in range(0, len(normalized_names), 100):
+            chunk = normalized_names[index:index + 100]
+            if not chunk:
+                continue
+
+            query = urllib.parse.urlencode([("user_login", name) for name in chunk])
+            request = urllib.request.Request(
+                f"{base_url}?{query}",
+                headers={
+                    "Client-ID": client_id,
+                    "Authorization": f"Bearer {token}",
+                },
+            )
+
+            try:
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    payload = json.loads(response.read().decode("utf-8", errors="ignore"))
+            except Exception:
+                continue
+
+            entries = payload.get("data", []) if isinstance(payload, dict) else []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                login = str(entry.get("user_login", "")).strip().lower()
+                if login:
+                    online.add(login)
+
+        return online
+
+    def _on_close(self) -> None:
+        self._shutdown_event.set()
+        set_gui_hook(None)
+
+        if self._runtime_loop is not None:
+            self._runtime_loop.call_soon_threadsafe(lambda: None)
+
+        if self._runtime_thread is not None and self._runtime_thread.is_alive():
+            self._runtime_thread.join(timeout=3.0)
+
+        self.root.destroy()
 
 
 def run_gui(config: BotConfig, args: argparse.Namespace) -> None:
-    app = MonitorApp(config, args)
-    app.run()
+    ui = MonitorUI(config, args)
+    ui.run()

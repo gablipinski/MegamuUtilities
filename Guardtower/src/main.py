@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
         '--gui',
         action='store_true',
         default=True,
-        help='Launch the Textual TUI monitor (default when no flags are given).',
+        help='Launch the Tkinter monitor UI (default when no flags are given).',
     )
     parser.add_argument(
         '--no-gui',
@@ -100,7 +100,7 @@ if __name__ == '__main__':
             run_gui(_config, _args)
         except ImportError as e:
             log_line(f'GUI dependency missing: {e}', 'ignore')
-            log_line('Run: pip install textual rich', 'ignore')
+            log_line('Tkinter is required and normally bundled with Python on Windows.', 'ignore')
             import traceback
             traceback.print_exc()
             input('Press Enter to exit...')
