@@ -28,7 +28,15 @@ from cryptography.hazmat.primitives.asymmetric import padding
 # Run tools/generate_keys.py ONCE before your first build - it will
 # automatically patch this constant with the generated key.
 _PUBLIC_KEY_PEM = b"""\
-REPLACE_WITH_OUTPUT
+-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApgEW8/k5M/wbHVfkNMr8
+Imv9TKleICebhz1hA4vrH378IRnObv5Q4Fgp5YK2TtNgF+IfocXrUltwunn60PJM
+8gbaXidV+SyEf3XPLq3k0HI5fAjUOxgoV7CEgqOxDSOj4FWtAAzhkx3p0hAhbeG0
+USeZ/Z0axdQVDl9AkZtq4w7bHJfgE2GKgn9XLBDiMAgL5dAr+q5A+IyimfQhBz/r
+9L1fi9wiEW6P5AuvnRhUPPZo2l+tSi5WPPked431Mahy5wStpL5NqtlYEqR85hhw
+FfINOR1VjIb4fBLQEObwRFqNNTgJr+m+n8gzx+w9W/gqEhFJbqCT2XMBiRCCvduL
+XwIDAQAB
+-----END PUBLIC KEY-----
 """
 
 
