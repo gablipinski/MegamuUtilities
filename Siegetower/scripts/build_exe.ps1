@@ -172,7 +172,7 @@ Write-Host '[3/4] Compiling with Nuitka (this may take a few minutes)...' -Foreg
     --standalone `
     --assume-yes-for-downloads `
     --remove-output `
-    --lto=yes `
+    --lto=no `
     --python-flag=no_docstrings `
     --python-flag=-O `
     --enable-plugin=tk-inter `
