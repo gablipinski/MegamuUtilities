@@ -1,0 +1,59 @@
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+
+# Binaries and build artifacts
+bin/
+build/
+dist/
+installer_output/
+nuitka-crash-report.xml
+*.rar
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Config and local data
+configs/config.json
+configs/spot_template.png
+!configs/config.json.example
+logs/
+wins.log
+
+# OS
+.DS_Store
+*.log
+
+# Auth
+*.pem
+*.dat
+licenses/
+
+# Keep generated licenses rules explicit
+licenses/keys/private_key.pem

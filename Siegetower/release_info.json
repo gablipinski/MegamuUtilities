@@ -1,0 +1,8 @@
+{
+  "app_name": "Siegetower",
+  "version": "1.0.0",
+  "publisher": "MegamuUtilities",
+  "patch_notes": [
+    "Initial release metadata scaffold."
+  ]
+}
