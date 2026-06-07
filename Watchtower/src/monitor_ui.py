@@ -9,8 +9,11 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
 
+import mss
+from PIL import Image, ImageTk
+
 from action_controller import ActionController
-from area_selector import capture_virtual_screen, select_area_with_parent, select_points_with_parent
+from area_selector import select_area_and_snapshot_with_parent, select_area_with_parent, select_points_with_parent
 from app_version import APP_NAME, APP_VERSION
 from player_monitor import PlayerMonitor
 from config import WindowConfig, load_config
@@ -51,11 +54,13 @@ class MonitorUI:
 
         self.root.title(f'{APP_NAME} Controller v{APP_VERSION}')
         self.root.geometry('560x360')
-        self.root.minsize(520, 340)
+        self.root.minsize(360, 320)
 
         self.region: tuple[int, int, int, int] | None = None
         self.escape_route: list[dict[str, int | str]] = []
         self.template_path = Path(__file__).resolve().parent.parent / 'configs' / 'spot_template.png'
+        self._toast_notifier = None
+        self._setup_windows_notifier()
 
         self._event_queue: queue.Queue[tuple[str, object | None]] = queue.Queue()
         self._monitor_thread: threading.Thread | None = None
@@ -65,11 +70,17 @@ class MonitorUI:
         self._detected_waiting_stop = False
         self._mode_var = tk.StringVar(value='SPOT TOWER')
         self._last_mode_selection = 'SPOT TOWER'
+        self._compact_controls: bool | None = None
+        self._snapshot_window: tk.Toplevel | None = None
+        self._snapshot_label: tk.Label | None = None
+        self._snapshot_info_var: tk.StringVar | None = None
+        self._snapshot_photo: ImageTk.PhotoImage | None = None
 
         self._build_ui()
         self._set_state_idle('Idle')
         self.root.after(120, self._drain_events)
         self.root.protocol('WM_DELETE_WINDOW', self._on_close)
+        self.root.bind('<Configure>', self._on_window_configure)
         self.root.deiconify()
 
     def _setup_theme(self) -> None:
@@ -171,6 +182,94 @@ class MonitorUI:
         except Exception:
             # Keep default icon if this platform/window manager rejects iconphoto.
             pass
+
+    def _setup_windows_notifier(self) -> None:
+        try:
+            from win10toast import ToastNotifier
+
+            self._toast_notifier = ToastNotifier()
+        except Exception:
+            self._toast_notifier = None
+
+    def _notify_safe_zone(self) -> None:
+        if self._toast_notifier is None:
+            return
+        try:
+            self._toast_notifier.show_toast(
+                'Watchtower',
+                'Character moved to safe zone.',
+                duration=5,
+                threaded=True,
+            )
+        except Exception:
+            pass
+
+    def _capture_scan_area_snapshot(self) -> Image.Image | None:
+        if self.region is None:
+            return None
+        x1, y1, x2, y2 = self.region
+        width = max(1, int(x2 - x1))
+        height = max(1, int(y2 - y1))
+        try:
+            with mss.mss() as sct:
+                shot = sct.grab({'left': int(x1), 'top': int(y1), 'width': width, 'height': height})
+            return Image.frombytes('RGB', shot.size, shot.rgb)
+        except Exception:
+            return None
+
+    def _show_trigger_snapshot(self, image: Image.Image, mode_label: str) -> None:
+        max_width = 760
+        max_height = 460
+        view = image.copy()
+        view.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+        photo = ImageTk.PhotoImage(view)
+
+        if self._snapshot_window is None or not self._snapshot_window.winfo_exists():
+            win = tk.Toplevel(self.root)
+            win.title('Trigger Snapshot')
+            win.configure(bg=self._colors['bg'])
+            self._apply_app_icon(win)
+            win.transient(self.root)
+
+            self._snapshot_info_var = tk.StringVar(value='')
+            info = tk.Label(
+                win,
+                textvariable=self._snapshot_info_var,
+                bg=self._colors['bg'],
+                fg=self._colors['text'],
+                anchor='w',
+                padx=12,
+                pady=10,
+                font=('Segoe UI Semibold', 9),
+            )
+            info.pack(fill=tk.X)
+
+            frame = tk.Frame(
+                win,
+                bg=self._colors['input_bg'],
+                highlightthickness=1,
+                highlightbackground=self._colors['border'],
+            )
+            frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 12))
+
+            self._snapshot_label = tk.Label(frame, bg=self._colors['input_bg'])
+            self._snapshot_label.pack(fill=tk.BOTH, expand=True)
+
+            self._snapshot_window = win
+
+        self._snapshot_photo = photo
+        if self._snapshot_label is not None:
+            self._snapshot_label.configure(image=self._snapshot_photo)
+
+        if self._snapshot_info_var is not None:
+            shown_w, shown_h = view.size
+            self._snapshot_info_var.set(
+                f'{mode_label} trigger | Preview: {shown_w}x{shown_h} (scan area capture)'
+            )
+
+        if self._snapshot_window is not None:
+            self._snapshot_window.lift()
+            self._snapshot_window.focus_force()
 
     # ── License check ─────────────────────────────────────────────────────────
 
@@ -354,41 +453,39 @@ class MonitorUI:
         self.cmb_mode.pack(side=tk.LEFT, padx=(8, 0))
         self.cmb_mode.bind('<<ComboboxSelected>>', self._on_mode_changed)
 
-        controls = tk.Frame(container, bg=self._colors['panel'])
-        controls.pack(fill=tk.X, pady=(10, 8))
+        self.controls = tk.Frame(container, bg=self._colors['panel'])
+        self.controls.pack(fill=tk.X, pady=(10, 8))
 
         self.btn_select_area = self._make_button(
-            controls,
+            self.controls,
             text='Select Area',
             width=16,
             command=self._on_select_area,
         )
-        self.btn_select_area.grid(row=0, column=0, padx=(0, 8), pady=4)
 
         self.btn_select_route = self._make_button(
-            controls,
+            self.controls,
             text='Create Escape Route',
             width=20,
             command=self._on_select_route,
         )
-        self.btn_select_route.grid(row=0, column=1, padx=(0, 8), pady=4)
 
         self.btn_capture_template = self._make_button(
-            controls,
+            self.controls,
             text='Capture Template',
             width=16,
             command=self._on_capture_template,
         )
-        self.btn_capture_template.grid(row=0, column=2, padx=(0, 8), pady=4)
 
         self.btn_toggle_scan = self._make_button(
-            controls,
+            self.controls,
             text='Start Scanner',
             width=16,
             command=self._on_toggle_scanner,
             accent=True,
         )
-        self.btn_toggle_scan.grid(row=1, column=0, padx=(0, 8), pady=4)
+
+        self._relayout_controls(compact=False)
 
         state_row = tk.Frame(container, bg=self._colors['panel'])
         state_row.pack(fill=tk.X, pady=(6, 6))
@@ -450,6 +547,40 @@ class MonitorUI:
         self.log.pack(fill=tk.BOTH, expand=True)
 
         self._refresh_mode_ui()
+
+    def _relayout_controls(self, compact: bool) -> None:
+        if compact == self._compact_controls:
+            return
+
+        self._compact_controls = compact
+
+        self.btn_select_area.grid_forget()
+        self.btn_select_route.grid_forget()
+        self.btn_capture_template.grid_forget()
+        self.btn_toggle_scan.grid_forget()
+
+        if compact:
+            for col in range(3):
+                self.controls.grid_columnconfigure(col, weight=0)
+
+            self.controls.grid_columnconfigure(0, weight=1)
+            self.btn_select_area.grid(row=0, column=0, sticky='ew', padx=0, pady=3)
+            self.btn_select_route.grid(row=1, column=0, sticky='ew', padx=0, pady=3)
+            self.btn_capture_template.grid(row=2, column=0, sticky='ew', padx=0, pady=3)
+            self.btn_toggle_scan.grid(row=3, column=0, sticky='ew', padx=0, pady=(6, 3))
+            return
+
+        for col in range(3):
+            self.controls.grid_columnconfigure(col, weight=1, uniform='controls')
+
+        self.btn_select_area.grid(row=0, column=0, sticky='ew', padx=(0, 8), pady=4)
+        self.btn_select_route.grid(row=0, column=1, sticky='ew', padx=(0, 8), pady=4)
+        self.btn_capture_template.grid(row=0, column=2, sticky='ew', padx=(0, 0), pady=4)
+        self.btn_toggle_scan.grid(row=1, column=0, columnspan=3, sticky='ew', padx=0, pady=(6, 4))
+
+    def _on_window_configure(self, _event=None) -> None:
+        width = self.root.winfo_width()
+        self._relayout_controls(compact=width < 540)
 
     def run(self):
         self.root.mainloop()
@@ -550,7 +681,7 @@ class MonitorUI:
             messagebox.showwarning('Scanner active', 'Stop scanner before capturing a template.')
             return
 
-        selection = select_area_with_parent(
+        selection, image, offset_x, offset_y = select_area_and_snapshot_with_parent(
             self.root,
             help_text='Drag exact target image | Enter confirm | Esc cancel',
             min_size=4,
@@ -559,7 +690,6 @@ class MonitorUI:
             self._log('Template capture cancelled.')
             return
 
-        image, offset_x, offset_y = capture_virtual_screen()
         x1, y1, x2, y2 = selection
         crop_x1 = max(0, x1 - offset_x)
         crop_y1 = max(0, y1 - offset_y)
@@ -577,7 +707,8 @@ class MonitorUI:
         dlg = tk.Toplevel(self.root)
         dlg.title('Escape Route Editor')
         dlg.geometry('520x360')
-        dlg.resizable(False, False)
+        dlg.minsize(420, 360)
+        dlg.resizable(True, True)
         dlg.configure(bg=self._colors['bg'])
         self._apply_app_icon(dlg)
         dlg.transient(self.root)
@@ -709,29 +840,80 @@ class MonitorUI:
         buttons = tk.Frame(dlg, bg=self._colors['bg'])
         buttons.pack(fill=tk.X, padx=12, pady=(8, 0))
 
-        self._make_button(buttons, text='Add Click', width=12, command=_add_click_step).pack(
-            side=tk.LEFT, padx=(0, 6)
-        )
-        self._make_button(buttons, text='Add Key', width=12, command=_add_key_step).pack(
-            side=tk.LEFT, padx=(0, 6)
-        )
-        self._make_button(buttons, text='Remove', width=12, command=_remove_selected).pack(
-            side=tk.LEFT, padx=(0, 6)
-        )
-        self._make_button(buttons, text='Move Up', width=12, command=lambda: _move_selected(-1)).pack(
-            side=tk.LEFT, padx=(0, 6)
-        )
-        self._make_button(buttons, text='Move Down', width=12, command=lambda: _move_selected(1)).pack(
-            side=tk.LEFT
-        )
+        btn_add_click = self._make_button(buttons, text='Add Click', width=12, command=_add_click_step)
+        btn_add_key = self._make_button(buttons, text='Add Key', width=12, command=_add_key_step)
+        btn_remove = self._make_button(buttons, text='Remove', width=12, command=_remove_selected)
+        btn_move_up = self._make_button(buttons, text='Move Up', width=12, command=lambda: _move_selected(-1))
+        btn_move_down = self._make_button(buttons, text='Move Down', width=12, command=lambda: _move_selected(1))
+
+        btn_add_click.grid(row=0, column=0, padx=(0, 6), pady=(0, 4), sticky='ew')
+        btn_add_key.grid(row=0, column=1, padx=(0, 6), pady=(0, 4), sticky='ew')
+        btn_remove.grid(row=0, column=2, padx=(0, 6), pady=(0, 4), sticky='ew')
+        btn_move_up.grid(row=0, column=3, padx=(0, 6), pady=(0, 4), sticky='ew')
+        btn_move_down.grid(row=0, column=4, padx=(0, 0), pady=(0, 4), sticky='ew')
+
+        for col in range(5):
+            buttons.grid_columnconfigure(col, weight=1, uniform='route_actions')
 
         footer = tk.Frame(dlg, bg=self._colors['bg'])
         footer.pack(fill=tk.X, padx=12, pady=(10, 12))
-        self._make_button(footer, text='Clear', width=10, command=_clear_all).pack(side=tk.LEFT)
-        self._make_button(footer, text='Cancel', width=10, command=dlg.destroy, danger=True).pack(
-            side=tk.RIGHT, padx=(6, 0)
-        )
-        self._make_button(footer, text='Save', width=10, command=_save, accent=True).pack(side=tk.RIGHT)
+
+        btn_clear = self._make_button(footer, text='Clear', width=10, command=_clear_all)
+        btn_save = self._make_button(footer, text='Save', width=10, command=_save, accent=True)
+        btn_cancel = self._make_button(footer, text='Cancel', width=10, command=dlg.destroy, danger=True)
+
+        def _relayout_route_editor(_event=None) -> None:
+            width = dlg.winfo_width()
+
+            btn_add_click.grid_forget()
+            btn_add_key.grid_forget()
+            btn_remove.grid_forget()
+            btn_move_up.grid_forget()
+            btn_move_down.grid_forget()
+            btn_clear.grid_forget()
+            btn_save.grid_forget()
+            btn_cancel.grid_forget()
+
+            compact = width < 560
+
+            if compact:
+                btn_add_click.grid(row=0, column=0, padx=(0, 6), pady=(0, 4), sticky='ew')
+                btn_add_key.grid(row=0, column=1, padx=(0, 0), pady=(0, 4), sticky='ew')
+                btn_remove.grid(row=1, column=0, padx=(0, 6), pady=(0, 4), sticky='ew')
+                btn_move_up.grid(row=1, column=1, padx=(0, 0), pady=(0, 4), sticky='ew')
+                btn_move_down.grid(row=2, column=0, columnspan=2, padx=0, pady=(0, 4), sticky='ew')
+
+                buttons.grid_columnconfigure(0, weight=1, uniform='route_actions_compact')
+                buttons.grid_columnconfigure(1, weight=1, uniform='route_actions_compact')
+                for col in range(2, 5):
+                    buttons.grid_columnconfigure(col, weight=0, uniform='')
+
+                btn_clear.grid(row=0, column=0, padx=(0, 6), pady=0, sticky='ew')
+                btn_save.grid(row=0, column=1, padx=(0, 6), pady=0, sticky='ew')
+                btn_cancel.grid(row=0, column=2, padx=(0, 0), pady=0, sticky='ew')
+                footer.grid_columnconfigure(0, weight=1, uniform='footer_actions')
+                footer.grid_columnconfigure(1, weight=1, uniform='footer_actions')
+                footer.grid_columnconfigure(2, weight=1, uniform='footer_actions')
+                return
+
+            btn_add_click.grid(row=0, column=0, padx=(0, 6), pady=(0, 4), sticky='ew')
+            btn_add_key.grid(row=0, column=1, padx=(0, 6), pady=(0, 4), sticky='ew')
+            btn_remove.grid(row=0, column=2, padx=(0, 6), pady=(0, 4), sticky='ew')
+            btn_move_up.grid(row=0, column=3, padx=(0, 6), pady=(0, 4), sticky='ew')
+            btn_move_down.grid(row=0, column=4, padx=(0, 0), pady=(0, 4), sticky='ew')
+
+            for col in range(5):
+                buttons.grid_columnconfigure(col, weight=1, uniform='route_actions')
+
+            btn_clear.grid(row=0, column=0, padx=(0, 0), pady=0, sticky='w')
+            btn_save.grid(row=0, column=1, padx=(0, 6), pady=0, sticky='e')
+            btn_cancel.grid(row=0, column=2, padx=(0, 0), pady=0, sticky='e')
+            footer.grid_columnconfigure(0, weight=1)
+            footer.grid_columnconfigure(1, weight=0)
+            footer.grid_columnconfigure(2, weight=0)
+
+        dlg.bind('<Configure>', _relayout_route_editor)
+        _relayout_route_editor()
 
         _refresh_list()
         self.root.wait_window(dlg)
@@ -780,6 +962,7 @@ class MonitorUI:
         self._monitor_loop = asyncio.get_running_loop()
         mode = self._selected_mode()
         triggered = False
+        app_config = load_config()
         try:
             assert self.region is not None
             if mode == 'spot-tower':
@@ -816,16 +999,19 @@ class MonitorUI:
                     if triggered:
                         return
                     triggered = True
+                    snapshot = self._capture_scan_area_snapshot()
+                    if snapshot is not None:
+                        self._event_queue.put(('trigger_snapshot', {'image': snapshot, 'mode': 'SPOT TOWER'}))
                     self._event_queue.put(('detected', detection))
                     await action_controller.execute_escape_sequence('Player detected')
+                    self._event_queue.put(('safe_zone', None))
                     await monitor.stop()
 
                 monitor.detection_callback = on_detection
                 await monitor.start()
             else:
                 x1, y1, x2, y2 = self.region
-                config = load_config()
-                config.windows = [
+                app_config.windows = [
                     WindowConfig(
                         position='ui-safe-region',
                         x=int(x1),
@@ -835,16 +1021,19 @@ class MonitorUI:
                         map_name='UIRegion',
                     )
                 ]
-                config.scan_region = {
+                app_config.scan_region = {
                     'left_pct': 0.0,
                     'top_pct': 0.0,
                     'right_pct': 1.0,
                     'bottom_pct': 1.0,
                 }
-                tower_monitor = ScreenMonitor(config)
+                tower_monitor = ScreenMonitor(app_config)
                 self._tower_monitor = tower_monitor
 
                 async def on_tower_detection(char_name: str, map_name: str, guild_name: str | None):
+                    snapshot = self._capture_scan_area_snapshot()
+                    if snapshot is not None:
+                        self._event_queue.put(('trigger_snapshot', {'image': snapshot, 'mode': 'SAFE TOWER'}))
                     self._event_queue.put(
                         ('tower_detected', {'char_name': char_name, 'map_name': map_name, 'guild_name': guild_name})
                     )
@@ -878,6 +1067,16 @@ class MonitorUI:
                     self._log(f'SAFE TOWER detection: {char_name} [{guild_name}] in {map_name}.')
                 else:
                     self._log(f'SAFE TOWER detection: {char_name} in {map_name}.')
+            elif event == 'safe_zone':
+                self._notify_safe_zone()
+                self._log('Character moved to safe zone.')
+            elif event == 'trigger_snapshot':
+                info = payload if isinstance(payload, dict) else {}
+                image = info.get('image')
+                mode_label = str(info.get('mode', 'Trigger'))
+                if isinstance(image, Image.Image):
+                    self._show_trigger_snapshot(image, mode_label)
+                    self._log(f'{mode_label} snapshot opened for trigger validation.')
             elif event == 'stopped':
                 info = payload if isinstance(payload, dict) else {}
                 mode = info.get('mode', 'spot-tower')

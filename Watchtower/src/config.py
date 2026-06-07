@@ -19,9 +19,7 @@ class WindowConfig:
 class NotificationConfig:
     """Notification configuration."""
     enabled: bool
-    whatsapp_group_id: Optional[str]
-    whatsapp_token: Optional[str]
-    notification_message: str  # Template with {char_name} and {map}
+    notification_message: str
 
 @dataclass
 class MonitorConfig:
@@ -84,8 +82,6 @@ def load_config(config_file: Optional[str] = None) -> MonitorConfig:
     # Parse notifications
     notification = NotificationConfig(
         enabled=data.get('notification', {}).get('enabled', False),
-        whatsapp_group_id=data.get('notification', {}).get('whatsapp_group_id'),
-        whatsapp_token=data.get('notification', {}).get('whatsapp_token'),
         notification_message=data.get('notification', {}).get('message', 'Someone appeared in {map}: {char_name}')
     )
     

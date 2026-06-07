@@ -803,8 +803,7 @@ class ScreenMonitor:
         print(f'    Name: {char_name}')
         print(f'    Map: {map_name}\n')
         
-        # WhatsApp notification should be sent here.
-        # (to be implemented in whatsapp_notifier.py)
+        # External notifications are handled by the UI controller.
     
     async def stop_monitoring(self):
         """Stops monitoring."""

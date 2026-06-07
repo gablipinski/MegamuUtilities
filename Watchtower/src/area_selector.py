@@ -217,6 +217,18 @@ def select_area_with_parent(
     return selector.select()
 
 
+def select_area_and_snapshot_with_parent(
+    parent: tk.Misc,
+    help_text: Optional[str] = None,
+    min_size: int = 20,
+) -> tuple[Optional[tuple[int, int, int, int]], Image.Image, int, int]:
+    """Selects an area over a frozen snapshot and returns both selection and snapshot data."""
+    image, offset_x, offset_y = capture_virtual_screen()
+    selector = ScreenAreaOverlay(image, offset_x, offset_y, help_text=help_text, parent=parent, min_size=min_size)
+    selection = selector.select()
+    return selection, image, offset_x, offset_y
+
+
 def select_points(count: int = 2, help_text: Optional[str] = None) -> list[tuple[int, int]]:
     image, offset_x, offset_y = capture_virtual_screen()
     selector = ScreenPointOverlay(image, offset_x, offset_y, count=count, help_text=help_text)
