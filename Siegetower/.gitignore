@@ -57,3 +57,6 @@ licenses/
 
 # Keep generated licenses rules explicit
 licenses/keys/private_key.pem
+
+#Configs
+/configs/config.json
