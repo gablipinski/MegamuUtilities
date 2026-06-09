@@ -75,6 +75,8 @@ class MonitorUI:
         self._snapshot_label: tk.Label | None = None
         self._snapshot_info_var: tk.StringVar | None = None
         self._snapshot_photo: ImageTk.PhotoImage | None = None
+        self._last_trigger_snapshot: Image.Image | None = None
+        self._last_trigger_mode: str = 'Trigger'
 
         self._build_ui()
         self._set_state_idle('Idle')
@@ -183,6 +185,16 @@ class MonitorUI:
             # Keep default icon if this platform/window manager rejects iconphoto.
             pass
 
+    def _position_popup_at_main_window(self, popup: tk.Misc, size: str | None = None) -> None:
+        """Place popup at the current main-window coordinates."""
+        self.root.update_idletasks()
+        x = int(self.root.winfo_rootx())
+        y = int(self.root.winfo_rooty())
+        if size:
+            popup.geometry(f'{size}+{x}+{y}')
+        else:
+            popup.geometry(f'+{x}+{y}')
+
     def _setup_windows_notifier(self) -> None:
         try:
             from win10toast import ToastNotifier
@@ -230,6 +242,7 @@ class MonitorUI:
             win.configure(bg=self._colors['bg'])
             self._apply_app_icon(win)
             win.transient(self.root)
+            self._position_popup_at_main_window(win)
 
             self._snapshot_info_var = tk.StringVar(value='')
             info = tk.Label(
@@ -268,8 +281,15 @@ class MonitorUI:
             )
 
         if self._snapshot_window is not None:
+            self._position_popup_at_main_window(self._snapshot_window)
             self._snapshot_window.lift()
             self._snapshot_window.focus_force()
+
+    def _open_last_trigger_snapshot(self) -> None:
+        if self._last_trigger_snapshot is None:
+            messagebox.showinfo('No snapshot', 'No trigger snapshot is available yet.', parent=self.root)
+            return
+        self._show_trigger_snapshot(self._last_trigger_snapshot, self._last_trigger_mode)
 
     # ── License check ─────────────────────────────────────────────────────────
 
@@ -289,10 +309,12 @@ class MonitorUI:
 
         dlg = tk.Toplevel(self.root)
         dlg.title(f'{APP_NAME} v{APP_VERSION} - Activation Required')
-        dlg.geometry('480x340')
+        self._position_popup_at_main_window(dlg, '480x340')
         dlg.resizable(False, False)
         dlg.protocol('WM_DELETE_WINDOW', lambda: None)
         self._apply_app_icon(dlg)
+        dlg.transient(self.root)
+        dlg.grab_set()
         dlg.configure(bg=self._colors['bg'])
         dlg.lift()
         dlg.focus_force()
@@ -528,6 +550,15 @@ class MonitorUI:
         )
         self.lbl_route.pack(fill=tk.X, pady=(2, 8))
 
+        self.btn_last_snapshot = self._make_button(
+            container,
+            text='View Last Trigger Snapshot',
+            width=26,
+            command=self._open_last_trigger_snapshot,
+        )
+        self.btn_last_snapshot.pack(fill=tk.X, pady=(0, 8))
+        self.btn_last_snapshot.configure(state=tk.DISABLED)
+
         self.log = tk.Text(
             container,
             height=10,
@@ -641,7 +672,7 @@ class MonitorUI:
 
     def _on_mode_changed(self, _event=None):
         if self._monitor_thread and self._monitor_thread.is_alive():
-            messagebox.showwarning('Scanner active', 'Stop scanner before changing mode.')
+            messagebox.showwarning('Scanner active', 'Stop scanner before changing mode.', parent=self.root)
             self._mode_var.set(self._last_mode_selection)
             return
         self._last_mode_selection = self._mode_var.get()
@@ -651,7 +682,7 @@ class MonitorUI:
 
     def _on_select_area(self):
         if self._monitor_thread and self._monitor_thread.is_alive():
-            messagebox.showwarning('Scanner active', 'Stop scanner before selecting a new area.')
+            messagebox.showwarning('Scanner active', 'Stop scanner before selecting a new area.', parent=self.root)
             return
 
         selection = select_area_with_parent(
@@ -671,14 +702,14 @@ class MonitorUI:
         if self._selected_mode() != 'spot-tower':
             return
         if self._monitor_thread and self._monitor_thread.is_alive():
-            messagebox.showwarning('Scanner active', 'Stop scanner before editing escape route.')
+            messagebox.showwarning('Scanner active', 'Stop scanner before editing escape route.', parent=self.root)
             return
 
         self._open_escape_route_editor()
 
     def _on_capture_template(self):
         if self._monitor_thread and self._monitor_thread.is_alive():
-            messagebox.showwarning('Scanner active', 'Stop scanner before capturing a template.')
+            messagebox.showwarning('Scanner active', 'Stop scanner before capturing a template.', parent=self.root)
             return
 
         selection, image, offset_x, offset_y = select_area_and_snapshot_with_parent(
@@ -706,7 +737,7 @@ class MonitorUI:
 
         dlg = tk.Toplevel(self.root)
         dlg.title('Escape Route Editor')
-        dlg.geometry('520x360')
+        self._position_popup_at_main_window(dlg, '520x360')
         dlg.minsize(420, 360)
         dlg.resizable(True, True)
         dlg.configure(bg=self._colors['bg'])
@@ -728,7 +759,7 @@ class MonitorUI:
 
         steps_list = tk.Listbox(
             list_frame,
-            height=10,
+            height=8,
             activestyle='dotbox',
             bg=self._colors['input_bg'],
             fg=self._colors['text'],
@@ -877,15 +908,15 @@ class MonitorUI:
             compact = width < 560
 
             if compact:
-                btn_add_click.grid(row=0, column=0, padx=(0, 6), pady=(0, 4), sticky='ew')
-                btn_add_key.grid(row=0, column=1, padx=(0, 0), pady=(0, 4), sticky='ew')
-                btn_remove.grid(row=1, column=0, padx=(0, 6), pady=(0, 4), sticky='ew')
-                btn_move_up.grid(row=1, column=1, padx=(0, 0), pady=(0, 4), sticky='ew')
-                btn_move_down.grid(row=2, column=0, columnspan=2, padx=0, pady=(0, 4), sticky='ew')
+                btn_add_click.grid(row=0, column=0, columnspan=2, padx=(0, 6), pady=(0, 4), sticky='ew')
+                btn_add_key.grid(row=0, column=2, columnspan=2, padx=(0, 6), pady=(0, 4), sticky='ew')
+                btn_remove.grid(row=0, column=4, columnspan=2, padx=(0, 0), pady=(0, 4), sticky='ew')
+                btn_move_up.grid(row=1, column=0, columnspan=3, padx=(0, 6), pady=(0, 4), sticky='ew')
+                btn_move_down.grid(row=1, column=3, columnspan=3, padx=(0, 0), pady=(0, 4), sticky='ew')
 
-                buttons.grid_columnconfigure(0, weight=1, uniform='route_actions_compact')
-                buttons.grid_columnconfigure(1, weight=1, uniform='route_actions_compact')
-                for col in range(2, 5):
+                for col in range(6):
+                    buttons.grid_columnconfigure(col, weight=1, uniform='route_actions_compact')
+                for col in range(6, 8):
                     buttons.grid_columnconfigure(col, weight=0, uniform='')
 
                 btn_clear.grid(row=0, column=0, padx=(0, 6), pady=0, sticky='ew')
@@ -904,6 +935,7 @@ class MonitorUI:
 
             for col in range(5):
                 buttons.grid_columnconfigure(col, weight=1, uniform='route_actions')
+            buttons.grid_columnconfigure(5, weight=0, uniform='')
 
             btn_clear.grid(row=0, column=0, padx=(0, 0), pady=0, sticky='w')
             btn_save.grid(row=0, column=1, padx=(0, 6), pady=0, sticky='e')
@@ -914,6 +946,7 @@ class MonitorUI:
 
         dlg.bind('<Configure>', _relayout_route_editor)
         _relayout_route_editor()
+        dlg.after_idle(_relayout_route_editor)
 
         _refresh_list()
         self.root.wait_window(dlg)
@@ -927,10 +960,10 @@ class MonitorUI:
 
     def _start_scanner(self):
         if self.region is None:
-            messagebox.showwarning('Missing area', 'Select area before starting scanner.')
+            messagebox.showwarning('Missing area', 'Select area before starting scanner.', parent=self.root)
             return
         if self._selected_mode() == 'spot-tower' and not self.escape_route:
-            messagebox.showwarning('Missing route', 'Create escape route before starting scanner.')
+            messagebox.showwarning('Missing route', 'Create escape route before starting scanner.', parent=self.root)
             return
 
         if self._monitor_thread and self._monitor_thread.is_alive():
@@ -1075,8 +1108,13 @@ class MonitorUI:
                 image = info.get('image')
                 mode_label = str(info.get('mode', 'Trigger'))
                 if isinstance(image, Image.Image):
-                    self._show_trigger_snapshot(image, mode_label)
-                    self._log(f'{mode_label} snapshot opened for trigger validation.')
+                    self._last_trigger_snapshot = image.copy()
+                    self._last_trigger_mode = mode_label
+                    self.btn_last_snapshot.configure(
+                        state=tk.NORMAL,
+                        text=f'View Last Trigger Snapshot ({mode_label})',
+                    )
+                    self._log(f'{mode_label} snapshot captured. Use "View Last Trigger Snapshot" to open it.')
             elif event == 'stopped':
                 info = payload if isinstance(payload, dict) else {}
                 mode = info.get('mode', 'spot-tower')
