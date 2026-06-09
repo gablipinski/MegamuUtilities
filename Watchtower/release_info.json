@@ -1,9 +1,8 @@
 {
   "app_name": "Watchtower",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "Megamu Utilities",
   "patch_notes": [
-    "Initial commercial release.",
-    "Centralized version metadata for build, installer, and UI."
+    "feat: Add functionality to view last trigger snapshot and position popups at main window"
   ]
 }

@@ -90,23 +90,51 @@ $iss = $iss -replace '(?m)^#define\s+MyAppVersion\s+"[^"]+"', ('#define MyAppVer
 $iss = $iss -replace '(?m)^#define\s+MyAppPublisher\s+"[^"]+"', ('#define MyAppPublisher "' + $publisher + '"')
 Set-Content -Path $SetupIssPath -Value $iss -Encoding UTF8
 
-# 3) Write RELEASE_NOTES.md
+# 3) Update RELEASE_NOTES.md (append new versions, update existing version section)
 $today = Get-Date -Format 'yyyy-MM-dd'
-$notesMd = @(
-	"# $appName Release Notes",
-	'',
+$entryLines = @(
 	"## $version ($today)",
 	''
 )
 if ($patchNotes.Count -gt 0) {
-	$notesMd += ($patchNotes | ForEach-Object { "- $_" })
+	$entryLines += ($patchNotes | ForEach-Object { "- $_" })
 }
 else {
-	$notesMd += '- No patch notes provided.'
+	$entryLines += '- No patch notes provided.'
 }
-$notesMd += ''
+$entryLines += ''
+$entryText = $entryLines -join "`r`n"
 
-Set-Content -Path $ReleaseNotesPath -Value ($notesMd -join "`r`n") -Encoding UTF8
+$notesHeader = "# $appName Release Notes"
+$notesBody = ''
+
+if (Test-Path $ReleaseNotesPath) {
+	$notesBody = Get-Content -Raw -Path $ReleaseNotesPath
+}
+
+if ([string]::IsNullOrWhiteSpace($notesBody)) {
+	$notesBody = "$notesHeader`r`n`r`n"
+}
+elseif ($notesBody -notmatch '(?m)^#\s+.+\s+Release Notes\s*$') {
+	$notesBody = "$notesHeader`r`n`r`n$notesBody"
+}
+
+# Idempotent behavior: update the existing section for this version instead of duplicating it.
+$versionSectionPattern = "(?ms)^##\s+" + [regex]::Escape($version) + "\s+\([^)]+\)\r?\n.*?(?=^##\s+|\z)"
+if ($notesBody -match $versionSectionPattern) {
+	$notesBody = [regex]::Replace($notesBody, $versionSectionPattern, $entryText)
+}
+else {
+	$trimmed = $notesBody.TrimEnd()
+	if ($trimmed.Length -gt 0) {
+		$notesBody = "$trimmed`r`n`r`n$entryText"
+	}
+	else {
+		$notesBody = "$notesHeader`r`n`r`n$entryText"
+	}
+}
+
+Set-Content -Path $ReleaseNotesPath -Value $notesBody -Encoding UTF8
 
 Write-Host "[OK] Release metadata synced." -ForegroundColor Green
 Write-Host "     Source: $ReleaseInfoPath" -ForegroundColor DarkGray
