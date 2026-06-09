@@ -116,10 +116,17 @@ function Get-InnoCompilerPath {
 $InnoCompiler = Get-InnoCompilerPath
 
 if (Test-Path $SyncReleaseScript) {
-    & $SyncReleaseScript
-    if ($LASTEXITCODE -ne 0) {
+    try {
+        & $SyncReleaseScript
+        if (-not $?) {
+            Write-Host "[X] Failed to sync release metadata." -ForegroundColor Red
+            exit 1
+        }
+    }
+    catch {
         Write-Host "[X] Failed to sync release metadata." -ForegroundColor Red
-        exit $LASTEXITCODE
+        Write-Host "    $($_.Exception.Message)" -ForegroundColor DarkGray
+        exit 1
     }
 }
 
