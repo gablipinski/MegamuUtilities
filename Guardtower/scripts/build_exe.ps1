@@ -43,6 +43,35 @@ $ConfigPath     = Join-Path $ProjectRoot 'configs\config.json'
 $IconPngPath    = Join-Path $ProjectRoot 'icons\guardtower.png'
 $IconIcoPath    = Join-Path $ProjectRoot 'icons\guardtower.ico'
 
+function Export-SanitizedConfig {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourcePath,
+        [Parameter(Mandatory = $true)]
+        [string]$TargetPath
+    )
+
+    if (-not (Test-Path $SourcePath)) {
+        throw "Config source not found: $SourcePath"
+    }
+
+    $content = Get-Content -Raw -Path $SourcePath
+    $config = $content | ConvertFrom-Json
+
+    if ($null -eq $config.accounts -or -not ($config.accounts -is [System.Array])) {
+        throw 'Config must contain an accounts array to sanitize credentials.'
+    }
+
+    foreach ($account in $config.accounts) {
+        $account.username = ''
+        $account.oauth_token = ''
+        $account.nickname = ''
+    }
+
+    $sanitizedJson = $config | ConvertTo-Json -Depth 100
+    Set-Content -Path $TargetPath -Value $sanitizedJson -Encoding UTF8
+}
+
 function Get-AppMetadata {
     param(
         [Parameter(Mandatory = $true)]
@@ -278,7 +307,8 @@ Write-Host "[OK] Executable: $DistDir\$AppName.exe" -ForegroundColor Green
 Write-Host "[3/4] Copying editable configs and icons to dist..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path (Join-Path $DistDir 'configs') | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $DistDir 'icons') | Out-Null
-Copy-Item -Force $ConfigPath (Join-Path $DistDir 'configs\config.json')
+$DistConfigPath = Join-Path $DistDir 'configs\config.json'
+Export-SanitizedConfig -SourcePath $ConfigPath -TargetPath $DistConfigPath
 Copy-Item -Force $IconPngPath (Join-Path $DistDir 'icons\guardtower.png')
 if (Test-Path $IconIcoPath) {
     Copy-Item -Force $IconIcoPath (Join-Path $DistDir 'icons\guardtower.ico')
