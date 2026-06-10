@@ -42,6 +42,8 @@ _MAIN_WINDOW_HEIGHT = 820
 def _is_missing_user_info_error(error: Exception) -> bool:
     message = str(error).lower()
     markers = (
+        'at least one account is required',
+        'account entry must be an object',
         'account missing "username"',
         'account missing "oauth_token"',
         'account missing "nickname"',
@@ -274,11 +276,14 @@ class MonitorUI:
         dialog.geometry(f"{dlg_w}x{dlg_h}+{x}+{y}")
         dialog.resizable(False, False)
         dialog.configure(bg=self._colors["bg"])
-        dialog.transient(self.root)
+        # Root is intentionally withdrawn at startup; transient-to-hidden-parent can
+        # keep this dialog out of view on some Windows setups.
+        dialog.attributes("-topmost", True)
         dialog.grab_set()
         self._apply_app_icon(dialog)
         dialog.lift()
         dialog.focus_force()
+        dialog.after(250, lambda: dialog.attributes("-topmost", False))
 
         panel = tk.Frame(
             dialog,

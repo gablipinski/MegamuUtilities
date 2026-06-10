@@ -193,7 +193,12 @@ def load_config(config_file: str | None = None) -> BotConfig:
 
     if 'accounts' in data and isinstance(data['accounts'], list):
         # New format: multiple accounts
+        if not data['accounts']:
+            raise ValueError('At least one account is required in "accounts"')
+
         for acc in data['accounts']:
+            if not isinstance(acc, dict):
+                raise ValueError('Account entry must be an object')
             if not acc.get('username'):
                 raise ValueError('Account missing "username"')
             if not acc.get('oauth_token'):

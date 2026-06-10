@@ -6,6 +6,5 @@ APP_PUBLISHER = "Megamu Utilities"
 
 APP_PATCH_NOTES = [
     "feat: Update version to 1.0.1 and enhance error handling with user info dialogs in main.py",
-    "feat: Add credential loading and saving functions in monitor_gui.py",
 ]
 

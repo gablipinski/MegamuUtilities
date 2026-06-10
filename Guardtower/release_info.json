@@ -3,7 +3,6 @@
   "version": "1.0.1",
   "publisher": "Megamu Utilities",
   "patch_notes": [
-    "feat: Update version to 1.0.1 and enhance error handling with user info dialogs in main.py",
-    "feat: Add credential loading and saving functions in monitor_gui.py"
+    "feat: Update version to 1.0.1 and enhance error handling with user info dialogs in main.py"
   ]
 }
