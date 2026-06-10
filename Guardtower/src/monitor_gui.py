@@ -27,13 +27,83 @@ from twitchio.ext import commands  # type: ignore[import]
 
 from app_version import APP_NAME, APP_VERSION
 from bot import TwitchBot
-from config import BotConfig, resolve_default_config_path
+from config import BotConfig, load_config, resolve_default_config_path
 from console_log import set_gui_hook
 from license_manager import get_license_path, get_machine_id, validate_license
 from startup_logs import emit_startup_logs
 
 GIVEAWAY_SESSION_DURATION_S = 300.0
 IDLE_ALERT_THRESHOLD_S = 3600.0
+
+_MAIN_WINDOW_WIDTH = 1220
+_MAIN_WINDOW_HEIGHT = 820
+
+
+def _is_missing_user_info_error(error: Exception) -> bool:
+    message = str(error).lower()
+    markers = (
+        'account missing "username"',
+        'account missing "oauth_token"',
+        'account missing "nickname"',
+        'twitch.username is not configured',
+        'twitch.oauth_token is not configured',
+        'nickname is not configured',
+    )
+    return any(marker in message for marker in markers)
+
+
+def _load_credentials_seed_values() -> tuple[str, str, str]:
+    config_path = resolve_default_config_path()
+    username, oauth_token, nickname = '', '', ''
+    if not config_path.exists():
+        return username, oauth_token, nickname
+    try:
+        with open(config_path, 'r', encoding='utf-8-sig') as file:
+            payload = json.load(file)
+    except Exception:
+        return username, oauth_token, nickname
+    accounts = payload.get('accounts')
+    if isinstance(accounts, list) and accounts:
+        first = accounts[0] if isinstance(accounts[0], dict) else {}
+        return (
+            str(first.get('username', '')).strip(),
+            str(first.get('oauth_token', '')).strip(),
+            str(first.get('nickname', '')).strip(),
+        )
+    twitch = payload.get('twitch', {})
+    if isinstance(twitch, dict):
+        username = str(twitch.get('username', '')).strip()
+        oauth_token = str(twitch.get('oauth_token', '')).strip()
+    nickname = str(payload.get('nickname', '')).strip()
+    return username, oauth_token, nickname
+
+
+def _save_startup_credentials(username: str, oauth_token: str, nickname: str) -> None:
+    config_path = resolve_default_config_path()
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file '{config_path}' not found")
+    with open(config_path, 'r', encoding='utf-8-sig') as file:
+        payload = json.load(file)
+    if 'accounts' in payload and isinstance(payload['accounts'], list):
+        if not payload['accounts']:
+            payload['accounts'].append({})
+        first_account = payload['accounts'][0]
+        if not isinstance(first_account, dict):
+            first_account = {}
+            payload['accounts'][0] = first_account
+        first_account['username'] = username
+        first_account['oauth_token'] = oauth_token
+        first_account['nickname'] = nickname
+    else:
+        twitch = payload.get('twitch')
+        if not isinstance(twitch, dict):
+            twitch = {}
+            payload['twitch'] = twitch
+        twitch['username'] = username
+        twitch['oauth_token'] = oauth_token
+        payload['nickname'] = nickname
+    with open(config_path, 'w', encoding='utf-8') as file:
+        json.dump(payload, file, ensure_ascii=False, indent=2)
 
 
 @dataclass
@@ -61,12 +131,9 @@ class MonitorUI:
     _CHANNEL_LOG_BUFFER_MAX = 500
     _SYSTEM_LOG_BUFFER_MAX = 500
 
-    def __init__(self, config: BotConfig, args: argparse.Namespace) -> None:
-        self._bot_config = config
+    def __init__(self, args: argparse.Namespace) -> None:
+        self._bot_config: BotConfig | None = None
         self._bot_args = args
-
-        global GIVEAWAY_SESSION_DURATION_S
-        GIVEAWAY_SESSION_DURATION_S = config.runtime.giveaway_end_after_win_s
 
         self.root = tk.Tk()
         self._colors = {
@@ -119,6 +186,13 @@ class MonitorUI:
         if not self._check_license_startup():
             self.root.destroy()
             sys.exit(0)
+        config = self._load_config_with_credential_check()
+        if config is None:
+            self.root.destroy()
+            sys.exit(0)
+        self._bot_config = config
+        global GIVEAWAY_SESSION_DURATION_S
+        GIVEAWAY_SESSION_DURATION_S = config.runtime.giveaway_end_after_win_s
         self._build_ui()
         self._create_channel_cards()
         self._reorder_channel_cards(set())
@@ -171,6 +245,143 @@ class MonitorUI:
         if valid:
             return True
         return self._show_activation_dialog(message)
+
+    def _load_config_with_credential_check(self) -> BotConfig | None:
+        try:
+            return load_config()
+        except ValueError as e:
+            if not _is_missing_user_info_error(e):
+                raise
+        # Missing credentials — show the setup dialog (uses same Tk root, no double-instance)
+        if not self._show_startup_user_info_dialog():
+            return None
+        return load_config()
+
+    def _show_startup_user_info_dialog(self) -> bool:
+        result: dict[str, bool] = {"saved": False}
+        username_seed, token_seed, nickname_seed = _load_credentials_seed_values()
+
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        dlg_w, dlg_h = 640, 360
+        anchor_x = max(0, (screen_w - _MAIN_WINDOW_WIDTH) // 2)
+        anchor_y = max(0, (screen_h - _MAIN_WINDOW_HEIGHT) // 2)
+        x = max(0, anchor_x + (_MAIN_WINDOW_WIDTH - dlg_w) // 2)
+        y = max(0, anchor_y + (_MAIN_WINDOW_HEIGHT - dlg_h) // 2)
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"{APP_NAME} - Configure User Info")
+        dialog.geometry(f"{dlg_w}x{dlg_h}+{x}+{y}")
+        dialog.resizable(False, False)
+        dialog.configure(bg=self._colors["bg"])
+        dialog.transient(self.root)
+        dialog.grab_set()
+        self._apply_app_icon(dialog)
+        dialog.lift()
+        dialog.focus_force()
+
+        panel = tk.Frame(
+            dialog,
+            bg=self._colors["panel"],
+            highlightthickness=1,
+            highlightbackground=self._colors["border"],
+            padx=16,
+            pady=16,
+        )
+        panel.pack(fill=tk.BOTH, expand=True, padx=14, pady=14)
+
+        tk.Label(
+            panel,
+            text="Complete your account information to start Guardtower",
+            bg=self._colors["panel"],
+            fg=self._colors["text"],
+            font=("Segoe UI Semibold", 11),
+            anchor="w",
+        ).pack(fill=tk.X)
+
+        tk.Label(
+            panel,
+            text="These values are saved to config.json and used at startup.",
+            bg=self._colors["panel"],
+            fg=self._colors["muted"],
+            font=("Segoe UI", 9),
+            anchor="w",
+        ).pack(fill=tk.X, pady=(4, 12))
+
+        fields = tk.Frame(panel, bg=self._colors["panel"])
+        fields.pack(fill=tk.BOTH, expand=True)
+
+        username_var = tk.StringVar(value=username_seed)
+        token_var = tk.StringVar(value=token_seed)
+        nickname_var = tk.StringVar(value=nickname_seed)
+
+        def _entry_row(parent: tk.Frame, title: str, var: tk.StringVar) -> tk.Entry:
+            row = tk.Frame(parent, bg=self._colors["panel"])
+            row.pack(fill=tk.X, pady=(0, 10))
+            tk.Label(
+                row,
+                text=title,
+                bg=self._colors["panel"],
+                fg=self._colors["muted"],
+                font=("Segoe UI", 9),
+                anchor="w",
+                width=14,
+            ).pack(side=tk.LEFT)
+            entry = tk.Entry(
+                row,
+                textvariable=var,
+                bg=self._colors["input_bg"],
+                fg=self._colors["text"],
+                insertbackground=self._colors["text"],
+                relief=tk.FLAT,
+                highlightthickness=1,
+                highlightbackground=self._colors["border"],
+                highlightcolor=self._colors["accent"],
+                font=("Segoe UI", 10),
+            )
+            entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            return entry
+
+        username_entry = _entry_row(fields, "Username", username_var)
+        _entry_row(fields, "OAuth Token", token_var)
+        _entry_row(fields, "Nickname", nickname_var)
+
+        footer = tk.Frame(panel, bg=self._colors["panel"])
+        footer.pack(fill=tk.X, pady=(4, 0))
+
+        def _cancel() -> None:
+            dialog.destroy()
+
+        def _save() -> None:
+            username = username_var.get().strip()
+            oauth_token = token_var.get().strip()
+            nickname = nickname_var.get().strip()
+            if not username:
+                messagebox.showerror("Missing data", "Username is required.", parent=dialog)
+                return
+            if not oauth_token:
+                messagebox.showerror("Missing data", "OAuth token is required.", parent=dialog)
+                return
+            if not nickname:
+                messagebox.showerror("Missing data", "Nickname is required.", parent=dialog)
+                return
+            try:
+                _save_startup_credentials(username, oauth_token, nickname)
+            except Exception as exc:
+                messagebox.showerror("Save error", f"Failed to save config.json:\n{exc}", parent=dialog)
+                return
+            result["saved"] = True
+            dialog.destroy()
+
+        self._make_button(footer, text="Save", width=12, command=_save, accent=True).pack(side=tk.RIGHT)
+        self._make_button(footer, text="Cancel", width=12, command=_cancel, danger=True).pack(
+            side=tk.RIGHT, padx=(0, 8)
+        )
+
+        username_entry.focus_set()
+        dialog.protocol("WM_DELETE_WINDOW", _cancel)
+        self.root.wait_window(dialog)
+        return result["saved"]
 
     def _show_activation_dialog(self, initial_message: str) -> bool:
         result: dict[str, bool] = {"activated": False}
@@ -1383,6 +1594,6 @@ class MonitorUI:
         self.root.destroy()
 
 
-def run_gui(config: BotConfig, args: argparse.Namespace) -> None:
-    ui = MonitorUI(config, args)
+def run_gui(args: argparse.Namespace) -> None:
+    ui = MonitorUI(args)
     ui.run()
