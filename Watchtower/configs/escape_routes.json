@@ -1,0 +1,24 @@
+{
+  "routes": {
+    "Coliseum": [
+      {
+        "type": "click",
+        "x": 932,
+        "y": 15
+      },
+      {
+        "type": "key",
+        "key": "alt+2"
+      },
+      {
+        "type": "click",
+        "x": 2132,
+        "y": 19
+      },
+      {
+        "type": "key",
+        "key": "alt+2"
+      }
+    ]
+  }
+}

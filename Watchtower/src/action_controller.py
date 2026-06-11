@@ -58,8 +58,21 @@ class ActionController:
                 if not key:
                     print(f'    [WARN] Step {index} skipped (empty key)')
                     continue
-                pyautogui.press(key)
+                combo_parts = [part.strip() for part in key.split('+') if part.strip()]
+                if len(combo_parts) > 1:
+                    pyautogui.hotkey(*combo_parts)
+                else:
+                    pyautogui.press(key)
                 print(f"    [OK] Key {index}: {key}")
+                continue
+
+            if action_type == 'text':
+                text = str(action.get('text', ''))
+                if not text:
+                    print(f'    [WARN] Step {index} skipped (empty text)')
+                    continue
+                pyautogui.write(text, interval=0.01)
+                print(f"    [OK] Text {index}: {text}")
                 continue
 
             print(f"    [WARN] Step {index} skipped (unknown type: {action_type})")

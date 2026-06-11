@@ -1,8 +1,10 @@
 import asyncio
+import json
 import queue
 import shutil
 import sys
 import threading
+import time
 import tkinter as tk
 import tkinter.filedialog as filedialog
 from datetime import datetime
@@ -58,6 +60,13 @@ class MonitorUI:
 
         self.region: tuple[int, int, int, int] | None = None
         self.escape_route: list[dict[str, int | str]] = []
+        self.escape_route_name: str | None = None
+        self.escape_routes_config_path = Path(__file__).resolve().parent.parent / 'configs' / 'escape_routes.json'
+        self.saved_escape_routes: dict[str, list[dict[str, int | str]]] = self._load_saved_escape_routes()
+        if self.saved_escape_routes:
+            default_name = sorted(self.saved_escape_routes.keys())[0]
+            self.escape_route_name = default_name
+            self.escape_route = [dict(step) for step in self.saved_escape_routes.get(default_name, [])]
         self.template_path = Path(__file__).resolve().parent.parent / 'configs' / 'spot_template.png'
         self._toast_notifier = None
         self._setup_windows_notifier()
@@ -68,6 +77,9 @@ class MonitorUI:
         self._player_monitor: PlayerMonitor | None = None
         self._tower_monitor: ScreenMonitor | None = None
         self._detected_waiting_stop = False
+        self._stop_requested = False
+        self._stop_requested_at: float | None = None
+        self._stop_retry_count = 0
         self._mode_var = tk.StringVar(value='SPOT TOWER')
         self._last_mode_selection = 'SPOT TOWER'
         self._compact_controls: bool | None = None
@@ -624,26 +636,121 @@ class MonitorUI:
         self.log.see(tk.END)
         self.log.configure(state=tk.DISABLED)
 
+    @staticmethod
+    def _normalize_route_step(step: object) -> dict[str, int | str] | None:
+        if not isinstance(step, dict):
+            return None
+
+        step_type = str(step.get('type', '')).strip().lower()
+        if step_type == 'click':
+            try:
+                x = int(step.get('x', 0))
+                y = int(step.get('y', 0))
+            except (TypeError, ValueError):
+                return None
+            return {'type': 'click', 'x': x, 'y': y}
+
+        if step_type == 'key':
+            key_name = str(step.get('key', '')).strip()
+            if not key_name:
+                return None
+            return {'type': 'key', 'key': key_name}
+
+        if step_type == 'text':
+            text_value = str(step.get('text', ''))
+            if not text_value:
+                return None
+            return {'type': 'text', 'text': text_value}
+
+        return None
+
+    def _normalize_route(self, route: object) -> list[dict[str, int | str]]:
+        if not isinstance(route, list):
+            return []
+
+        normalized: list[dict[str, int | str]] = []
+        for step in route:
+            normalized_step = self._normalize_route_step(step)
+            if normalized_step is not None:
+                normalized.append(normalized_step)
+        return normalized
+
+    def _load_saved_escape_routes(self) -> dict[str, list[dict[str, int | str]]]:
+        if not self.escape_routes_config_path.exists():
+            return {}
+
+        try:
+            payload = json.loads(self.escape_routes_config_path.read_text(encoding='utf-8'))
+        except Exception:
+            return {}
+
+        routes_obj = payload.get('routes', {}) if isinstance(payload, dict) else {}
+        if not isinstance(routes_obj, dict):
+            return {}
+
+        normalized: dict[str, list[dict[str, int | str]]] = {}
+        for name, route in routes_obj.items():
+            route_name = str(name).strip()
+            if not route_name:
+                continue
+            normalized_route = self._normalize_route(route)
+            if normalized_route:
+                normalized[route_name] = normalized_route
+
+        return normalized
+
+    def _persist_saved_escape_routes(self) -> bool:
+        routes_payload = {
+            name: [dict(step) for step in route]
+            for name, route in sorted(self.saved_escape_routes.items(), key=lambda item: item[0].lower())
+            if route
+        }
+
+        payload = {'routes': routes_payload}
+        try:
+            self.escape_routes_config_path.parent.mkdir(parents=True, exist_ok=True)
+            self.escape_routes_config_path.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=True),
+                encoding='utf-8',
+            )
+            return True
+        except Exception as exc:
+            messagebox.showerror('Save failed', f'Could not save escape routes:\n{exc}', parent=self.root)
+            return False
+
+    def _apply_escape_route(self, route_name: str, route: list[dict[str, int | str]], *, log_change: bool = True) -> None:
+        self.escape_route_name = route_name
+        self.escape_route = [dict(step) for step in route]
+        self._update_route_label()
+        if log_change:
+            self._log(f'Loaded escape route: {route_name} ({len(self.escape_route)} step(s)).')
+
     def _set_led(self, color: str):
         self.led.itemconfig(self.led_circle, fill=color)
 
     def _set_state_idle(self, reason: str):
         self._set_led('#7a7a7a')
         self.lbl_state.configure(text=f'State: Idle ({reason})')
-        self.btn_toggle_scan.configure(text='Start Scanner')
+        self.btn_toggle_scan.configure(text='Start Scanner', state=tk.NORMAL)
         self.btn_toggle_scan.configure(bg=self._colors['success'], activebackground='#1f8f58')
 
     def _set_state_scanning(self):
         self._set_led('#00b050')
         self.lbl_state.configure(text='State: Scanning')
-        self.btn_toggle_scan.configure(text='Stop Scanner')
+        self.btn_toggle_scan.configure(text='Stop Scanner', state=tk.NORMAL)
         self.btn_toggle_scan.configure(bg=self._colors['danger'], activebackground=self._colors['danger_hover'])
 
     def _set_state_detected(self):
         self._set_led('#d32f2f')
         self.lbl_state.configure(text='State: Detected')
-        self.btn_toggle_scan.configure(text='Start Scanner')
-        self.btn_toggle_scan.configure(bg=self._colors['success'], activebackground='#1f8f58')
+        self.btn_toggle_scan.configure(text='Stop Scanner', state=tk.NORMAL)
+        self.btn_toggle_scan.configure(bg=self._colors['danger'], activebackground=self._colors['danger_hover'])
+
+    def _set_state_stopping(self):
+        self._set_led(self._colors['warning'])
+        self.lbl_state.configure(text='State: Stopping')
+        self.btn_toggle_scan.configure(text='Stopping...', state=tk.DISABLED)
+        self.btn_toggle_scan.configure(bg=self._colors['warning'], activebackground=self._colors['warning'])
 
     def _selected_mode(self) -> str:
         return 'safe-tower' if self._mode_var.get() == 'SAFE TOWER' else 'spot-tower'
@@ -666,8 +773,13 @@ class MonitorUI:
 
         click_count = sum(1 for item in self.escape_route if str(item.get('type', '')).lower() == 'click')
         key_count = sum(1 for item in self.escape_route if str(item.get('type', '')).lower() == 'key')
+        text_count = sum(1 for item in self.escape_route if str(item.get('type', '')).lower() == 'text')
+        route_name_label = self.escape_route_name or 'Unnamed'
         self.lbl_route.configure(
-            text=f'Escape route: {len(self.escape_route)} step(s) ({click_count} click, {key_count} key)'
+            text=(
+                f'Escape route: {route_name_label} - {len(self.escape_route)} step(s) '
+                f'({click_count} click, {key_count} key, {text_count} text)'
+            )
         )
 
     def _on_mode_changed(self, _event=None):
@@ -681,6 +793,9 @@ class MonitorUI:
         self._refresh_mode_ui()
 
     def _on_select_area(self):
+        if self._stop_requested:
+            messagebox.showinfo('Stopping scanner', 'Scanner is stopping. Please wait a moment.', parent=self.root)
+            return
         if self._monitor_thread and self._monitor_thread.is_alive():
             messagebox.showwarning('Scanner active', 'Stop scanner before selecting a new area.', parent=self.root)
             return
@@ -701,13 +816,162 @@ class MonitorUI:
     def _on_select_route(self):
         if self._selected_mode() != 'spot-tower':
             return
+        if self._stop_requested:
+            messagebox.showinfo('Stopping scanner', 'Scanner is stopping. Please wait a moment.', parent=self.root)
+            return
         if self._monitor_thread and self._monitor_thread.is_alive():
             messagebox.showwarning('Scanner active', 'Stop scanner before editing escape route.', parent=self.root)
             return
 
-        self._open_escape_route_editor()
+        if not self.saved_escape_routes:
+            self._open_escape_route_editor(route_name=None, initial_route=[])
+            return
+
+        self._open_escape_route_picker()
+
+    def _open_escape_route_picker(self) -> None:
+        dlg = tk.Toplevel(self.root)
+        dlg.title('Select Escape Route')
+        self._position_popup_at_main_window(dlg, '460x330')
+        dlg.minsize(420, 300)
+        dlg.resizable(True, True)
+        dlg.configure(bg=self._colors['bg'])
+        self._apply_app_icon(dlg)
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        tk.Label(
+            dlg,
+            text='Select an existing escape route or create a new one.',
+            font=('Segoe UI', 10),
+            anchor='w',
+            bg=self._colors['bg'],
+            fg=self._colors['text'],
+        ).pack(fill=tk.X, padx=12, pady=(12, 6))
+
+        list_frame = tk.Frame(dlg, bg=self._colors['bg'])
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=12)
+
+        route_list = tk.Listbox(
+            list_frame,
+            activestyle='dotbox',
+            bg=self._colors['input_bg'],
+            fg=self._colors['text'],
+            selectbackground=self._colors['accent'],
+            selectforeground='#ffffff',
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=self._colors['border'],
+            highlightcolor=self._colors['accent'],
+        )
+        route_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        scrollbar = tk.Scrollbar(
+            list_frame,
+            orient=tk.VERTICAL,
+            command=route_list.yview,
+            bg=self._colors['panel_alt'],
+            troughcolor=self._colors['input_bg'],
+            activebackground=self._colors['accent'],
+        )
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        route_list.configure(yscrollcommand=scrollbar.set)
+
+        route_names: list[str] = []
+
+        def _refresh_route_list() -> None:
+            nonlocal route_names
+            route_names = sorted(self.saved_escape_routes.keys(), key=str.lower)
+            route_list.delete(0, tk.END)
+            for name in route_names:
+                route_list.insert(tk.END, name)
+
+            if not route_names:
+                dlg.destroy()
+                self._open_escape_route_editor(route_name=None, initial_route=[])
+                return
+
+            preferred = self.escape_route_name if self.escape_route_name in route_names else route_names[0]
+            select_index = route_names.index(preferred)
+            route_list.selection_set(select_index)
+            route_list.activate(select_index)
+
+        def _selected_route_name() -> str | None:
+            selected = route_list.curselection()
+            if not selected:
+                return None
+            idx = int(selected[0])
+            if idx < 0 or idx >= len(route_names):
+                return None
+            return route_names[idx]
+
+        def _use_selected() -> None:
+            selected_name = _selected_route_name()
+            if not selected_name:
+                return
+            route = self.saved_escape_routes.get(selected_name, [])
+            self._apply_escape_route(selected_name, route)
+            dlg.destroy()
+
+        def _edit_selected() -> None:
+            selected_name = _selected_route_name()
+            if not selected_name:
+                return
+            route = self.saved_escape_routes.get(selected_name, [])
+            dlg.destroy()
+            self._open_escape_route_editor(route_name=selected_name, initial_route=route)
+
+        def _create_new() -> None:
+            dlg.destroy()
+            self._open_escape_route_editor(route_name=None, initial_route=[])
+
+        def _delete_selected() -> None:
+            selected_name = _selected_route_name()
+            if not selected_name:
+                return
+            if not messagebox.askyesno(
+                'Delete route',
+                f'Delete escape route "{selected_name}"?',
+                parent=dlg,
+            ):
+                return
+            self.saved_escape_routes.pop(selected_name, None)
+            if self.escape_route_name == selected_name:
+                self.escape_route_name = None
+                self.escape_route = []
+                self._update_route_label()
+            if not self._persist_saved_escape_routes():
+                return
+            self._log(f'Escape route deleted: {selected_name}.')
+            _refresh_route_list()
+
+        actions = tk.Frame(dlg, bg=self._colors['bg'])
+        actions.pack(fill=tk.X, padx=12, pady=(10, 12))
+
+        btn_use = self._make_button(actions, text='Use Selected', width=12, command=_use_selected, accent=True)
+        btn_edit = self._make_button(actions, text='Edit', width=10, command=_edit_selected)
+        btn_new = self._make_button(actions, text='New', width=10, command=_create_new)
+        btn_delete = self._make_button(actions, text='Delete', width=10, command=_delete_selected, danger=True)
+        btn_cancel = self._make_button(actions, text='Cancel', width=10, command=dlg.destroy)
+
+        btn_use.grid(row=0, column=0, padx=(0, 6), sticky='ew')
+        btn_edit.grid(row=0, column=1, padx=(0, 6), sticky='ew')
+        btn_new.grid(row=0, column=2, padx=(0, 6), sticky='ew')
+        btn_delete.grid(row=0, column=3, padx=(0, 6), sticky='ew')
+        btn_cancel.grid(row=0, column=4, padx=(0, 0), sticky='ew')
+
+        for col in range(5):
+            actions.grid_columnconfigure(col, weight=1)
+
+        route_list.bind('<Double-Button-1>', lambda _event: _use_selected())
+
+        _refresh_route_list()
+        self.root.wait_window(dlg)
 
     def _on_capture_template(self):
+        if self._stop_requested:
+            messagebox.showinfo('Stopping scanner', 'Scanner is stopping. Please wait a moment.', parent=self.root)
+            return
         if self._monitor_thread and self._monitor_thread.is_alive():
             messagebox.showwarning('Scanner active', 'Stop scanner before capturing a template.', parent=self.root)
             return
@@ -732,8 +996,16 @@ class MonitorUI:
         template.save(self.template_path)
         self._log(f'Template saved to {self.template_path.name} ({crop_x2 - crop_x1}x{crop_y2 - crop_y1}).')
 
-    def _open_escape_route_editor(self):
-        working_route = [dict(step) for step in self.escape_route]
+    def _open_escape_route_editor(
+        self,
+        route_name: str | None = None,
+        initial_route: list[dict[str, int | str]] | None = None,
+    ):
+        current_route_name = route_name
+        if initial_route is None:
+            working_route = [dict(step) for step in self.escape_route]
+        else:
+            working_route = [dict(step) for step in initial_route]
 
         dlg = tk.Toplevel(self.root)
         dlg.title('Escape Route Editor')
@@ -747,7 +1019,7 @@ class MonitorUI:
 
         tk.Label(
             dlg,
-            text='Configure ordered escape actions (clicks and keys).',
+            text='Configure ordered escape actions (clicks, keys, and text).',
             font=('Segoe UI', 10),
             anchor='w',
             bg=self._colors['bg'],
@@ -792,6 +1064,9 @@ class MonitorUI:
             if step_type == 'key':
                 key = str(step.get('key', '')).strip() or '<empty>'
                 return f'{index}. Press key: {key}'
+            if step_type == 'text':
+                text = str(step.get('text', ''))
+                return f'{index}. Type text: {text if text else "<empty>"}'
             return f'{index}. Unknown step'
 
         def _refresh_list():
@@ -820,18 +1095,194 @@ class MonitorUI:
             steps_list.selection_set(tk.END)
 
         def _add_key_step() -> None:
-            key_name = simpledialog.askstring(
-                'Add key press',
-                'Enter key name for pyautogui.press (examples: f1, esc, 1, enter):',
+            key_aliases = {
+                'Return': 'enter',
+                'Escape': 'esc',
+                'BackSpace': 'backspace',
+                'Tab': 'tab',
+                'space': 'space',
+                'Delete': 'delete',
+                'Insert': 'insert',
+                'Home': 'home',
+                'End': 'end',
+                'Prior': 'pageup',
+                'Next': 'pagedown',
+                'Up': 'up',
+                'Down': 'down',
+                'Left': 'left',
+                'Right': 'right',
+                'Print': 'printscreen',
+                'Scroll_Lock': 'scrolllock',
+                'Pause': 'pause',
+                'Caps_Lock': 'capslock',
+                'Num_Lock': 'numlock',
+                'Shift_L': 'shift',
+                'Shift_R': 'shift',
+                'Control_L': 'ctrl',
+                'Control_R': 'ctrl',
+                'Alt_L': 'alt',
+                'Alt_R': 'alt',
+                'Win_L': 'win',
+                'Win_R': 'win',
+            }
+
+            modifier_order = ['ctrl', 'alt', 'shift', 'win']
+            selected_modifiers: set[str] = set()
+            selected_key: str | None = None
+            captured_key: str | None = None
+            capture_dlg = tk.Toplevel(dlg)
+            capture_dlg.title('Capture key press')
+            self._position_popup_at_main_window(capture_dlg, '420x220')
+            capture_dlg.resizable(False, False)
+            capture_dlg.configure(bg=self._colors['bg'])
+            self._apply_app_icon(capture_dlg)
+            capture_dlg.transient(dlg)
+            capture_dlg.grab_set()
+
+            tk.Label(
+                capture_dlg,
+                text='Press your combination, then click OK.',
+                font=('Segoe UI', 10),
+                bg=self._colors['bg'],
+                fg=self._colors['text'],
+            ).pack(fill=tk.X, padx=12, pady=(16, 6))
+
+            combo_var = tk.StringVar(value='Current combo: <none>')
+            tk.Label(
+                capture_dlg,
+                textvariable=combo_var,
+                font=('Segoe UI', 9),
+                bg=self._colors['bg'],
+                fg=self._colors['text'],
+            ).pack(fill=tk.X, padx=12, pady=(2, 6))
+
+            hint_var = tk.StringVar(value='Tip: Hold Alt/Ctrl/Shift and press a key like 2, then click OK.')
+            tk.Label(
+                capture_dlg,
+                textvariable=hint_var,
+                font=('Segoe UI', 9),
+                bg=self._colors['bg'],
+                fg=self._colors['muted'],
+            ).pack(fill=tk.X, padx=12, pady=(0, 10))
+
+            def _format_combo() -> str:
+                parts: list[str] = [mod for mod in modifier_order if mod in selected_modifiers]
+                if selected_key:
+                    parts.append(selected_key)
+                if not parts:
+                    return '<none>'
+                return '+'.join(parts)
+
+            def _refresh_combo_label() -> None:
+                combo_var.set(f'Current combo: {_format_combo()}')
+
+            def _map_tk_key(event: tk.Event) -> str:
+                keysym = str(getattr(event, 'keysym', '') or '')
+                char = str(getattr(event, 'char', '') or '')
+
+                if keysym in key_aliases:
+                    return key_aliases[keysym]
+
+                if len(char) == 1 and char.isprintable() and char != ' ':
+                    return char.lower()
+
+                if keysym.startswith('F') and keysym[1:].isdigit():
+                    return keysym.lower()
+
+                lowered = keysym.lower()
+                if lowered and lowered != '??':
+                    return lowered
+
+                return ''
+
+            def _on_key_press(event: tk.Event) -> None:
+                nonlocal selected_key
+                mapped = _map_tk_key(event)
+                if not mapped:
+                    hint_var.set('Unsupported key. Try another key.')
+                    return 'break'
+
+                if event.state & 0x0004:
+                    selected_modifiers.add('ctrl')
+                if event.state & 0x0008:
+                    selected_modifiers.add('alt')
+                if event.state & 0x0001:
+                    selected_modifiers.add('shift')
+
+                if mapped in {'ctrl', 'alt', 'shift', 'win'}:
+                    selected_modifiers.add(mapped)
+                else:
+                    selected_key = mapped
+
+                _refresh_combo_label()
+                hint_var.set('Combo captured. Press more keys to adjust, then click OK.')
+                return 'break'
+
+            def _clear_combo() -> None:
+                nonlocal selected_key
+                selected_modifiers.clear()
+                selected_key = None
+                _refresh_combo_label()
+                hint_var.set('Cleared. Press your combination again.')
+
+            def _confirm_combo() -> None:
+                nonlocal captured_key
+                combo = _format_combo()
+                if combo == '<none>':
+                    messagebox.showwarning('No key captured', 'Press at least one key before clicking OK.', parent=capture_dlg)
+                    return
+                captured_key = combo
+                capture_dlg.destroy()
+
+            def _cancel_capture() -> None:
+                capture_dlg.destroy()
+
+            buttons_frame = tk.Frame(capture_dlg, bg=self._colors['bg'])
+            buttons_frame.pack(fill=tk.X, padx=12, pady=(8, 12))
+
+            btn_clear_combo = self._make_button(buttons_frame, text='Clear', width=10, command=_clear_combo)
+            btn_ok_combo = self._make_button(buttons_frame, text='OK', width=10, command=_confirm_combo, accent=True)
+            btn_cancel_combo = self._make_button(
+                buttons_frame,
+                text='Cancel',
+                width=10,
+                command=_cancel_capture,
+                danger=True,
+            )
+
+            btn_clear_combo.grid(row=0, column=0, padx=(0, 6), sticky='ew')
+            btn_ok_combo.grid(row=0, column=1, padx=(0, 6), sticky='ew')
+            btn_cancel_combo.grid(row=0, column=2, padx=(0, 0), sticky='ew')
+            buttons_frame.grid_columnconfigure(0, weight=1)
+            buttons_frame.grid_columnconfigure(1, weight=1)
+            buttons_frame.grid_columnconfigure(2, weight=1)
+
+            capture_dlg.bind('<KeyPress>', _on_key_press)
+            capture_dlg.protocol('WM_DELETE_WINDOW', _cancel_capture)
+            capture_dlg.focus_force()
+            capture_dlg.wait_window()
+
+            if not captured_key:
+                return
+
+            key_name = captured_key
+            working_route.append({'type': 'key', 'key': key_name})
+            _refresh_list()
+            steps_list.selection_clear(0, tk.END)
+            steps_list.selection_set(tk.END)
+
+        def _add_text_step() -> None:
+            typed_text = simpledialog.askstring(
+                'Add text typing',
+                'Enter text to type (example: /m coliseum):',
                 parent=dlg,
             )
-            if key_name is None:
+            if typed_text is None:
                 return
-            key_name = key_name.strip()
-            if not key_name:
-                messagebox.showwarning('Invalid key', 'Key name cannot be empty.', parent=dlg)
+            if not typed_text:
+                messagebox.showwarning('Invalid text', 'Text cannot be empty.', parent=dlg)
                 return
-            working_route.append({'type': 'key', 'key': key_name})
+            working_route.append({'type': 'text', 'text': typed_text})
             _refresh_list()
             steps_list.selection_clear(0, tk.END)
             steps_list.selection_set(tk.END)
@@ -863,9 +1314,44 @@ class MonitorUI:
             _refresh_list()
 
         def _save() -> None:
-            self.escape_route = working_route
-            self._update_route_label()
-            self._log(f'Escape route saved with {len(self.escape_route)} step(s).')
+            nonlocal current_route_name
+            if not working_route:
+                messagebox.showwarning('Empty route', 'Add at least one step before saving.', parent=dlg)
+                return
+
+            suggested_name = current_route_name or self.escape_route_name or 'Route 1'
+            route_name_input = simpledialog.askstring(
+                'Save escape route',
+                'Route name:',
+                initialvalue=suggested_name,
+                parent=dlg,
+            )
+            if route_name_input is None:
+                return
+
+            route_name_input = route_name_input.strip()
+            if not route_name_input:
+                messagebox.showwarning('Invalid name', 'Route name cannot be empty.', parent=dlg)
+                return
+
+            if route_name_input in self.saved_escape_routes and route_name_input != current_route_name:
+                if not messagebox.askyesno(
+                    'Overwrite route',
+                    f'Route "{route_name_input}" already exists. Overwrite it?',
+                    parent=dlg,
+                ):
+                    return
+
+            self.saved_escape_routes[route_name_input] = [dict(step) for step in working_route]
+            if current_route_name and current_route_name != route_name_input:
+                self.saved_escape_routes.pop(current_route_name, None)
+
+            if not self._persist_saved_escape_routes():
+                return
+
+            current_route_name = route_name_input
+            self._apply_escape_route(route_name_input, working_route, log_change=False)
+            self._log(f'Escape route saved: {route_name_input} ({len(self.escape_route)} step(s)).')
             dlg.destroy()
 
         buttons = tk.Frame(dlg, bg=self._colors['bg'])
@@ -873,17 +1359,19 @@ class MonitorUI:
 
         btn_add_click = self._make_button(buttons, text='Add Click', width=12, command=_add_click_step)
         btn_add_key = self._make_button(buttons, text='Add Key', width=12, command=_add_key_step)
+        btn_add_text = self._make_button(buttons, text='Add Text', width=12, command=_add_text_step)
         btn_remove = self._make_button(buttons, text='Remove', width=12, command=_remove_selected)
         btn_move_up = self._make_button(buttons, text='Move Up', width=12, command=lambda: _move_selected(-1))
         btn_move_down = self._make_button(buttons, text='Move Down', width=12, command=lambda: _move_selected(1))
 
         btn_add_click.grid(row=0, column=0, padx=(0, 6), pady=(0, 4), sticky='ew')
         btn_add_key.grid(row=0, column=1, padx=(0, 6), pady=(0, 4), sticky='ew')
-        btn_remove.grid(row=0, column=2, padx=(0, 6), pady=(0, 4), sticky='ew')
-        btn_move_up.grid(row=0, column=3, padx=(0, 6), pady=(0, 4), sticky='ew')
-        btn_move_down.grid(row=0, column=4, padx=(0, 0), pady=(0, 4), sticky='ew')
+        btn_add_text.grid(row=0, column=2, padx=(0, 6), pady=(0, 4), sticky='ew')
+        btn_remove.grid(row=0, column=3, padx=(0, 6), pady=(0, 4), sticky='ew')
+        btn_move_up.grid(row=0, column=4, padx=(0, 6), pady=(0, 4), sticky='ew')
+        btn_move_down.grid(row=0, column=5, padx=(0, 0), pady=(0, 4), sticky='ew')
 
-        for col in range(5):
+        for col in range(6):
             buttons.grid_columnconfigure(col, weight=1, uniform='route_actions')
 
         footer = tk.Frame(dlg, bg=self._colors['bg'])
@@ -898,6 +1386,7 @@ class MonitorUI:
 
             btn_add_click.grid_forget()
             btn_add_key.grid_forget()
+            btn_add_text.grid_forget()
             btn_remove.grid_forget()
             btn_move_up.grid_forget()
             btn_move_down.grid_forget()
@@ -910,9 +1399,10 @@ class MonitorUI:
             if compact:
                 btn_add_click.grid(row=0, column=0, columnspan=2, padx=(0, 6), pady=(0, 4), sticky='ew')
                 btn_add_key.grid(row=0, column=2, columnspan=2, padx=(0, 6), pady=(0, 4), sticky='ew')
-                btn_remove.grid(row=0, column=4, columnspan=2, padx=(0, 0), pady=(0, 4), sticky='ew')
-                btn_move_up.grid(row=1, column=0, columnspan=3, padx=(0, 6), pady=(0, 4), sticky='ew')
-                btn_move_down.grid(row=1, column=3, columnspan=3, padx=(0, 0), pady=(0, 4), sticky='ew')
+                btn_add_text.grid(row=0, column=4, columnspan=2, padx=(0, 0), pady=(0, 4), sticky='ew')
+                btn_remove.grid(row=1, column=0, columnspan=2, padx=(0, 6), pady=(0, 4), sticky='ew')
+                btn_move_up.grid(row=1, column=2, columnspan=2, padx=(0, 6), pady=(0, 4), sticky='ew')
+                btn_move_down.grid(row=1, column=4, columnspan=2, padx=(0, 0), pady=(0, 4), sticky='ew')
 
                 for col in range(6):
                     buttons.grid_columnconfigure(col, weight=1, uniform='route_actions_compact')
@@ -929,13 +1419,14 @@ class MonitorUI:
 
             btn_add_click.grid(row=0, column=0, padx=(0, 6), pady=(0, 4), sticky='ew')
             btn_add_key.grid(row=0, column=1, padx=(0, 6), pady=(0, 4), sticky='ew')
-            btn_remove.grid(row=0, column=2, padx=(0, 6), pady=(0, 4), sticky='ew')
-            btn_move_up.grid(row=0, column=3, padx=(0, 6), pady=(0, 4), sticky='ew')
-            btn_move_down.grid(row=0, column=4, padx=(0, 0), pady=(0, 4), sticky='ew')
+            btn_add_text.grid(row=0, column=2, padx=(0, 6), pady=(0, 4), sticky='ew')
+            btn_remove.grid(row=0, column=3, padx=(0, 6), pady=(0, 4), sticky='ew')
+            btn_move_up.grid(row=0, column=4, padx=(0, 6), pady=(0, 4), sticky='ew')
+            btn_move_down.grid(row=0, column=5, padx=(0, 0), pady=(0, 4), sticky='ew')
 
-            for col in range(5):
+            for col in range(6):
                 buttons.grid_columnconfigure(col, weight=1, uniform='route_actions')
-            buttons.grid_columnconfigure(5, weight=0, uniform='')
+            buttons.grid_columnconfigure(6, weight=0, uniform='')
 
             btn_clear.grid(row=0, column=0, padx=(0, 0), pady=0, sticky='w')
             btn_save.grid(row=0, column=1, padx=(0, 6), pady=0, sticky='e')
@@ -952,6 +1443,15 @@ class MonitorUI:
         self.root.wait_window(dlg)
 
     def _on_toggle_scanner(self):
+        if self._stop_requested:
+            self._set_state_stopping()
+            self._log('Scanner is still stopping. Please wait.')
+            return
+
+        if self._detected_waiting_stop:
+            self._stop_scanner(manual_stop=True)
+            return
+
         if self._monitor_thread and self._monitor_thread.is_alive():
             self._stop_scanner(manual_stop=True)
             return
@@ -967,8 +1467,16 @@ class MonitorUI:
             return
 
         if self._monitor_thread and self._monitor_thread.is_alive():
+            self._stop_requested = True
+            if self._stop_requested_at is None:
+                self._stop_requested_at = time.monotonic()
+            self._set_state_stopping()
+            self._log('Previous scanner is still shutting down. Please wait.')
             return
 
+        self._stop_requested = False
+        self._stop_requested_at = None
+        self._stop_retry_count = 0
         self._detected_waiting_stop = False
         self._set_state_scanning()
         self._log('Scanner started.')
@@ -977,16 +1485,37 @@ class MonitorUI:
         self._monitor_thread.start()
 
     def _stop_scanner(self, manual_stop: bool):
+        self._stop_requested = True
+        self._stop_requested_at = time.monotonic()
+        self._stop_retry_count = 0
+
+        self._request_monitor_shutdown()
+
+        if manual_stop:
+            self._detected_waiting_stop = False
+            if self._monitor_thread and self._monitor_thread.is_alive():
+                self._set_state_stopping()
+                self._log('Scanner stop requested. Waiting for shutdown...')
+            else:
+                self._stop_requested = False
+                self._stop_requested_at = None
+                self._set_state_idle('Stopped')
+                self._log('Scanner stop requested.')
+
+    def _request_monitor_shutdown(self) -> None:
+        # Ask async monitors to stop and also flip their running flags directly as a fallback.
+        if self._player_monitor is not None:
+            self._player_monitor._running = False
+            self._player_monitor._active = False
+
+        if self._tower_monitor is not None:
+            self._tower_monitor.is_running = False
+
         if self._monitor_loop is not None:
             if self._player_monitor is not None:
                 asyncio.run_coroutine_threadsafe(self._player_monitor.stop(), self._monitor_loop)
             if self._tower_monitor is not None:
                 asyncio.run_coroutine_threadsafe(self._tower_monitor.stop_monitoring(), self._monitor_loop)
-
-        if manual_stop:
-            self._detected_waiting_stop = False
-            self._set_state_idle('Stopped')
-            self._log('Scanner stop requested.')
 
     def _run_monitor_thread(self):
         asyncio.run(self._run_monitor_async())
@@ -997,6 +1526,8 @@ class MonitorUI:
         triggered = False
         app_config = load_config()
         try:
+            if self._stop_requested:
+                return
             assert self.region is not None
             if mode == 'spot-tower':
                 marker_template = self.template_path if self.template_path.exists() else None
@@ -1088,9 +1619,8 @@ class MonitorUI:
                 break
 
             if event == 'detected':
-                self._detected_waiting_stop = True
                 self._set_state_detected()
-                self._log('Player detected. Escape route executed. Press Stop to reset.')
+                self._log('Player detected. Escape route executed.')
             elif event == 'tower_detected':
                 info = payload if isinstance(payload, dict) else {}
                 char_name = info.get('char_name', 'Unknown')
@@ -1117,13 +1647,46 @@ class MonitorUI:
                     self._log(f'{mode_label} snapshot captured. Use "View Last Trigger Snapshot" to open it.')
             elif event == 'stopped':
                 info = payload if isinstance(payload, dict) else {}
-                mode = info.get('mode', 'spot-tower')
-                if mode == 'spot-tower' and info.get('triggered'):
-                    self._detected_waiting_stop = True
-                    self._set_state_detected()
+                was_triggered = bool(info.get('triggered'))
+                self._stop_requested = False
+                self._stop_requested_at = None
+                self._monitor_thread = None
+                self._detected_waiting_stop = False
+                if was_triggered:
+                    self._set_state_idle('Stopped (triggered)')
                 else:
-                    self._detected_waiting_stop = False
                     self._set_state_idle('Stopped')
+
+        if self._stop_requested:
+            thread_alive = bool(self._monitor_thread and self._monitor_thread.is_alive())
+            if not thread_alive:
+                self._stop_requested = False
+                self._stop_requested_at = None
+                self._stop_retry_count = 0
+                self._monitor_thread = None
+                self._detected_waiting_stop = False
+                self._set_state_idle('Stopped')
+                self._log('Scanner stopped.')
+            elif self._stop_requested_at is not None and (time.monotonic() - self._stop_requested_at) >= 4.0:
+                # Retry stop signals but keep UI in stopping until thread is actually down.
+                self._stop_requested_at = time.monotonic()
+                self._stop_retry_count += 1
+                self._request_monitor_shutdown()
+                self._set_state_stopping()
+                if self._stop_retry_count >= 3:
+                    # Last-resort UI recovery. Monitoring flags have already been forced down.
+                    self._stop_requested = False
+                    self._stop_requested_at = None
+                    self._stop_retry_count = 0
+                    self._monitor_thread = None
+                    self._monitor_loop = None
+                    self._player_monitor = None
+                    self._tower_monitor = None
+                    self._detected_waiting_stop = False
+                    self._set_state_idle('Stopped (forced)')
+                    self._log('Scanner stop did not finish in time. Forced reset applied.')
+                else:
+                    self._log('Scanner is taking longer to stop. Retrying shutdown...')
 
         self.root.after(120, self._drain_events)
 

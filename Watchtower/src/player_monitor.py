@@ -70,6 +70,10 @@ class PlayerMonitor:
         fast_trigger_circle_min_extent: float = 0.62,
         fast_trigger_circle_min_enclosing_fill: float = 0.74,
         fast_trigger_circle_min_solidity: float = 0.86,
+        adaptive_color_calibration: bool = True,
+        adaptive_calibration_frames: int = 18,
+        adaptive_calibration_min_pixels: int = 36,
+        adaptive_update_alpha: float = 0.22,
         debug: bool = False,
     ):
         x1, y1, x2, y2 = region
@@ -122,6 +126,10 @@ class PlayerMonitor:
         self.fast_trigger_circle_min_extent = max(0.0, min(1.0, float(fast_trigger_circle_min_extent)))
         self.fast_trigger_circle_min_enclosing_fill = max(0.0, min(1.0, float(fast_trigger_circle_min_enclosing_fill)))
         self.fast_trigger_circle_min_solidity = max(0.0, min(1.0, float(fast_trigger_circle_min_solidity)))
+        self.adaptive_color_calibration = bool(adaptive_color_calibration)
+        self.adaptive_calibration_frames = max(1, int(adaptive_calibration_frames))
+        self.adaptive_calibration_min_pixels = max(1, int(adaptive_calibration_min_pixels))
+        self.adaptive_update_alpha = max(0.01, min(1.0, float(adaptive_update_alpha)))
         self.debug = debug
 
         self.detection_callback: Optional[DetectionCallback] = None
@@ -136,6 +144,8 @@ class PlayerMonitor:
         self._bg_ack_done = False
         self._blue_px_ema = 0.0
         self._prev_blue_mask: np.ndarray | None = None
+        self._target_hsv_runtime = np.array(self.target_hsv, dtype=np.float32)
+        self._adaptive_updates = 0
 
         self._template_path = Path(template_path) if template_path else None
         self._template_gray: np.ndarray | None = None
@@ -154,6 +164,45 @@ class PlayerMonitor:
         self._bg_ack_done = False
         self._blue_px_ema = 0.0
         self._prev_blue_mask = None
+        self._target_hsv_runtime = np.array(self.target_hsv, dtype=np.float32)
+        self._adaptive_updates = 0
+
+    def _update_adaptive_target_hsv(self, hsv: np.ndarray, generic_mask: np.ndarray) -> None:
+        if not self.adaptive_color_calibration:
+            return
+        if self._adaptive_updates >= self.adaptive_calibration_frames:
+            return
+
+        # Use only reliable blue candidates with enough saturation/value.
+        valid = (generic_mask > 0) & (hsv[:, :, 1] >= 60) & (hsv[:, :, 2] >= 40)
+        if not np.any(valid):
+            return
+
+        h_vals = hsv[:, :, 0][valid]
+        s_vals = hsv[:, :, 1][valid]
+        v_vals = hsv[:, :, 2][valid]
+        if h_vals.size < self.adaptive_calibration_min_pixels:
+            return
+
+        sample = np.array(
+            [
+                float(np.median(h_vals)),
+                float(np.median(s_vals)),
+                float(np.median(v_vals)),
+            ],
+            dtype=np.float32,
+        )
+
+        alpha = self.adaptive_update_alpha
+        self._target_hsv_runtime = ((1.0 - alpha) * self._target_hsv_runtime) + (alpha * sample)
+        self._adaptive_updates += 1
+
+        if self.debug and self._adaptive_updates in {1, self.adaptive_calibration_frames}:
+            h, s, v = self._target_hsv_runtime
+            print(
+                f'[DEBUG] adaptive_hsv: update={self._adaptive_updates}/{self.adaptive_calibration_frames} '
+                f'hsv=({h:.1f},{s:.1f},{v:.1f})'
+            )
 
     def _is_blue_spike_trigger(self, blue_pixels: int) -> bool:
         prev = float(self._blue_px_ema)
@@ -437,7 +486,7 @@ class PlayerMonitor:
                     image = self._capture(sct)
                     detection = self.detect(image)
                     should_trigger = self._should_trigger(detection)
-                    if self.log_each_poll:
+                    if self.log_each_poll and self.debug:
                         status = 'FOUND' if detection.found else 'MISS'
                         print(
                             f'[POLL] frame={self._frame_index} status={status} '
@@ -479,6 +528,7 @@ class PlayerMonitor:
         rgb = np.array(image)
         hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
         blue_mask = cv2.inRange(hsv, self.blue_lower, self.blue_upper)
+        self._update_adaptive_target_hsv(hsv, blue_mask)
 
         template_match = self._match_template(rgb)
         if template_match is not None:
@@ -593,7 +643,7 @@ class PlayerMonitor:
 
         generic_mask = cv2.inRange(hsv, self.blue_lower, self.blue_upper)
 
-        h0, s0, v0 = self.target_hsv
+        h0, s0, v0 = [int(round(v)) for v in self._target_hsv_runtime]
         lower = np.array(
             [
                 max(0, h0 - self.target_hue_tolerance),
