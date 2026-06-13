@@ -839,7 +839,7 @@
         15000
       ],
       "won_triggers": [
-        "Congratulations, {username}! You won the giveaway!"
+        "Parabéns {username}, você ganhou"
       ],
       "won_prefix": ""
     },

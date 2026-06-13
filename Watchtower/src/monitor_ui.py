@@ -10,6 +10,7 @@ import tkinter.filedialog as filedialog
 from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
+from typing import TYPE_CHECKING
 
 import mss
 from PIL import Image, ImageTk
@@ -19,7 +20,9 @@ from area_selector import select_area_and_snapshot_with_parent, select_area_with
 from app_version import APP_NAME, APP_VERSION
 from player_monitor import PlayerMonitor
 from config import WindowConfig, load_config
-from screen_monitor import ScreenMonitor
+
+if TYPE_CHECKING:
+    from screen_monitor import ScreenMonitor
 
 
 class MonitorUI:
@@ -75,7 +78,7 @@ class MonitorUI:
         self._monitor_thread: threading.Thread | None = None
         self._monitor_loop: asyncio.AbstractEventLoop | None = None
         self._player_monitor: PlayerMonitor | None = None
-        self._tower_monitor: ScreenMonitor | None = None
+        self._tower_monitor: 'ScreenMonitor | None' = None
         self._detected_waiting_stop = False
         self._stop_requested = False
         self._stop_requested_at: float | None = None
@@ -198,10 +201,25 @@ class MonitorUI:
             pass
 
     def _position_popup_at_main_window(self, popup: tk.Misc, size: str | None = None) -> None:
-        """Place popup at the current main-window coordinates."""
+        """Place popup at the main window, or center it if the root is hidden."""
         self.root.update_idletasks()
-        x = int(self.root.winfo_rootx())
-        y = int(self.root.winfo_rooty())
+        if self.root.winfo_viewable():
+            x = int(self.root.winfo_rootx())
+            y = int(self.root.winfo_rooty())
+        else:
+            screen_w = self.root.winfo_screenwidth()
+            screen_h = self.root.winfo_screenheight()
+            width = 480
+            height = 340
+            if size:
+                try:
+                    width_str, height_str = size.split('x', 1)
+                    width = int(width_str)
+                    height = int(height_str)
+                except (TypeError, ValueError):
+                    pass
+            x = max(0, (screen_w - width) // 2)
+            y = max(0, (screen_h - height) // 2)
         if size:
             popup.geometry(f'{size}+{x}+{y}')
         else:
@@ -325,11 +343,16 @@ class MonitorUI:
         dlg.resizable(False, False)
         dlg.protocol('WM_DELETE_WINDOW', lambda: None)
         self._apply_app_icon(dlg)
-        dlg.transient(self.root)
+        # Root is intentionally hidden here; transient-to-hidden-parent can keep
+        # the activation dialog out of view on some Windows setups.
+        if self.root.winfo_viewable():
+            dlg.transient(self.root)
         dlg.grab_set()
         dlg.configure(bg=self._colors['bg'])
+        dlg.attributes('-topmost', True)
         dlg.lift()
         dlg.focus_force()
+        dlg.after(250, lambda: dlg.attributes('-topmost', False))
 
         tk.Label(
             dlg,
@@ -1574,6 +1597,8 @@ class MonitorUI:
                 monitor.detection_callback = on_detection
                 await monitor.start()
             else:
+                from screen_monitor import ScreenMonitor
+
                 x1, y1, x2, y2 = self.region
                 app_config.windows = [
                     WindowConfig(
