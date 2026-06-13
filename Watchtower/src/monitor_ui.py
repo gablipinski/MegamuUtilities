@@ -1547,7 +1547,6 @@ class MonitorUI:
         self._monitor_loop = asyncio.get_running_loop()
         mode = self._selected_mode()
         triggered = False
-        app_config = load_config()
         try:
             if self._stop_requested:
                 return
@@ -1599,6 +1598,12 @@ class MonitorUI:
             else:
                 from screen_monitor import ScreenMonitor
 
+                try:
+                    app_config = load_config()
+                except Exception as exc:
+                    self._event_queue.put(('error', f'Could not load config: {exc}'))
+                    return
+
                 x1, y1, x2, y2 = self.region
                 app_config.windows = [
                     WindowConfig(
@@ -1630,6 +1635,8 @@ class MonitorUI:
 
                 tower_monitor.detection_callback = on_tower_detection
                 await tower_monitor.start_monitoring()
+        except Exception as exc:
+            self._event_queue.put(('error', f'Scanner runtime error: {exc}'))
         finally:
             self._player_monitor = None
             self._tower_monitor = None
@@ -1658,6 +1665,9 @@ class MonitorUI:
             elif event == 'safe_zone':
                 self._notify_safe_zone()
                 self._log('Character moved to safe zone.')
+            elif event == 'error':
+                message = str(payload) if payload is not None else 'Unknown scanner error.'
+                self._log(message)
             elif event == 'trigger_snapshot':
                 info = payload if isinstance(payload, dict) else {}
                 image = info.get('image')

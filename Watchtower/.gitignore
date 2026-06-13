@@ -31,7 +31,6 @@ wheels/
 *.swo
 
 # Config
-configs/config.json
 configs/spot_template.png
 !configs/config.json.example
 

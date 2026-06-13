@@ -223,6 +223,8 @@ Write-Host "[3/4] Compiling with Nuitka (this may take a few minutes)..." -Foreg
     --include-package=pyscreeze `
     --include-package=mouseinfo `
     --include-package=cryptography `
+    --include-data-files="$ProjectRoot\configs\config.json=configs\config.json" `
+    --include-data-files="$ProjectRoot\configs\escape_routes.json=configs\escape_routes.json" `
     --windows-icon-from-ico="$IconIcoPath" `
     --output-dir="$DistDir" `
     --output-filename="$AppName.exe" `

@@ -1,0 +1,33 @@
+{
+  "notification": {
+    "enabled": false,
+    "message": "Character detected in {map}: {char_name}"
+  },
+  "ocr_language": "pt",
+  "capture_interval_ms": 350,
+  "char_detection_threshold": 0.5,
+  "track_match_distance_px": 80,
+  "track_expiry_ms": 120000,
+  "min_observations_to_notify": 1,
+  "movement_retrigger_px": 120,
+  "character_color_filter_enabled": true,
+  "character_hsv_lower": [18, 70, 70],
+  "character_hsv_upper": [42, 255, 255],
+  "character_ocr_allowlist": "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+  "self_name_similarity_threshold": 0.74,
+  "external_name_similarity_threshold": 0.72,
+  "external_detection_streak": 2,
+  "external_candidate_ttl_ms": 1100,
+  "live_use_minimap_detection": true,
+  "minimap_blue_hsv_lower": [55, 20, 35],
+  "minimap_blue_hsv_upper": [150, 255, 255],
+  "minimap_min_blob_area_px": 6,
+  "minimap_max_blob_area_px": 220,
+  "minimap_min_markers_to_trigger": 1,
+  "minimap_confirm_frames": 2,
+  "minimap_inner_margin_pct": 0.18,
+  "minimap_ignore_edge_touching": true,
+  "minimap_center_zone_pct": 0.28,
+  "minimap_min_confidence": 0.45,
+  "minimap_center_tolerance_px": 8
+}
