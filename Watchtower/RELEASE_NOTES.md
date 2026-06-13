@@ -9,7 +9,7 @@
 
 - feat: Add functionality to view last trigger snapshot and position popups at main window
 
-## 1.0.2 (2026-06-11)
+## 1.0.2 (2026-06-12)
 
 - feat: Enhance action controller and monitor UI with text input support and escape route management
 - Added support for typing text in the action controller, allowing for text actions in escape routes.
