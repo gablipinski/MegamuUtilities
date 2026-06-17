@@ -1,8 +1,8 @@
 {
   "app_name": "Guardtower",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "publisher": "Megamu Utilities",
   "patch_notes": [
-    "feat: Update version to 1.0.1 and enhance error handling with user info dialogs in main.py"
+    "feat: Refactor giveaway triggers in config.json and enhance TwitchBot with per-channel cooldown for won triggers"
   ]
 }

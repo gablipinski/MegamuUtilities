@@ -19,6 +19,7 @@ import tkinter as tk
 import tkinter.filedialog as filedialog
 import urllib.parse
 import urllib.request
+import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
 from tkinter import messagebox
@@ -740,6 +741,12 @@ class MonitorUI:
             width=12,
             command=lambda ch=channel_name: self._open_streamer_triggers_editor(ch),
         ).pack(side=tk.LEFT, padx=(6, 0))
+        self._make_button(
+            actions,
+            text="Open Channel",
+            width=12,
+            command=lambda ch=channel_name: self._open_channel_link(ch),
+        ).pack(side=tk.LEFT, padx=(6, 0))
         self._make_button(actions, text="Copy Log", width=10, command=lambda ch=channel_name: self._copy_channel_log(ch)).pack(
             side=tk.LEFT, padx=(6, 0)
         )
@@ -901,6 +908,14 @@ class MonitorUI:
             self._append_system_log("Clipboard copy failed", "ignore")
             return
         self._append_system_log("MultiTwitch URL not available yet", "other")
+
+    def _open_channel_link(self, channel_name: str) -> None:
+        url = f"https://www.twitch.tv/{channel_name}"
+        try:
+            webbrowser.open_new_tab(url)
+            self._append_system_log(f"Opened channel link for #{channel_name}", "notification")
+        except Exception as exc:
+            self._append_system_log(f"Failed to open #{channel_name}: {exc}", "ignore")
 
     def _copy_to_clipboard(self, text: str) -> bool:
         try:

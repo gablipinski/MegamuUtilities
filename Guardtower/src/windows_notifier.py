@@ -19,6 +19,7 @@ class WindowsNotifier:
         message: str,
         title: str = 'Giveaway detected!',
         account: str | None = None,
+        launch_url: str | None = None,
     ) -> bool:
         """Sends a Windows toast notification"""
         
@@ -42,11 +43,17 @@ class WindowsNotifier:
         )
         
         try:
-            toast = Notification(
-                app_id='Twitch Bot',
-                title=title,
-                msg=body,
-            )
+            kwargs: dict = {
+                'app_id': 'Twitch Bot',
+                'title': title,
+                'msg': body,
+                'duration': 'long',
+            }
+            if launch_url:
+                kwargs['launch'] = launch_url
+            toast = Notification(**kwargs)
+            if launch_url:
+                toast.add_actions(label='Open Twitch', launch=launch_url)
             toast.show()
             log_line(f'Windows notification sent: {body}', 'decision', channel, account=account)
             return True

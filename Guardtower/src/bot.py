@@ -56,6 +56,10 @@ class TwitchBot(commands.Cog):
         self.won_last_triggered: dict[str, tuple[float, str]] = {}
         # Cooldown between won-trigger responses (seconds)
         self.WON_COOLDOWN_S: float = self.config.runtime.won_cooldown_s
+        # Per-channel timestamp of the last won-trigger reply sent by the bot.
+        # Any won trigger received within WON_COOLDOWN_S of the last reply is ignored,
+        # regardless of which chatter sent it (prevents spam from multiple users).
+        self.won_channel_last_reply: dict[str, float] = {}
         # Short dedup window: if the same bot sender fires a won trigger across channels
         # within this window it is treated as a shared-chat mirror and ignored.
         # After this window the same sender can legitimately announce a win on a different channel.
@@ -367,6 +371,20 @@ class TwitchBot(commands.Cog):
         send_channel,
     ):
         now = time.monotonic()
+
+        # Per-channel cooldown: ignore all won triggers until WON_COOLDOWN_S has elapsed
+        # since the last reply we actually sent in this channel.
+        channel_last_reply = self.won_channel_last_reply.get(channel_name, 0.0)
+        if channel_last_reply > 0.0 and (now - channel_last_reply) < self.WON_COOLDOWN_S:
+            remaining = int(self.WON_COOLDOWN_S - (now - channel_last_reply)) + 1
+            log_line(
+                f"Won trigger from {sender} ignored - channel cooldown active ({remaining}s remaining)",
+                "cooldown",
+                channel_name,
+                account=self.account_name,
+            )
+            return
+
         sender_key = self._normalize_text(sender) or sender.lower()
         last_won = self.won_last_triggered.get(sender_key)
         if last_won is not None:
@@ -386,6 +404,7 @@ class TwitchBot(commands.Cog):
             return
 
         self.won_last_triggered[sender_key] = (now, channel_name)
+        self.won_channel_last_reply[channel_name] = now
         log_line(f"Won giveaway", "win", channel_name, account=self.account_name)
         log_line(f"Message: {message_text}", "win", channel_name, account=self.account_name)
 
@@ -399,6 +418,7 @@ class TwitchBot(commands.Cog):
                 f"You won on {channel_name}!",
                 title="You won!",
                 account=self.account_name,
+                launch_url=f"https://www.twitch.tv/{channel_name}",
             )
 
         won_reply = f"{channel_config.won_prefix}{self.account_nickname}"
