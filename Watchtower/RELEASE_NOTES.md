@@ -9,7 +9,7 @@
 
 - feat: Add functionality to view last trigger snapshot and position popups at main window
 
-## 1.0.2 (2026-06-12)
+## 1.0.2 (2026-06-17)
 
 - feat: Enhance action controller and monitor UI with text input support and escape route management
 - Added support for typing text in the action controller, allowing for text actions in escape routes.
@@ -18,4 +18,11 @@
 - Enhanced the player monitor with adaptive color calibration features for improved detection accuracy.
 - Updated the escape route editor to accommodate text actions alongside clicks and key presses.
 - Added a new JSON configuration file for predefined escape routes.
+
+## 1.0.3 (2026-06-17)
+
+- Created the new operational mode: PROCESS TOWER
+- Add scan_addresses.json for address scanning configuration
+- Introduced a new JSON configuration file to define memory addresses for scanning.
+- Added entries for SLDetection and MapOverlay with relevant details including offsets and descriptions.
 

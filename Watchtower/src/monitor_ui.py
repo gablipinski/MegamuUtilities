@@ -1,5 +1,6 @@
 import asyncio
 import json
+import random
 import queue
 import shutil
 import sys
@@ -8,6 +9,7 @@ import time
 import tkinter as tk
 import tkinter.filedialog as filedialog
 from datetime import datetime
+import importlib
 from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
 from typing import TYPE_CHECKING
@@ -71,6 +73,8 @@ class MonitorUI:
             self.escape_route_name = default_name
             self.escape_route = [dict(step) for step in self.saved_escape_routes.get(default_name, [])]
         self.template_path = Path(__file__).resolve().parent.parent / 'configs' / 'spot_template.png'
+        self.scan_addresses_config_path = Path(__file__).resolve().parent.parent / 'configs' / 'scan_addresses.json'
+        self.saved_scan_addresses: list[dict[str, str]] = self._load_scan_addresses()
         self._toast_notifier = None
         self._setup_windows_notifier()
 
@@ -86,6 +90,9 @@ class MonitorUI:
         self._mode_var = tk.StringVar(value='SPOT TOWER')
         self._last_mode_selection = 'SPOT TOWER'
         self._compact_controls: bool | None = None
+        self._process_tower_count_var = tk.StringVar(value='1')
+        self._process_tower_rows: list[dict] = []
+        self._process_handles: list[int] = []  # open HANDLE values to close on exit
         self._snapshot_window: tk.Toplevel | None = None
         self._snapshot_label: tk.Label | None = None
         self._snapshot_info_var: tk.StringVar | None = None
@@ -201,25 +208,39 @@ class MonitorUI:
             pass
 
     def _position_popup_at_main_window(self, popup: tk.Misc, size: str | None = None) -> None:
-        """Place popup at the main window, or center it if the root is hidden."""
+        """Center popup over the main window, or over the screen when the root is hidden."""
         self.root.update_idletasks()
+        popup.update_idletasks()
+
+        # Determine popup dimensions
+        if size:
+            try:
+                w_str, h_str = size.split('x', 1)
+                popup_w = int(w_str)
+                popup_h = int(h_str)
+            except (TypeError, ValueError):
+                popup_w = popup.winfo_reqwidth() or 480
+                popup_h = popup.winfo_reqheight() or 340
+        else:
+            popup_w = popup.winfo_reqwidth() or 480
+            popup_h = popup.winfo_reqheight() or 340
+
         if self.root.winfo_viewable():
-            x = int(self.root.winfo_rootx())
-            y = int(self.root.winfo_rooty())
+            root_x = self.root.winfo_rootx()
+            root_y = self.root.winfo_rooty()
+            root_w = self.root.winfo_width()
+            root_h = self.root.winfo_height()
+            x = root_x + (root_w - popup_w) // 2
+            y = root_y + (root_h - popup_h) // 2
         else:
             screen_w = self.root.winfo_screenwidth()
             screen_h = self.root.winfo_screenheight()
-            width = 480
-            height = 340
-            if size:
-                try:
-                    width_str, height_str = size.split('x', 1)
-                    width = int(width_str)
-                    height = int(height_str)
-                except (TypeError, ValueError):
-                    pass
-            x = max(0, (screen_w - width) // 2)
-            y = max(0, (screen_h - height) // 2)
+            x = (screen_w - popup_w) // 2
+            y = (screen_h - popup_h) // 2
+
+        x = max(0, x)
+        y = max(0, y)
+
         if size:
             popup.geometry(f'{size}+{x}+{y}')
         else:
@@ -227,9 +248,8 @@ class MonitorUI:
 
     def _setup_windows_notifier(self) -> None:
         try:
-            from win10toast import ToastNotifier
-
-            self._toast_notifier = ToastNotifier()
+            win10toast = importlib.import_module('win10toast')
+            self._toast_notifier = win10toast.ToastNotifier()
         except Exception:
             self._toast_notifier = None
 
@@ -339,7 +359,7 @@ class MonitorUI:
 
         dlg = tk.Toplevel(self.root)
         dlg.title(f'{APP_NAME} v{APP_VERSION} - Activation Required')
-        self._position_popup_at_main_window(dlg, '480x340')
+        self._position_popup_at_main_window(dlg, '500x380')
         dlg.resizable(False, False)
         dlg.protocol('WM_DELETE_WINDOW', lambda: None)
         self._apply_app_icon(dlg)
@@ -503,7 +523,7 @@ class MonitorUI:
             mode_row,
             state='readonly',
             textvariable=self._mode_var,
-            values=['SPOT TOWER', 'SAFE TOWER'],
+            values=['SPOT TOWER', 'SAFE TOWER', 'PROCESS TOWER'],
             width=18,
             style='Dark.TCombobox',
         )
@@ -544,11 +564,87 @@ class MonitorUI:
 
         self._relayout_controls(compact=False)
 
-        state_row = tk.Frame(container, bg=self._colors['panel'])
-        state_row.pack(fill=tk.X, pady=(6, 6))
+        # ── Process Tower Panel ──────────────────────────────────────────────
+        self._process_tower_panel = tk.Frame(container, bg=self._colors['panel'])
+        # (not packed until PROCESS TOWER mode is active)
+
+        count_row = tk.Frame(self._process_tower_panel, bg=self._colors['panel'])
+        count_row.pack(fill=tk.X, pady=(0, 6))
+        tk.Label(
+            count_row,
+            text='Characters to monitor:',
+            anchor=tk.W,
+            bg=self._colors['panel'],
+            fg=self._colors['muted'],
+        ).pack(side=tk.LEFT)
+        tk.Entry(
+            count_row,
+            textvariable=self._process_tower_count_var,
+            width=6,
+            bg=self._colors['input_bg'],
+            fg=self._colors['text'],
+            insertbackground=self._colors['text'],
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=self._colors['border'],
+            highlightcolor=self._colors['accent'],
+        ).pack(side=tk.LEFT, padx=(8, 8))
+        self._make_button(
+            count_row,
+            text='Apply',
+            width=8,
+            command=self._on_process_tower_apply_count,
+        ).pack(side=tk.LEFT)
+        self._make_button(
+            count_row,
+            text='Addresses',
+            width=12,
+            command=self._open_scan_address_manager,
+        ).pack(side=tk.LEFT, padx=(10, 0))
+
+        # Scrollable rows container
+        rows_outer = tk.Frame(self._process_tower_panel, bg=self._colors['panel'])
+        rows_outer.pack(fill=tk.X)
+
+        self._process_tower_canvas = tk.Canvas(
+            rows_outer,
+            bg=self._colors['panel'],
+            highlightthickness=0,
+            bd=0,
+            height=150,
+        )
+        scrollbar = ttk.Scrollbar(rows_outer, orient=tk.VERTICAL, command=self._process_tower_canvas.yview)
+        self._process_tower_canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self._process_tower_canvas.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        self._process_tower_rows_frame = tk.Frame(self._process_tower_canvas, bg=self._colors['panel'])
+        self._process_tower_canvas_window = self._process_tower_canvas.create_window(
+            (0, 0), window=self._process_tower_rows_frame, anchor='nw'
+        )
+
+        def _on_rows_frame_configure(event):
+            self._process_tower_canvas.configure(
+                scrollregion=self._process_tower_canvas.bbox('all')
+            )
+
+        def _on_canvas_configure(event):
+            self._process_tower_canvas.itemconfig(
+                self._process_tower_canvas_window, width=event.width
+            )
+
+        self._process_tower_rows_frame.bind('<Configure>', _on_rows_frame_configure)
+        self._process_tower_canvas.bind('<Configure>', _on_canvas_configure)
+
+        self._rebuild_process_tower_rows(1)
+        # ─────────────────────────────────────────────────────────────────────
+
+        self.state_row = tk.Frame(container, bg=self._colors['panel'])
+        self.state_row.pack(fill=tk.X, pady=(6, 6))
 
         self.led = tk.Canvas(
-            state_row,
+            self.state_row,
             width=18,
             height=18,
             highlightthickness=0,
@@ -559,7 +655,7 @@ class MonitorUI:
         self.led_circle = self.led.create_oval(2, 2, 16, 16, fill='#7a7a7a', outline='#1f1f1f')
 
         self.lbl_state = tk.Label(
-            state_row,
+            self.state_row,
             text='State: Idle',
             font=('Segoe UI Semibold', 10),
             bg=self._colors['panel'],
@@ -776,18 +872,44 @@ class MonitorUI:
         self.btn_toggle_scan.configure(bg=self._colors['warning'], activebackground=self._colors['warning'])
 
     def _selected_mode(self) -> str:
-        return 'safe-tower' if self._mode_var.get() == 'SAFE TOWER' else 'spot-tower'
+        val = self._mode_var.get()
+        if val == 'SAFE TOWER':
+            return 'safe-tower'
+        if val == 'PROCESS TOWER':
+            return 'process-tower'
+        return 'spot-tower'
 
     def _refresh_mode_ui(self):
         mode = self._selected_mode()
-        if mode == 'safe-tower':
-            self.btn_select_route.configure(state=tk.DISABLED)
-            self.lbl_route.configure(text='Escape route: not required in SAFE TOWER mode')
-            self._log('Mode set to SAFE TOWER.')
+        if mode == 'process-tower':
+            self.controls.pack_forget()
+            self.btn_last_snapshot.pack_forget()
+            self._process_tower_panel.pack(
+                fill=tk.X, pady=(10, 4),
+                before=self.state_row,
+            )
+            self.state_row.pack_forget()
+            self.lbl_region.pack_forget()
+            self.log.configure(height=5)
+            self.lbl_route.configure(text='')
+            self.root.minsize(400, 420)
+            self._log('Mode set to PROCESS TOWER.')
         else:
-            self.btn_select_route.configure(state=tk.NORMAL)
-            self._update_route_label()
-            self._log('Mode set to SPOT TOWER.')
+            self._process_tower_panel.pack_forget()
+            self.state_row.pack(fill=tk.X, pady=(6, 6))
+            self.lbl_region.pack(fill=tk.X)
+            self.controls.pack(fill=tk.X, pady=(10, 8), before=self.state_row)
+            self.btn_last_snapshot.pack(fill=tk.X, pady=(0, 8), before=self.log)
+            self.log.configure(height=10)
+            self.root.minsize(360, 320)
+            if mode == 'safe-tower':
+                self.btn_select_route.configure(state=tk.DISABLED)
+                self.lbl_route.configure(text='Escape route: not required in SAFE TOWER mode')
+                self._log('Mode set to SAFE TOWER.')
+            else:
+                self.btn_select_route.configure(state=tk.NORMAL)
+                self._update_route_label()
+                self._log('Mode set to SPOT TOWER.')
 
     def _update_route_label(self):
         if not self.escape_route:
@@ -804,6 +926,1558 @@ class MonitorUI:
                 f'({click_count} click, {key_count} key, {text_count} text)'
             )
         )
+
+    def _rebuild_process_tower_rows(self, count: int) -> None:
+        # Stop any running scan threads first
+        for row in self._process_tower_rows:
+            stop_ev = row.get('scan_stop')
+            if stop_ev:
+                stop_ev.set()
+
+        # Preserve existing values
+        saved: list[dict] = []
+        for row in self._process_tower_rows:
+            saved.append({
+                'name': row['name_var'].get(),
+                'threshold': row['threshold_var'].get() if row.get('threshold_var') else '10',
+                'key': row['key_var'].get() if row.get('key_var') else '',
+                'is_slayer': row['is_slayer_var'].get() if row.get('is_slayer_var') else True,
+                'radar': row['radar_var'].get() if row.get('radar_var') else '',
+                'process_path': row.get('process_path'),
+            })
+
+        for widget in self._process_tower_rows_frame.winfo_children():
+            widget.destroy()
+        self._process_tower_rows = []
+
+        for i in range(count):
+            s = saved[i] if i < len(saved) else {}
+            name_var = tk.StringVar(value=s.get('name', ''))
+            threshold_var = tk.StringVar(value=s.get('threshold', '10'))
+            key_var = tk.StringVar(value=s.get('key', ''))
+            is_slayer_var = tk.BooleanVar(value=s.get('is_slayer', True))
+            radar_var = tk.StringVar(value=s.get('radar', ''))
+            status_var = tk.StringVar(value='Not attached')
+            radar_count_var = tk.StringVar(value='Radar: N/A')
+            map_count_var = tk.StringVar(value='Map: N/A')
+            scan_stop = threading.Event()
+
+            row_frame = tk.Frame(
+                self._process_tower_rows_frame,
+                bg=self._colors['panel_alt'],
+                highlightthickness=1,
+                highlightbackground=self._colors['border'],
+            )
+            row_frame.pack(fill=tk.X, pady=(0, 4))
+
+            # ── Top line: index | name | Attach | status ──────────────────
+            top = tk.Frame(row_frame, bg=self._colors['panel_alt'])
+            top.pack(fill=tk.X, padx=6, pady=(6, 2))
+
+            tk.Label(
+                top, text=f'#{i + 1}', width=3, anchor=tk.CENTER,
+                bg=self._colors['panel_alt'], fg=self._colors['muted'],
+            ).pack(side=tk.LEFT, padx=(0, 4))
+
+            tk.Entry(
+                top, textvariable=name_var, width=14,
+                bg=self._colors['input_bg'], fg=self._colors['text'],
+                insertbackground=self._colors['text'], relief=tk.FLAT,
+                highlightthickness=1, highlightbackground=self._colors['border'],
+                highlightcolor=self._colors['accent'],
+            ).pack(side=tk.LEFT, padx=(0, 8))
+
+            btn_attach = self._make_button(
+                top, text='Attach', width=8,
+                command=lambda idx=i: self._on_process_tower_attach_process(idx),
+            )
+            btn_attach.pack(side=tk.LEFT, padx=(0, 8))
+            tk.Checkbutton(
+                top, text='Slayer',
+                variable=is_slayer_var,
+                bg=self._colors['panel_alt'], fg=self._colors['text'],
+                selectcolor=self._colors['input_bg'],
+                activebackground=self._colors['panel_alt'],
+                activeforeground=self._colors['text'],
+                font=('Segoe UI', 9),
+                command=lambda idx=i: self._on_slayer_toggle(idx),
+            ).pack(side=tk.LEFT, padx=(0, 6))
+
+
+            tk.Label(
+                top, textvariable=status_var, anchor=tk.W,
+                bg=self._colors['panel_alt'], fg=self._colors['muted'],
+                font=('Segoe UI', 9),
+            ).pack(side=tk.LEFT)
+
+            count_frame = tk.Frame(top, bg=self._colors['panel_alt'])
+            count_frame.pack(side=tk.RIGHT)
+            tk.Label(
+                count_frame, textvariable=radar_count_var, anchor=tk.W,
+                bg=self._colors['panel_alt'], fg=self._colors['accent'],
+                font=('Consolas', 9),
+            ).pack(anchor=tk.E)
+            tk.Label(
+                count_frame, textvariable=map_count_var, anchor=tk.W,
+                bg=self._colors['panel_alt'], fg=self._colors['muted'],
+                font=('Consolas', 9),
+            ).pack(anchor=tk.E)
+
+            # ── Bottom line: dynamic (slayer vs radar) ────────────────────
+            bot = tk.Frame(row_frame, bg=self._colors['panel_alt'])
+            bot.pack(fill=tk.X, padx=6, pady=(0, 6))
+
+            # --- Slayer controls ---
+            slayer_frame = tk.Frame(bot, bg=self._colors['panel_alt'])
+
+            tk.Label(slayer_frame, text='Max:', bg=self._colors['panel_alt'],
+                     fg=self._colors['muted'], font=('Segoe UI', 9)).pack(side=tk.LEFT)
+            tk.Entry(slayer_frame, textvariable=threshold_var, width=5,
+                     bg=self._colors['input_bg'], fg=self._colors['text'],
+                     insertbackground=self._colors['text'], relief=tk.FLAT,
+                     highlightthickness=1, highlightbackground=self._colors['border'],
+                     highlightcolor=self._colors['accent']).pack(side=tk.LEFT, padx=(4, 10))
+            tk.Label(slayer_frame, text='Trigger:', bg=self._colors['panel_alt'],
+                     fg=self._colors['muted'], font=('Segoe UI', 9)).pack(side=tk.LEFT)
+            tk.Label(slayer_frame, textvariable=key_var, width=8, anchor=tk.W,
+                     bg=self._colors['input_bg'], fg=self._colors['accent'],
+                     font=('Consolas', 9), relief=tk.FLAT,
+                     highlightthickness=1, highlightbackground=self._colors['border'],
+                     padx=4).pack(side=tk.LEFT, padx=(4, 4))
+            self._make_button(slayer_frame, text='Set Key', width=7,
+                              command=lambda idx=i: self._on_process_tower_set_key(idx),
+                              ).pack(side=tk.LEFT, padx=(0, 8))
+            btn_start = self._make_button(slayer_frame, text='Start', width=7, accent=True,
+                                          command=lambda idx=i: self._on_process_tower_toggle_scan(idx))
+            btn_start.pack(side=tk.LEFT)
+
+            # --- Radar controls ---
+            radar_frame = tk.Frame(bot, bg=self._colors['panel_alt'])
+
+            tk.Label(radar_frame, text='Radar (Slayer):', bg=self._colors['panel_alt'],
+                     fg=self._colors['muted'], font=('Segoe UI', 9)).pack(side=tk.LEFT)
+            radar_combo = ttk.Combobox(radar_frame, textvariable=radar_var,
+                                       state='readonly', width=16, style='Dark.TCombobox')
+            radar_combo.pack(side=tk.LEFT, padx=(6, 10))
+            tk.Label(radar_frame, text='Trigger:', bg=self._colors['panel_alt'],
+                     fg=self._colors['muted'], font=('Segoe UI', 9)).pack(side=tk.LEFT)
+            tk.Label(radar_frame, textvariable=key_var, width=8, anchor=tk.W,
+                     bg=self._colors['input_bg'], fg=self._colors['accent'],
+                     font=('Consolas', 9), relief=tk.FLAT,
+                     highlightthickness=1, highlightbackground=self._colors['border'],
+                     padx=4).pack(side=tk.LEFT, padx=(4, 4))
+            self._make_button(radar_frame, text='Set Key', width=7,
+                              command=lambda idx=i: self._on_process_tower_set_key(idx),
+                              ).pack(side=tk.LEFT)
+
+            def _show_bot_frame(idx=i):
+                row = self._process_tower_rows[idx]
+                sf = row['slayer_frame']
+                rf = row['radar_frame']
+                if row['is_slayer_var'].get():
+                    rf.pack_forget()
+                    sf.pack(fill=tk.X)
+                else:
+                    sf.pack_forget()
+                    rf.pack(fill=tk.X)
+
+            row_data: dict = {
+                'name_var': name_var,
+                'threshold_var': threshold_var,
+                'key_var': key_var,
+                'is_slayer_var': is_slayer_var,
+                'radar_var': radar_var,
+                'radar_combo': radar_combo,
+                'slayer_frame': slayer_frame,
+                'radar_frame': radar_frame,
+                'show_bot': _show_bot_frame,
+                'process_path': s.get('process_path'),
+                'pid': None,
+                'handle': None,
+                'status_var': status_var,
+                'radar_count_var': radar_count_var,
+                'map_count_var': map_count_var,
+                'btn': btn_attach,
+                'btn_start': btn_start,
+                'scan_stop': scan_stop,
+                'scan_thread': None,
+            }
+            self._process_tower_rows.append(row_data)
+
+        # Show correct bottom frame and populate radar combos
+        for row in self._process_tower_rows:
+            row['show_bot']()
+        self._refresh_radar_combos()
+
+        # Resize canvas: ~90px per 2-line row, cap at 4 visible
+        row_h = 90
+        canvas_h = max(row_h, min(count * row_h, 4 * row_h))
+        self._process_tower_canvas.configure(height=canvas_h)
+
+    def _slayer_label(self, idx: int) -> str:
+        row = self._process_tower_rows[idx]
+        name = row['name_var'].get().strip()
+        return name if name else f'#{idx + 1}'
+
+    def _refresh_radar_combos(self) -> None:
+        """Repopulate all non-slayer radar comboboxes with current slayer labels."""
+        slayer_labels = [
+            self._slayer_label(i)
+            for i, row in enumerate(self._process_tower_rows)
+            if row['is_slayer_var'].get()
+        ]
+        for row in self._process_tower_rows:
+            if not row['is_slayer_var'].get():
+                combo = row['radar_combo']
+                combo['values'] = slayer_labels
+                if row['radar_var'].get() not in slayer_labels:
+                    row['radar_var'].set(slayer_labels[0] if slayer_labels else '')
+
+    def _on_slayer_toggle(self, idx: int) -> None:
+        row = self._process_tower_rows[idx]
+        if not row['is_slayer_var'].get():
+            stop_ev = row.get('scan_stop')
+            if stop_ev:
+                stop_ev.set()
+        row['show_bot']()
+        self._refresh_radar_combos()
+
+
+    # ── Scan address JSON helpers ─────────────────────────────────────────────
+
+    def _load_scan_addresses(self) -> list[dict]:
+        try:
+            payload = json.loads(self.scan_addresses_config_path.read_text(encoding='utf-8'))
+            entries = payload.get('addresses', []) if isinstance(payload, dict) else []
+            result = []
+            for e in entries:
+                if not isinstance(e, dict):
+                    continue
+                name = str(e.get('name', '')).strip()
+                if not name:
+                    continue
+                entry_type = str(e.get('type', 'static')).strip().lower()
+                if entry_type == 'pointer':
+                    module = str(e.get('module', '')).strip()
+                    base_offset = str(e.get('base_offset', '0x0')).strip()
+                    raw_offsets = e.get('offsets', [])
+                    offsets = [str(o).strip() for o in raw_offsets if str(o).strip()]
+                    desc = str(e.get('description', '')).strip()
+                    if module and offsets:
+                        result.append({
+                            'name': name, 'type': 'pointer',
+                            'module': module, 'base_offset': base_offset,
+                            'offsets': offsets, 'description': desc,
+                        })
+                else:
+                    addr = str(e.get('address', '')).strip()
+                    desc = str(e.get('description', '')).strip()
+                    if addr:
+                        result.append({'name': name, 'type': 'static', 'address': addr, 'description': desc})
+            return result
+        except Exception:
+            return []
+
+    def _save_scan_addresses(self) -> bool:
+        payload = {'addresses': self.saved_scan_addresses}
+        try:
+            self.scan_addresses_config_path.parent.mkdir(parents=True, exist_ok=True)
+            self.scan_addresses_config_path.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=True),
+                encoding='utf-8',
+            )
+            return True
+        except Exception as exc:
+            messagebox.showerror('Save failed', f'Could not save addresses:\n{exc}', parent=self.root)
+            return False
+
+    def _pick_scan_address(self, addr_var: tk.StringVar) -> None:
+        """Open a picker dialog; on select, writes the entry NAME into addr_var."""
+        if not self.saved_scan_addresses:
+            messagebox.showinfo(
+                'No addresses',
+                'No saved addresses yet.\nUse the "Addresses" button to add some.',
+                parent=self.root,
+            )
+            return
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title('Pick Address')
+        self._position_popup_at_main_window(dlg, '480x320')
+        dlg.minsize(380, 260)
+        dlg.resizable(True, True)
+        dlg.configure(bg=self._colors['bg'])
+        self._apply_app_icon(dlg)
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        tk.Label(
+            dlg, text='Select a saved address:',
+            font=('Segoe UI', 10), bg=self._colors['bg'], fg=self._colors['text'],
+        ).pack(anchor=tk.W, padx=12, pady=(12, 6))
+
+        list_frame = tk.Frame(dlg, bg=self._colors['bg'])
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=12)
+
+        sb = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
+        lb = tk.Listbox(
+            list_frame, bg=self._colors['input_bg'], fg=self._colors['text'],
+            selectbackground=self._colors['accent'], selectforeground='#ffffff',
+            activestyle='none', relief=tk.FLAT,
+            highlightthickness=1, highlightbackground=self._colors['border'],
+            yscrollcommand=sb.set,
+        )
+        sb.configure(command=lb.yview)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        for entry in self.saved_scan_addresses:
+            tag = '[PTR]' if entry.get('type') == 'pointer' else '[ADDR]'
+            label = f'{tag}  {entry["name"]}'
+            if entry.get('description'):
+                label += f'  —  {entry["description"]}'
+            lb.insert(tk.END, label)
+
+        btn_row = tk.Frame(dlg, bg=self._colors['bg'])
+        btn_row.pack(fill=tk.X, padx=12, pady=(8, 12))
+
+        def _confirm():
+            sel = lb.curselection()
+            if not sel:
+                return
+            # Store the entry name so scan can look up the full definition
+            addr_var.set(self.saved_scan_addresses[sel[0]]['name'])
+            dlg.destroy()
+
+        self._make_button(btn_row, text='Select', width=12, command=_confirm, accent=True).pack(side=tk.LEFT, padx=(0, 8))
+        self._make_button(btn_row, text='Cancel', width=10, command=dlg.destroy).pack(side=tk.LEFT)
+
+        lb.bind('<Double-Button-1>', lambda _e: _confirm())
+        dlg.bind('<Return>', lambda _e: _confirm())
+        dlg.bind('<Escape>', lambda _e: dlg.destroy())
+        self.root.wait_window(dlg)
+
+    def _open_scan_address_manager(self) -> None:
+        """Dialog to add / edit / delete saved scan addresses (static or pointer)."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title('Manage Scan Addresses')
+        self._position_popup_at_main_window(dlg, '620x520')
+        dlg.minsize(520, 440)
+        dlg.resizable(True, True)
+        dlg.configure(bg=self._colors['bg'])
+        self._apply_app_icon(dlg)
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        # ── List ─────────────────────────────────────────────────────────────
+        list_frame = tk.Frame(dlg, bg=self._colors['bg'])
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(12, 6))
+
+        sb = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
+        lb = tk.Listbox(
+            list_frame, bg=self._colors['input_bg'], fg=self._colors['text'],
+            selectbackground=self._colors['accent'], selectforeground='#ffffff',
+            activestyle='none', relief=tk.FLAT,
+            highlightthickness=1, highlightbackground=self._colors['border'],
+            yscrollcommand=sb.set,
+        )
+        sb.configure(command=lb.yview)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        def _refresh():
+            lb.delete(0, tk.END)
+            for e in self.saved_scan_addresses:
+                tag = '[PTR]' if e.get('type') == 'pointer' else '[ADDR]'
+                lb.insert(tk.END, f'{tag}  {e["name"]}')
+
+        _refresh()
+
+        # ── Type selector ─────────────────────────────────────────────────────
+        type_frame = tk.Frame(dlg, bg=self._colors['bg'])
+        type_frame.pack(fill=tk.X, padx=12, pady=(0, 4))
+        tk.Label(type_frame, text='Type:', bg=self._colors['bg'],
+                 fg=self._colors['muted'], font=('Segoe UI', 9)).pack(side=tk.LEFT)
+        type_var = tk.StringVar(value='pointer')
+        for val, lbl in [('static', 'Static address'), ('pointer', 'Pointer chain')]:
+            tk.Radiobutton(
+                type_frame, text=lbl, variable=type_var, value=val,
+                bg=self._colors['bg'], fg=self._colors['text'],
+                selectcolor=self._colors['input_bg'], activebackground=self._colors['bg'],
+                font=('Segoe UI', 9),
+                command=lambda: _toggle_fields(),
+            ).pack(side=tk.LEFT, padx=(8, 0))
+
+        # ── Edit fields ───────────────────────────────────────────────────────
+        fields_frame = tk.Frame(dlg, bg=self._colors['bg'])
+        fields_frame.pack(fill=tk.X, padx=12, pady=(0, 6))
+
+        def _lbl(parent, text, w=10):
+            return tk.Label(parent, text=text, bg=self._colors['bg'],
+                            fg=self._colors['muted'], font=('Segoe UI', 9), width=w, anchor=tk.E)
+
+        def _ent(parent, var, w=28, mono=False):
+            kw = dict(
+                textvariable=var, width=w,
+                bg=self._colors['input_bg'], fg=self._colors['text'],
+                insertbackground=self._colors['text'], relief=tk.FLAT,
+                highlightthickness=1, highlightbackground=self._colors['border'],
+                highlightcolor=self._colors['accent'],
+            )
+            if mono:
+                kw['font'] = ('Consolas', 9)
+            return tk.Entry(parent, **kw)
+
+        name_var = tk.StringVar()
+        desc_var = tk.StringVar()
+        # Static fields
+        static_addr_var = tk.StringVar()
+        # Pointer fields
+        module_var = tk.StringVar()
+        base_offset_var = tk.StringVar()
+        offsets_var = tk.StringVar()   # comma-separated
+
+        def _row(parent):
+            f = tk.Frame(parent, bg=self._colors['bg'])
+            f.pack(fill=tk.X, pady=2)
+            return f
+
+        r_name = _row(fields_frame)
+        _lbl(r_name, 'Name:').pack(side=tk.LEFT)
+        _ent(r_name, name_var).pack(side=tk.LEFT, padx=(6, 0), fill=tk.X, expand=True)
+
+        r_desc = _row(fields_frame)
+        _lbl(r_desc, 'Description:').pack(side=tk.LEFT)
+        _ent(r_desc, desc_var).pack(side=tk.LEFT, padx=(6, 0), fill=tk.X, expand=True)
+
+        # Static-only row
+        r_addr = _row(fields_frame)
+        _lbl(r_addr, 'Address (hex):').pack(side=tk.LEFT)
+        _ent(r_addr, static_addr_var, mono=True).pack(side=tk.LEFT, padx=(6, 0), fill=tk.X, expand=True)
+
+        # Pointer-only rows
+        r_mod = _row(fields_frame)
+        _lbl(r_mod, 'Module:').pack(side=tk.LEFT)
+        _ent(r_mod, module_var).pack(side=tk.LEFT, padx=(6, 0), fill=tk.X, expand=True)
+
+        r_base = _row(fields_frame)
+        _lbl(r_base, 'Base offset:').pack(side=tk.LEFT)
+        _ent(r_base, base_offset_var, w=12, mono=True).pack(side=tk.LEFT, padx=(6, 0))
+
+        r_off = _row(fields_frame)
+        _lbl(r_off, 'Offsets:').pack(side=tk.LEFT)
+        _ent(r_off, offsets_var, mono=True).pack(side=tk.LEFT, padx=(6, 0), fill=tk.X, expand=True)
+        tk.Label(r_off, text='(hex, comma-separated)', bg=self._colors['bg'],
+                 fg=self._colors['muted'], font=('Segoe UI', 8)).pack(side=tk.LEFT, padx=(6, 0))
+
+        def _toggle_fields():
+            is_ptr = type_var.get() == 'pointer'
+            for w in r_addr.winfo_children():
+                w.pack_forget() if is_ptr else None
+            r_addr.pack_forget() if is_ptr else r_addr.pack(fill=tk.X, pady=2, after=r_desc)
+            for r in (r_mod, r_base, r_off):
+                r.pack_forget() if not is_ptr else None
+                if is_ptr:
+                    r.pack(fill=tk.X, pady=2)
+
+        _toggle_fields()
+
+        def _on_select(_e=None):
+            sel = lb.curselection()
+            if not sel:
+                return
+            e = self.saved_scan_addresses[sel[0]]
+            name_var.set(e['name'])
+            desc_var.set(e.get('description', ''))
+            if e.get('type') == 'pointer':
+                type_var.set('pointer')
+                module_var.set(e.get('module', ''))
+                base_offset_var.set(e.get('base_offset', '0x0'))
+                offsets_var.set(', '.join(e.get('offsets', [])))
+                static_addr_var.set('')
+            else:
+                type_var.set('static')
+                static_addr_var.set(e.get('address', ''))
+                module_var.set('')
+                base_offset_var.set('')
+                offsets_var.set('')
+            _toggle_fields()
+
+        lb.bind('<<ListboxSelect>>', _on_select)
+
+        def _build_entry() -> dict | None:
+            name = name_var.get().strip()
+            if not name:
+                messagebox.showwarning('Missing name', 'Name is required.', parent=dlg)
+                return None
+            if type_var.get() == 'pointer':
+                module = module_var.get().strip()
+                base_off = base_offset_var.get().strip() or '0x0'
+                raw = [o.strip() for o in offsets_var.get().split(',') if o.strip()]
+                if not module or not raw:
+                    messagebox.showwarning('Missing fields', 'Module and Offsets are required for pointer type.', parent=dlg)
+                    return None
+                return {'name': name, 'type': 'pointer', 'module': module,
+                        'base_offset': base_off, 'offsets': raw,
+                        'description': desc_var.get().strip()}
+            else:
+                addr = static_addr_var.get().strip()
+                if not addr:
+                    messagebox.showwarning('Missing address', 'Address is required.', parent=dlg)
+                    return None
+                return {'name': name, 'type': 'static', 'address': addr,
+                        'description': desc_var.get().strip()}
+
+        # ── Action buttons ────────────────────────────────────────────────────
+        btn_row = tk.Frame(dlg, bg=self._colors['bg'])
+        btn_row.pack(fill=tk.X, padx=12, pady=(0, 12))
+
+        def _add():
+            entry = _build_entry()
+            if entry is None:
+                return
+            self.saved_scan_addresses.append(entry)
+            if self._save_scan_addresses():
+                _refresh()
+                self._log(f'Address saved: {entry["name"]}')
+
+        def _update():
+            sel = lb.curselection()
+            if not sel:
+                messagebox.showwarning('Nothing selected', 'Select an entry to update.', parent=dlg)
+                return
+            entry = _build_entry()
+            if entry is None:
+                return
+            self.saved_scan_addresses[sel[0]] = entry
+            if self._save_scan_addresses():
+                _refresh()
+                self._log(f'Address updated: {entry["name"]}')
+
+        def _delete():
+            sel = lb.curselection()
+            if not sel:
+                return
+            entry = self.saved_scan_addresses[sel[0]]
+            if not messagebox.askyesno('Delete', f'Delete "{entry["name"]}"?', parent=dlg):
+                return
+            del self.saved_scan_addresses[sel[0]]
+            if self._save_scan_addresses():
+                name_var.set('')
+                desc_var.set('')
+                static_addr_var.set('')
+                module_var.set('')
+                base_offset_var.set('')
+                offsets_var.set('')
+                _refresh()
+                self._log(f'Address deleted: {entry["name"]}')
+
+        self._make_button(btn_row, text='Add', width=9, command=_add, accent=True).grid(row=0, column=0, sticky='ew', padx=(0, 6))
+        self._make_button(btn_row, text='Update', width=9, command=_update).grid(row=0, column=1, sticky='ew', padx=(0, 6))
+        self._make_button(btn_row, text='Delete', width=9, command=_delete, danger=True).grid(row=0, column=2, sticky='ew', padx=(0, 6))
+        self._make_button(btn_row, text='Close', width=9, command=dlg.destroy).grid(row=0, column=3, sticky='ew')
+        for c in range(4):
+            btn_row.grid_columnconfigure(c, weight=1)
+
+        self.root.wait_window(dlg)
+
+    def _on_process_tower_apply_count(self) -> None:
+        try:
+            count = int(self._process_tower_count_var.get())
+            if count < 1:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror(
+                'Invalid input',
+                'Please enter a positive integer for the number of characters.',
+                parent=self.root,
+            )
+            return
+        self._rebuild_process_tower_rows(count)
+
+    def _on_process_tower_attach_process(self, idx: int) -> None:
+        chosen = self._pick_running_process()
+        if chosen is None:
+            return
+        pid, exe_path, display_name = chosen
+        row = self._process_tower_rows[idx]
+
+        # Close previous handle for this slot if any
+        prev_handle = row.get('handle')
+        if prev_handle:
+            self._close_process_handle(prev_handle)
+            if prev_handle in self._process_handles:
+                self._process_handles.remove(prev_handle)
+
+        handle = self._open_process_for_reading(pid)
+        row['pid'] = pid
+        row['process_path'] = exe_path
+        row['handle'] = handle
+
+        if handle:
+            self._process_handles.append(handle)
+            row['status_var'].set(f'Attached  •  PID {pid}')
+            row['btn'].configure(fg='#26a269')
+            self._log(f'Character #{idx + 1}: attached to "{display_name}" (PID {pid}).')
+        else:
+            row['status_var'].set('Attach failed')
+            row['btn'].configure(fg=self._colors['danger'])
+            self._log(f'Character #{idx + 1}: failed to attach to "{display_name}" (PID {pid}).')
+            messagebox.showerror(
+                'Attach failed',
+                f'Could not open process (PID {pid}) for reading.\nTry running as Administrator.',
+                parent=self.root,
+            )
+
+    @staticmethod
+    def _open_process_for_reading(pid: int) -> int | None:
+        """Open a Windows process handle with VM_READ + QUERY_INFORMATION. Returns handle or None."""
+        import ctypes
+        PROCESS_VM_READ = 0x0010
+        PROCESS_QUERY_INFORMATION = 0x0400
+        handle = ctypes.windll.kernel32.OpenProcess(
+            PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, False, pid
+        )
+        return int(handle) if handle else None
+
+    @staticmethod
+    def _close_process_handle(handle: int) -> None:
+        import ctypes
+        ctypes.windll.kernel32.CloseHandle(handle)
+
+    # ── Process Tower: key capture ────────────────────────────────────────────
+
+    def _on_process_tower_set_key(self, idx: int) -> None:
+        key = self._capture_hotkey_for_scan(self.root)
+        if key:
+            self._process_tower_rows[idx]['key_var'].set(key)
+
+    def _capture_hotkey_for_scan(self, parent: tk.Misc) -> str | None:
+        """Show a simple key capture dialog. Returns combo like 'alt+2' or None."""
+        result: dict = {'key': None}
+
+        dlg = tk.Toplevel(parent)
+        dlg.title('Set Trigger Key')
+        self._position_popup_at_main_window(dlg, '380x200')
+        dlg.resizable(False, False)
+        dlg.configure(bg=self._colors['bg'])
+        self._apply_app_icon(dlg)
+        dlg.transient(parent)
+        dlg.grab_set()
+
+        modifier_map = {
+            'Control_L': 'ctrl', 'Control_R': 'ctrl',
+            'Alt_L': 'alt', 'Alt_R': 'alt',
+            'Shift_L': 'shift', 'Shift_R': 'shift',
+            'Win_L': 'win', 'Win_R': 'win',
+        }
+        modifiers: set[str] = set()
+        main_key: list[str] = []
+
+        combo_var = tk.StringVar(value='<none>')
+        hint_var = tk.StringVar(value='Hold modifiers and press your key.')
+
+        def _format() -> str:
+            parts = [m for m in ['ctrl', 'alt', 'shift', 'win'] if m in modifiers]
+            if main_key:
+                parts.append(main_key[0])
+            return '+'.join(parts) if parts else '<none>'
+
+        def _refresh():
+            combo_var.set(_format())
+
+        def _on_key(event: tk.Event):
+            ks = event.keysym
+            if ks in modifier_map:
+                modifiers.add(modifier_map[ks])
+            else:
+                mapped = ks.lower()
+                if mapped not in ('??', ''):
+                    main_key.clear()
+                    main_key.append(mapped)
+            _refresh()
+            hint_var.set('Combo captured. Click OK to confirm.')
+            return 'break'
+
+        def _clear():
+            modifiers.clear()
+            main_key.clear()
+            _refresh()
+            hint_var.set('Cleared. Press your combination.')
+
+        def _confirm():
+            combo = _format()
+            if combo == '<none>':
+                messagebox.showwarning('No key', 'Press at least one key first.', parent=dlg)
+                return
+            result['key'] = combo
+            dlg.destroy()
+
+        tk.Label(
+            dlg, text='Press your desired key combination, then click OK.',
+            font=('Segoe UI', 10), bg=self._colors['bg'], fg=self._colors['text'],
+            wraplength=340, justify='left',
+        ).pack(fill=tk.X, padx=16, pady=(16, 6))
+
+        tk.Label(
+            dlg, textvariable=combo_var,
+            font=('Consolas', 14), bg=self._colors['bg'], fg=self._colors['accent'],
+        ).pack(pady=(0, 4))
+
+        tk.Label(
+            dlg, textvariable=hint_var,
+            font=('Segoe UI', 9), bg=self._colors['bg'], fg=self._colors['muted'],
+        ).pack(pady=(0, 10))
+
+        btn_row = tk.Frame(dlg, bg=self._colors['bg'])
+        btn_row.pack(fill=tk.X, padx=16, pady=(0, 14))
+        self._make_button(btn_row, text='Clear', width=8, command=_clear).grid(row=0, column=0, sticky='ew', padx=(0, 8))
+        self._make_button(btn_row, text='OK', width=8, command=_confirm, accent=True).grid(row=0, column=1, sticky='ew', padx=(0, 8))
+        self._make_button(btn_row, text='Cancel', width=8, command=dlg.destroy).grid(row=0, column=2, sticky='ew')
+        for c in range(3):
+            btn_row.grid_columnconfigure(c, weight=1)
+
+        dlg.bind('<KeyPress>', _on_key)
+        dlg.focus_force()
+        self.root.wait_window(dlg)
+        return result['key']
+
+    # ── Process Tower: scanning ───────────────────────────────────────────────
+
+    def _find_scan_address_entry(self, name: str) -> dict | None:
+        """Look up a saved address entry by name."""
+        for e in self.saved_scan_addresses:
+            if e['name'] == name:
+                return e
+        return None
+
+    def _on_process_tower_toggle_scan(self, idx: int) -> None:
+        row = self._process_tower_rows[idx]
+        thread = row.get('scan_thread')
+        if thread and thread.is_alive():
+            self._stop_process_tower_scan(idx)
+        else:
+            self._start_process_tower_scan(idx)
+
+    def _start_process_tower_scan(self, idx: int) -> None:
+        row = self._process_tower_rows[idx]
+
+        handle = row.get('handle')
+        if not handle:
+            messagebox.showerror('Not attached', 'Attach to a process first.', parent=self.root)
+            return
+
+        # Slayer rows auto-use the SLDetection address
+        entry = self._find_scan_address_entry('SLDetection')
+        if entry is None:
+            messagebox.showerror(
+                'SLDetection not configured',
+                'No address named "SLDetection" found in scan_addresses.json.\n'
+                'Use the "Addresses" button to add it.',
+                parent=self.root,
+            )
+            return
+
+        try:
+            threshold = int(row['threshold_var'].get().strip())
+            if threshold < 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror('Invalid Max', 'Max must be a positive integer.', parent=self.root)
+            return
+
+        key_combo = row['key_var'].get().strip()
+        if not key_combo:
+            messagebox.showerror('No trigger key', 'Set a trigger key first using "Set Key".', parent=self.root)
+            return
+
+        pid = row.get('pid')
+        stop_ev = row['scan_stop']
+        stop_ev.clear()
+        is_slayer = bool(row.get('is_slayer_var') and row['is_slayer_var'].get())
+        map_entry = self._find_scan_address_entry('MapOverlay') if is_slayer else None
+
+        thread = threading.Thread(
+            target=self._scan_loop,
+            args=(idx, handle, pid, entry, threshold, key_combo, stop_ev, self._slayer_label(idx), is_slayer, map_entry),
+            daemon=True,
+        )
+        row['scan_thread'] = thread
+        row['btn_start'].configure(
+            text='Stop',
+            bg=self._colors['danger'],
+            activebackground=self._colors['danger_hover'],
+        )
+        row['status_var'].set(f'Scanning  •  PID {pid}')
+        thread.start()
+        self._log(f'Character #{idx + 1}: scan started (SLDetection, max={threshold}, key={key_combo}).')
+
+    def _stop_process_tower_scan(self, idx: int) -> None:
+        row = self._process_tower_rows[idx]
+        row['scan_stop'].set()
+        thread = row.get('scan_thread')
+        if thread:
+            thread.join(timeout=2.0)
+        self._reset_process_tower_scan_row(idx)
+        self._log(f'Character #{idx + 1}: scan stopped.')
+
+    def _reset_process_tower_scan_row(self, idx: int, status_text: str | None = None) -> None:
+        row = self._process_tower_rows[idx]
+        row['scan_thread'] = None
+        row['btn_start'].configure(
+            text='Start',
+            bg=self._colors['success'],
+            activebackground='#1f8f58',
+        )
+        if status_text is None:
+            pid = row.get('pid')
+            status_text = f'Attached  •  PID {pid}' if pid else 'Not attached'
+        row['status_var'].set(status_text)
+
+    def _scan_loop(
+        self,
+        idx: int,
+        handle: int,
+        pid: int | None,
+        entry: dict,
+        threshold: int,
+        key_combo: str,
+        stop_event: threading.Event,
+        slayer_label: str = '',
+        is_slayer: bool = False,
+        map_entry: dict | None = None,
+    ) -> None:
+        last_triggered = 0.0
+        cooldown = 3.0
+        overlay_open_sent = False
+        map_tab_last_sent = 0.0
+
+        while not stop_event.is_set():
+            if entry.get('type') == 'pointer':
+                value = self._read_value_pointer(
+                    handle, pid,
+                    entry['module'], entry['base_offset'], entry['offsets'],
+                )
+            elif '_resolved' in entry:
+                value = self._read_int_from_process(handle, entry['_resolved'])
+            else:
+                raw = entry.get('address', '').replace('0x', '').replace('0X', '')
+                try:
+                    value = self._read_int_from_process(handle, int(raw, 16))
+                except ValueError:
+                    value = None
+
+            now = time.monotonic()
+            self._event_queue.put(('radar_count', {'idx': idx, 'value': value}))
+
+            map_value = None
+            if is_slayer and map_entry is not None:
+                try:
+                    if map_entry.get('type') == 'pointer':
+                        map_value = self._read_value_pointer(
+                            handle, pid,
+                            map_entry['module'], map_entry['base_offset'], map_entry['offsets'],
+                        )
+                    elif '_resolved' in map_entry:
+                        map_value = self._read_int_from_process(handle, map_entry['_resolved'])
+                    else:
+                        raw_map = map_entry.get('address', '').replace('0x', '').replace('0X', '')
+                        map_value = self._read_int_from_process(handle, int(raw_map, 16))
+                except Exception:
+                    map_value = None
+            self._event_queue.put(('map_count', {'idx': idx, 'value': map_value}))
+
+            if is_slayer:
+                if value == 1:
+                    overlay_open_sent = False
+                else:
+                    overlay_open_sent = True
+
+                if map_value == 0 and pid:
+                    if now - map_tab_last_sent >= 0.5:
+                        map_tab_last_sent = now
+                        try:
+                            if self._send_tab_key_to_pid(pid):
+                                self._event_queue.put(('log', f'Character #{idx + 1}: sent Tab because MapOverlay=0.'))
+                            else:
+                                self._event_queue.put(('log', f'Character #{idx + 1}: Tab injection failed for PID {pid}.'))
+                        except Exception as exc:
+                            self._event_queue.put(('log', f'Character #{idx + 1}: overlay Tab error: {exc}'))
+
+            if value is not None and value > threshold:
+                if now - last_triggered >= cooldown:
+                    last_triggered = now
+                    try:
+                        if not pid:
+                            self._event_queue.put(('log', f'Character #{idx + 1}: no attached PID; trigger skipped.'))
+                            continue
+                        time.sleep(random.uniform(0.0, 2.0))
+                        self._focus_process_window(pid)
+                        if not self._send_key_combo_to_pid(pid, key_combo):
+                            self._event_queue.put(('log', f'Character #{idx + 1}: PostMessage failed for PID {pid}; trigger skipped.'))
+                            continue
+                        self._event_queue.put((
+                            'log',
+                            f'Character #{idx + 1}: triggered "{key_combo}" (value={value} > max={threshold}).',
+                        ))
+                    except Exception as exc:
+                        self._event_queue.put(('log', f'Character #{idx + 1}: key trigger error: {exc}'))
+                    # Trigger all non-slayer rows that have this slayer as radar
+                    if slayer_label:
+                        for sub_idx, sub_row in enumerate(self._process_tower_rows):
+                            if sub_row.get('is_slayer_var') and not sub_row['is_slayer_var'].get():
+                                if sub_row['radar_var'].get() == slayer_label:
+                                    sub_key = sub_row['key_var'].get().strip()
+                                    if sub_key:
+                                        sub_pid = sub_row.get('pid')
+                                        if not sub_pid:
+                                            self._event_queue.put(('log', f'Character #{sub_idx + 1}: no attached PID; radar trigger skipped.'))
+                                            continue
+                                        try:
+                                            time.sleep(random.uniform(0.0, 2.0))
+                                            self._focus_process_window(sub_pid)
+                                            if not self._send_key_combo_to_pid(sub_pid, sub_key):
+                                                self._event_queue.put(('log', f'Character #{sub_idx + 1}: PostMessage failed for PID {sub_pid}; radar trigger skipped.'))
+                                                continue
+                                            self._event_queue.put((
+                                                'log',
+                                                f'Character #{sub_idx + 1}: triggered via radar "{slayer_label}" (key={sub_key}).',
+                                            ))
+                                        except Exception as exc:
+                                            self._event_queue.put(('log', f'Character #{sub_idx + 1}: radar trigger error: {exc}'))
+                    # Stop scanning automatically after a successful escape-route trigger.
+                    self._event_queue.put(('process_scan_auto_stop', {'idx': idx}))
+                    stop_event.set()
+                    break
+            stop_event.wait(0.1)
+
+    @staticmethod
+    def _find_process_windows(pid: int) -> list[int]:
+        """Return candidate top-level and child window handles for a PID."""
+        win32gui = importlib.import_module('win32gui')
+        win32process = importlib.import_module('win32process')
+
+        target_hwnds: list[int] = []
+
+        def _enum_cb(hwnd, _lparam):
+            nonlocal target_hwnds
+            _, window_pid = win32process.GetWindowThreadProcessId(hwnd)
+            if window_pid != pid:
+                return True
+            target_hwnds.append(hwnd)
+
+            def _enum_child_cb(child_hwnd, _child_lparam):
+                _, child_pid = win32process.GetWindowThreadProcessId(child_hwnd)
+                if child_pid == pid:
+                    target_hwnds.append(child_hwnd)
+                return True
+
+            try:
+                win32gui.EnumChildWindows(hwnd, _enum_child_cb, None)
+            except Exception:
+                pass
+            return True
+
+        win32gui.EnumWindows(_enum_cb, None)
+        # Preserve order but remove duplicates.
+        deduped: list[int] = []
+        seen: set[int] = set()
+        for hwnd in target_hwnds:
+            if hwnd not in seen:
+                deduped.append(hwnd)
+                seen.add(hwnd)
+        return deduped
+
+    @staticmethod
+    def _find_primary_process_window(pid: int) -> int | None:
+        """Return the first visible top-level window for a PID, or a fallback HWND."""
+        win32gui = importlib.import_module('win32gui')
+        win32process = importlib.import_module('win32process')
+
+        fallback_hwnd = None
+
+        def _enum_cb(hwnd, _lparam):
+            nonlocal fallback_hwnd
+            _, window_pid = win32process.GetWindowThreadProcessId(hwnd)
+            if window_pid != pid:
+                return True
+            if fallback_hwnd is None:
+                fallback_hwnd = hwnd
+            if win32gui.GetParent(hwnd) == 0 and win32gui.IsWindowVisible(hwnd):
+                fallback_hwnd = hwnd
+                return False
+            return True
+
+        try:
+            win32gui.EnumWindows(_enum_cb, None)
+        except Exception:
+            pass
+        return fallback_hwnd
+
+    @staticmethod
+    def _focus_process_window(pid: int) -> bool:
+        """Bring the first window for the PID to the foreground if possible."""
+        win32gui = importlib.import_module('win32gui')
+        win32con = importlib.import_module('win32con')
+        win32process = importlib.import_module('win32process')
+        win32api = importlib.import_module('win32api')
+
+        primary_hwnd = None
+        fallback_hwnd = None
+
+        for hwnd in MonitorUI._find_process_windows(pid):
+            try:
+                _, window_pid = win32process.GetWindowThreadProcessId(hwnd)
+                if window_pid != pid:
+                    continue
+                if fallback_hwnd is None:
+                    fallback_hwnd = hwnd
+                if win32gui.GetParent(hwnd) == 0:
+                    primary_hwnd = hwnd
+                    break
+            except Exception:
+                continue
+
+        hwnd = primary_hwnd or fallback_hwnd
+        if not hwnd:
+            return False
+
+        try:
+            if win32gui.IsIconic(hwnd):
+                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            if not win32gui.IsWindowVisible(hwnd):
+                win32gui.ShowWindow(hwnd, win32con.SW_SHOW)
+
+            target_thread, _ = win32process.GetWindowThreadProcessId(hwnd)
+            current_thread = win32api.GetCurrentThreadId()
+            attached = False
+            try:
+                if target_thread and current_thread and target_thread != current_thread:
+                    attached = bool(win32api.AttachThreadInput(current_thread, target_thread, True))
+            except Exception:
+                attached = False
+
+            try:
+                win32gui.BringWindowToTop(hwnd)
+                win32gui.SetForegroundWindow(hwnd)
+                win32gui.SetActiveWindow(hwnd)
+                win32gui.SetFocus(hwnd)
+            finally:
+                if attached:
+                    try:
+                        win32api.AttachThreadInput(current_thread, target_thread, False)
+                    except Exception:
+                        pass
+        except Exception:
+            return False
+
+        return True
+
+    @staticmethod
+    def _prepare_process_window_for_input(pid: int) -> bool:
+        """Attempt to give the process keyboard focus without forcing it to the foreground."""
+        win32gui = importlib.import_module('win32gui')
+        win32process = importlib.import_module('win32process')
+        win32api = importlib.import_module('win32api')
+
+        hwnds = MonitorUI._find_process_windows(pid)
+        if not hwnds:
+            return False
+
+        hwnd = hwnds[0]
+        try:
+            target_thread, _ = win32process.GetWindowThreadProcessId(hwnd)
+            current_thread = win32api.GetCurrentThreadId()
+            attached = False
+            try:
+                if target_thread and current_thread and target_thread != current_thread:
+                    attached = bool(win32api.AttachThreadInput(current_thread, target_thread, True))
+                win32gui.SetFocus(hwnd)
+            finally:
+                if attached:
+                    try:
+                        win32api.AttachThreadInput(current_thread, target_thread, False)
+                    except Exception:
+                        pass
+        except Exception:
+            return False
+
+        return True
+
+    @staticmethod
+    def _vk_for_token(token: str) -> int | None:
+        """Map hotkey token to VK code."""
+        t = token.strip().lower()
+        vk_map = {
+            'ctrl': 0x11, 'control': 0x11,
+            'alt': 0x12,
+            'shift': 0x10,
+            'win': 0x5B,
+            'enter': 0x0D, 'return': 0x0D,
+            'esc': 0x1B, 'escape': 0x1B,
+            'tab': 0x09,
+            'space': 0x20,
+            'up': 0x26, 'down': 0x28, 'left': 0x25, 'right': 0x27,
+            'pageup': 0x21, 'pagedown': 0x22,
+            'home': 0x24, 'end': 0x23,
+            'insert': 0x2D, 'delete': 0x2E,
+            'backspace': 0x08,
+            'f1': 0x70, 'f2': 0x71, 'f3': 0x72, 'f4': 0x73,
+            'f5': 0x74, 'f6': 0x75, 'f7': 0x76, 'f8': 0x77,
+            'f9': 0x78, 'f10': 0x79, 'f11': 0x7A, 'f12': 0x7B,
+        }
+        if t in vk_map:
+            return vk_map[t]
+        if len(t) == 1:
+            ch = t.upper()
+            if 'A' <= ch <= 'Z' or '0' <= ch <= '9':
+                return ord(ch)
+        return None
+
+    def _send_key_combo_to_pid(self, pid: int, key_combo: str) -> bool:
+        """Send combo to process window via PostMessage using pywin32."""
+        win32gui = importlib.import_module('win32gui')
+        win32con = importlib.import_module('win32con')
+
+        hwnds = self._find_process_windows(pid)
+        if not hwnds:
+            return False
+
+        parts = [p.strip() for p in key_combo.split('+') if p.strip()]
+        if not parts:
+            return False
+
+        mod_tokens = []
+        main_tokens = []
+        for p in parts:
+            pl = p.lower()
+            if pl in {'ctrl', 'control', 'alt', 'shift', 'win'}:
+                mod_tokens.append(pl)
+            else:
+                main_tokens.append(pl)
+
+        if not main_tokens:
+            main_tokens = [mod_tokens[-1]] if mod_tokens else []
+            mod_tokens = mod_tokens[:-1]
+        if not main_tokens:
+            return False
+
+        mod_vks = [self._vk_for_token(m) for m in mod_tokens]
+        if any(v is None for v in mod_vks):
+            return False
+        main_vk = self._vk_for_token(main_tokens[-1])
+        if main_vk is None:
+            return False
+
+        # Use the exact Alt+number sequence when possible; it is the most stable
+        # for the escape-route hotkey pattern currently used in the UI.
+        if len(mod_tokens) == 1 and mod_tokens[0] == 'alt' and len(main_tokens) == 1:
+            digit = main_tokens[0]
+            if len(digit) == 1 and digit.isdigit():
+                return self._send_alt_number_sequence(hwnds, digit)
+
+        has_alt = any(m in {'alt'} for m in mod_tokens)
+        down_msg = win32con.WM_SYSKEYDOWN if has_alt else win32con.WM_KEYDOWN
+        up_msg = win32con.WM_SYSKEYUP if has_alt else win32con.WM_KEYUP
+
+        lparam_down = 0x00000001
+        lparam_up = 0xC0000001
+
+        # Ensure ALT is released first, mirroring the user-provided pattern.
+        sent_any = False
+
+        for hwnd in hwnds:
+            try:
+                # Ensure ALT is released first, mirroring the user-provided pattern.
+                win32gui.PostMessage(hwnd, win32con.WM_SYSKEYUP, win32con.VK_MENU, lparam_up)
+
+                # Modifier down
+                for vk in mod_vks:
+                    win32gui.PostMessage(hwnd, down_msg, vk, lparam_down)
+                # Main key tap
+                win32gui.PostMessage(hwnd, down_msg, main_vk, lparam_down)
+                win32gui.PostMessage(hwnd, up_msg, main_vk, lparam_up)
+                # Modifier up (reverse order)
+                for vk in reversed(mod_vks):
+                    win32gui.PostMessage(hwnd, up_msg, vk, lparam_up)
+
+                # Extra release for ALT-style sequences, matching the provided code.
+                if has_alt:
+                    win32gui.PostMessage(hwnd, win32con.WM_SYSKEYUP, win32con.VK_MENU, lparam_up)
+
+                sent_any = True
+            except Exception:
+                continue
+        return sent_any
+
+    def _send_tab_key_to_pid(self, pid: int) -> bool:
+        """Bring target to foreground and send a single TAB key press."""
+        win32gui = importlib.import_module('win32gui')
+        win32con = importlib.import_module('win32con')
+
+        hwnd = self._find_primary_process_window(pid)
+        if not hwnd:
+            return False
+
+        tab_vk = win32con.VK_TAB
+        lparam_down = 0x00000001
+        lparam_up = 0xC0000001
+
+        try:
+            # Try to foreground the window, but do not fail hard if Windows blocks it.
+            try:
+                self._focus_process_window(pid)
+            except Exception:
+                pass
+
+            win32gui.PostMessage(hwnd, win32con.WM_KEYDOWN, tab_vk, lparam_down)
+            win32gui.PostMessage(hwnd, win32con.WM_KEYUP, tab_vk, lparam_up)
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _send_alt_number_sequence(hwnds: list[int], num: str) -> bool:
+        """Send Alt+number using the posted message sequence from the user's snippet."""
+        try:
+            win32gui = importlib.import_module('win32gui')
+            win32con = importlib.import_module('win32con')
+            vk = 0x30 + int(num)
+
+            lparam_down = 0x00000001
+            lparam_up = 0xC0000001
+
+            sent_any = False
+            for hwnd in hwnds:
+                # ensure ALT released first
+                win32gui.PostMessage(hwnd, win32con.WM_SYSKEYUP, win32con.VK_MENU, lparam_up)
+
+                # ALT DOWN
+                win32gui.PostMessage(hwnd, win32con.WM_SYSKEYDOWN, win32con.VK_MENU, lparam_down)
+
+                # NUM DOWN
+                win32gui.PostMessage(hwnd, win32con.WM_SYSKEYDOWN, vk, lparam_down)
+
+                # NUM UP
+                win32gui.PostMessage(hwnd, win32con.WM_SYSKEYUP, vk, lparam_up)
+
+                # ALT UP
+                win32gui.PostMessage(hwnd, win32con.WM_SYSKEYUP, win32con.VK_MENU, lparam_up)
+
+                # safety extra release
+                win32gui.PostMessage(hwnd, win32con.WM_SYSKEYUP, win32con.VK_MENU, lparam_up)
+                sent_any = True
+            return sent_any
+        except Exception:
+            return False
+
+    @staticmethod
+    def _read_int_from_process(handle: int, address: int) -> int | None:
+        import ctypes
+        buf = ctypes.c_int32()
+        bytes_read = ctypes.c_size_t(0)
+        ok = ctypes.windll.kernel32.ReadProcessMemory(
+            handle,
+            ctypes.c_void_p(address),
+            ctypes.byref(buf),
+            ctypes.sizeof(buf),
+            ctypes.byref(bytes_read),
+        )
+        if ok and bytes_read.value == ctypes.sizeof(buf):
+            return buf.value
+        return None
+
+    @staticmethod
+    def _read_ptr_from_process(handle: int, address: int) -> int | None:
+        """Read a 64-bit pointer from the process at the given address."""
+        import ctypes
+        buf = ctypes.c_uint64()
+        bytes_read = ctypes.c_size_t(0)
+        ok = ctypes.windll.kernel32.ReadProcessMemory(
+            handle,
+            ctypes.c_void_p(address),
+            ctypes.byref(buf),
+            ctypes.sizeof(buf),
+            ctypes.byref(bytes_read),
+        )
+        if ok and bytes_read.value == ctypes.sizeof(buf):
+            return int(buf.value)
+        return None
+
+    @staticmethod
+    def _get_module_base(handle: int, module_name: str) -> int | None:
+        """Return the base address of a module loaded in the target process."""
+        import ctypes
+        import ctypes.wintypes
+        psapi = ctypes.WinDLL('psapi', use_last_error=True)
+
+        class MODULEINFO(ctypes.Structure):
+            _fields_ = [
+                ('lpBaseOfDll', ctypes.c_void_p),
+                ('SizeOfImage', ctypes.wintypes.DWORD),
+                ('EntryPoint', ctypes.c_void_p),
+            ]
+
+        # Explicit prototypes avoid bad default int conversions on 64-bit handles.
+        psapi.EnumProcessModulesEx.argtypes = [
+            ctypes.wintypes.HANDLE,
+            ctypes.POINTER(ctypes.wintypes.HMODULE),
+            ctypes.wintypes.DWORD,
+            ctypes.POINTER(ctypes.wintypes.DWORD),
+            ctypes.wintypes.DWORD,
+        ]
+        psapi.EnumProcessModulesEx.restype = ctypes.wintypes.BOOL
+        psapi.GetModuleBaseNameW.argtypes = [
+            ctypes.wintypes.HANDLE,
+            ctypes.wintypes.HMODULE,
+            ctypes.wintypes.LPWSTR,
+            ctypes.wintypes.DWORD,
+        ]
+        psapi.GetModuleBaseNameW.restype = ctypes.wintypes.DWORD
+        psapi.GetModuleInformation.argtypes = [
+            ctypes.wintypes.HANDLE,
+            ctypes.wintypes.HMODULE,
+            ctypes.POINTER(MODULEINFO),
+            ctypes.wintypes.DWORD,
+        ]
+        psapi.GetModuleInformation.restype = ctypes.wintypes.BOOL
+
+        process_handle = ctypes.wintypes.HANDLE(handle)
+        hmod_array = (ctypes.wintypes.HMODULE * 1024)()
+        bytes_needed = ctypes.wintypes.DWORD(0)
+        if not psapi.EnumProcessModulesEx(
+            process_handle,
+            hmod_array,
+            ctypes.sizeof(hmod_array),
+            ctypes.byref(bytes_needed),
+            0x03,  # LIST_MODULES_ALL
+        ):
+            return None
+
+        count = bytes_needed.value // ctypes.sizeof(ctypes.wintypes.HMODULE)
+        target = module_name.lower()
+        for i in range(min(count, 1024)):
+            mod = hmod_array[i]
+            name_buf = ctypes.create_unicode_buffer(260)
+            if psapi.GetModuleBaseNameW(process_handle, mod, name_buf, 260) == 0:
+                continue
+            if name_buf.value.lower() == target:
+                info = MODULEINFO()
+                if psapi.GetModuleInformation(process_handle, mod, ctypes.byref(info), ctypes.sizeof(info)):
+                    return int(info.lpBaseOfDll)
+                # Fallback to module handle value
+                return int(mod)
+        return None
+
+    def _read_value_pointer(
+        self,
+        handle: int,
+        pid: int | None,
+        module_name: str,
+        base_offset_hex: str,
+        offsets_hex: list[str],
+    ) -> int | None:
+        """Resolve a CE-style pointer chain and return the final 4-byte integer value."""
+        module_base = self._get_module_base(handle, module_name)
+        if module_base is None:
+            return None
+        try:
+            base_off = int(base_offset_hex.replace('0x', '').replace('0X', ''), 16)
+        except ValueError:
+            return None
+
+        ptr = self._read_ptr_from_process(handle, module_base + base_off)
+        if ptr is None:
+            return None
+
+        # Follow all offsets except the last one as pointer dereferences
+        for off_hex in offsets_hex[:-1]:
+            try:
+                off = int(off_hex.replace('0x', '').replace('0X', ''), 16)
+            except ValueError:
+                return None
+            ptr = self._read_ptr_from_process(handle, ptr + off)
+            if ptr is None:
+                return None
+
+        # Final offset: read the 4-byte integer value
+        try:
+            final_off = int(offsets_hex[-1].replace('0x', '').replace('0X', ''), 16)
+        except ValueError:
+            return None
+        return self._read_int_from_process(handle, ptr + final_off)
+
+    def _pick_running_process(self) -> tuple[int, str | None, str] | None:
+        """Open a dialog listing running processes; returns (pid, exe_path_or_None, display_name) or None if cancelled."""
+        try:
+            import psutil
+        except ImportError:
+            messagebox.showerror(
+                'Missing dependency',
+                'psutil is required.\nRun: pip install psutil',
+                parent=self.root,
+            )
+            return None
+
+        def _get_window_titles_by_pid() -> dict[int, list[str]]:
+            import ctypes
+            import ctypes.wintypes
+
+            pid_to_titles: dict[int, list[str]] = {}
+            EnumWindows = ctypes.windll.user32.EnumWindows
+            GetWindowTextW = ctypes.windll.user32.GetWindowTextW
+            GetWindowTextLengthW = ctypes.windll.user32.GetWindowTextLengthW
+            GetWindowThreadProcessId = ctypes.windll.user32.GetWindowThreadProcessId
+            IsWindowVisible = ctypes.windll.user32.IsWindowVisible
+
+            WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+
+            def _enum_cb(hwnd, _lparam):
+                if not IsWindowVisible(hwnd):
+                    return True
+                length = GetWindowTextLengthW(hwnd)
+                if length == 0:
+                    return True
+                buf = ctypes.create_unicode_buffer(length + 1)
+                GetWindowTextW(hwnd, buf, length + 1)
+                title = buf.value.strip()
+                if not title:
+                    return True
+                pid = ctypes.wintypes.DWORD()
+                GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                pid_to_titles.setdefault(pid.value, []).append(title)
+                return True
+
+            EnumWindows(WNDENUMPROC(_enum_cb), 0)
+            return pid_to_titles
+
+        def _collect():
+            pid_titles = _get_window_titles_by_pid()
+            # entries: (process_name, pid, exe_path, window_titles)
+            entries: list[tuple[str, int, str | None, list[str]]] = []
+            for proc in psutil.process_iter(['pid', 'name', 'exe']):
+                try:
+                    info = proc.info
+                    pid = info['pid']
+                    entries.append((
+                        info['name'] or '',
+                        pid,
+                        info.get('exe'),
+                        pid_titles.get(pid, []),
+                    ))
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+            return sorted(entries, key=lambda e: e[0].lower())
+
+        all_procs = _collect()
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title('Select Running Process')
+        dlg.resizable(True, True)
+        dlg.configure(bg=self._colors['bg'])
+        dlg.transient(self.root)
+        dlg.grab_set()
+        self._apply_app_icon(dlg)
+        self._position_popup_at_main_window(dlg, '540x460')
+        dlg.minsize(420, 360)
+
+        result: dict = {'value': None}
+
+        # Search row
+        search_frame = tk.Frame(dlg, bg=self._colors['bg'], padx=10, pady=(10))
+        search_frame.pack(fill=tk.X)
+        tk.Label(
+            search_frame,
+            text='Filter:',
+            bg=self._colors['bg'],
+            fg=self._colors['muted'],
+        ).pack(side=tk.LEFT)
+        search_var = tk.StringVar()
+        tk.Entry(
+            search_frame,
+            textvariable=search_var,
+            bg=self._colors['input_bg'],
+            fg=self._colors['text'],
+            insertbackground=self._colors['text'],
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=self._colors['border'],
+            highlightcolor=self._colors['accent'],
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+
+        # Listbox
+        list_frame = tk.Frame(dlg, bg=self._colors['bg'], padx=10)
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
+        listbox = tk.Listbox(
+            list_frame,
+            bg=self._colors['input_bg'],
+            fg=self._colors['text'],
+            selectbackground=self._colors['accent'],
+            selectforeground='#ffffff',
+            activestyle='none',
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=self._colors['border'],
+            yscrollcommand=scrollbar.set,
+        )
+        scrollbar.configure(command=listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        visible_procs: list[tuple[str, int, str | None, list[str]]] = []
+
+        def _refresh(filter_text: str = '') -> None:
+            nonlocal visible_procs
+            ft = filter_text.strip().lower()
+            if ft:
+                visible_procs = [
+                    p for p in all_procs
+                    if ft in p[0].lower() or any(ft in t.lower() for t in p[3])
+                ]
+            else:
+                visible_procs = list(all_procs)
+            listbox.delete(0, tk.END)
+            for name, pid, _exe, titles in visible_procs:
+                if titles:
+                    label = f'{name}  —  {titles[0]}  (PID {pid})'
+                else:
+                    label = f'{name}  (PID {pid})'
+                listbox.insert(tk.END, label)
+
+        _refresh()
+        search_var.trace_add('write', lambda *_: _refresh(search_var.get()))
+
+        # Buttons
+        btn_frame = tk.Frame(dlg, bg=self._colors['bg'], padx=10, pady=10)
+        btn_frame.pack(fill=tk.X, side=tk.BOTTOM)
+
+        def _confirm() -> None:
+            sel = listbox.curselection()
+            if not sel:
+                return
+            name, pid, exe, titles = visible_procs[sel[0]]
+            display = titles[0] if titles else name
+            result['value'] = (pid, exe, display)
+            dlg.destroy()
+
+        def _cancel() -> None:
+            dlg.destroy()
+
+        btn_select = self._make_button(btn_frame, text='Select', width=12, command=_confirm, accent=True)
+        btn_cancel_pick = self._make_button(btn_frame, text='Cancel', width=10, command=_cancel)
+        btn_select.grid(row=0, column=0, sticky='ew', padx=(0, 8))
+        btn_cancel_pick.grid(row=0, column=1, sticky='ew')
+        btn_frame.grid_columnconfigure(0, weight=1)
+        btn_frame.grid_columnconfigure(1, weight=1)
+
+        listbox.bind('<Double-Button-1>', lambda _e: _confirm())
+        dlg.bind('<Return>', lambda _e: _confirm())
+        dlg.bind('<Escape>', lambda _e: _cancel())
+
+        self.root.wait_window(dlg)
+        return result['value']
 
     def _on_mode_changed(self, _event=None):
         if self._monitor_thread and self._monitor_thread.is_alive():
@@ -855,8 +2529,8 @@ class MonitorUI:
     def _open_escape_route_picker(self) -> None:
         dlg = tk.Toplevel(self.root)
         dlg.title('Select Escape Route')
-        self._position_popup_at_main_window(dlg, '460x330')
-        dlg.minsize(420, 300)
+        self._position_popup_at_main_window(dlg, '500x360')
+        dlg.minsize(460, 340)
         dlg.resizable(True, True)
         dlg.configure(bg=self._colors['bg'])
         self._apply_app_icon(dlg)
@@ -1032,8 +2706,8 @@ class MonitorUI:
 
         dlg = tk.Toplevel(self.root)
         dlg.title('Escape Route Editor')
-        self._position_popup_at_main_window(dlg, '520x360')
-        dlg.minsize(420, 360)
+        self._position_popup_at_main_window(dlg, '600x420')
+        dlg.minsize(520, 400)
         dlg.resizable(True, True)
         dlg.configure(bg=self._colors['bg'])
         self._apply_app_icon(dlg)
@@ -1155,8 +2829,9 @@ class MonitorUI:
             captured_key: str | None = None
             capture_dlg = tk.Toplevel(dlg)
             capture_dlg.title('Capture key press')
-            self._position_popup_at_main_window(capture_dlg, '420x220')
+            self._position_popup_at_main_window(capture_dlg, '440x240')
             capture_dlg.resizable(False, False)
+            capture_dlg.minsize(360, 220)
             capture_dlg.configure(bg=self._colors['bg'])
             self._apply_app_icon(capture_dlg)
             capture_dlg.transient(dlg)
@@ -1680,6 +3355,34 @@ class MonitorUI:
                         text=f'View Last Trigger Snapshot ({mode_label})',
                     )
                     self._log(f'{mode_label} snapshot captured. Use "View Last Trigger Snapshot" to open it.')
+            elif event == 'radar_count':
+                info = payload if isinstance(payload, dict) else {}
+                idx = info.get('idx')
+                value = info.get('value')
+                if isinstance(idx, int) and 0 <= idx < len(self._process_tower_rows):
+                    row = self._process_tower_rows[idx]
+                    count_var = row.get('radar_count_var')
+                    if count_var is not None:
+                        shown = str(value) if value is not None else 'N/A'
+                        count_var.set(f'Radar: {shown}')
+            elif event == 'map_count':
+                info = payload if isinstance(payload, dict) else {}
+                idx = info.get('idx')
+                value = info.get('value')
+                if isinstance(idx, int) and 0 <= idx < len(self._process_tower_rows):
+                    row = self._process_tower_rows[idx]
+                    count_var = row.get('map_count_var')
+                    if count_var is not None:
+                        shown = str(value) if value is not None else 'N/A'
+                        count_var.set(f'Map: {shown}')
+            elif event == 'process_scan_auto_stop':
+                info = payload if isinstance(payload, dict) else {}
+                idx = info.get('idx')
+                if isinstance(idx, int) and 0 <= idx < len(self._process_tower_rows):
+                    self._reset_process_tower_scan_row(idx, 'Attached  •  Triggered')
+                    self._log(f'Character #{idx + 1}: scan auto-stopped after trigger.')
+            elif event == 'log':
+                self._log(str(payload))
             elif event == 'stopped':
                 info = payload if isinstance(payload, dict) else {}
                 was_triggered = bool(info.get('triggered'))
@@ -1727,4 +3430,17 @@ class MonitorUI:
 
     def _on_close(self):
         self._stop_scanner(manual_stop=False)
+        # Stop all process tower scan threads
+        for i in range(len(self._process_tower_rows)):
+            row = self._process_tower_rows[i]
+            stop_ev = row.get('scan_stop')
+            if stop_ev:
+                stop_ev.set()
+        for row in self._process_tower_rows:
+            t = row.get('scan_thread')
+            if t and t.is_alive():
+                t.join(timeout=1.0)
+        for handle in self._process_handles:
+            self._close_process_handle(handle)
+        self._process_handles.clear()
         self.root.destroy()
