@@ -82,6 +82,44 @@ function Convert-ToWindowsVersion {
     throw "Unsupported version format for Windows metadata: $Version"
 }
 
+function Get-RelativePathCompat {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BasePath,
+        [Parameter(Mandatory = $true)]
+        [string]$TargetPath
+    )
+
+    $resolvedBase = (Resolve-Path -LiteralPath $BasePath).Path
+    $resolvedTarget = (Resolve-Path -LiteralPath $TargetPath).Path
+
+    $getRelativePathMethod = [System.IO.Path].GetMethod('GetRelativePath', [Type[]]@([string], [string]))
+    if ($getRelativePathMethod) {
+        return [string]$getRelativePathMethod.Invoke($null, @($resolvedBase, $resolvedTarget))
+    }
+
+    # Fallback for older PowerShell/.NET that does not expose System.IO.Path.GetRelativePath.
+    $separator = [System.IO.Path]::DirectorySeparatorChar
+    $altSeparator = [System.IO.Path]::AltDirectorySeparatorChar
+    $baseForUri = if ($resolvedBase.EndsWith($separator) -or $resolvedBase.EndsWith($altSeparator)) {
+        $resolvedBase
+    }
+    else {
+        "$resolvedBase$separator"
+    }
+
+    $baseUri = [Uri]$baseForUri
+    $targetUri = [Uri]$resolvedTarget
+
+    if ($baseUri.Scheme -ne $targetUri.Scheme) {
+        return $resolvedTarget
+    }
+
+    $relativeUri = $baseUri.MakeRelativeUri($targetUri)
+    $relativePath = [Uri]::UnescapeDataString($relativeUri.ToString())
+    return $relativePath.Replace('/', '\\')
+}
+
 function Get-InnoCompilerPath {
     $candidates = @(
         (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'),
@@ -214,7 +252,7 @@ $ConfigDataArgs = @()
 Get-ChildItem -Path $ConfigDir -File -Recurse |
     Where-Object { $_.Extension.ToLowerInvariant() -ne '.png' } |
     ForEach-Object {
-        $relativePath = [System.IO.Path]::GetRelativePath($ProjectRoot, $_.FullName)
+        $relativePath = Get-RelativePathCompat -BasePath $ProjectRoot -TargetPath $_.FullName
         $ConfigDataArgs += "--include-data-files=$($_.FullName)=$relativePath"
     }
 
