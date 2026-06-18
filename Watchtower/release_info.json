@@ -1,6 +1,6 @@
 {
   "app_name": "Watchtower",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "publisher": "Megamu Utilities",
   "patch_notes": [
     "feat: Add config folder content to watchtower build chain"

@@ -21,7 +21,7 @@ from action_controller import ActionController
 from area_selector import select_area_and_snapshot_with_parent, select_area_with_parent, select_points_with_parent
 from app_version import APP_NAME, APP_VERSION
 from player_monitor import PlayerMonitor
-from config import WindowConfig, load_config
+from config import WindowConfig, get_runtime_config_path, load_config
 
 if TYPE_CHECKING:
     from screen_monitor import ScreenMonitor
@@ -66,14 +66,14 @@ class MonitorUI:
         self.region: tuple[int, int, int, int] | None = None
         self.escape_route: list[dict[str, int | str]] = []
         self.escape_route_name: str | None = None
-        self.escape_routes_config_path = Path(__file__).resolve().parent.parent / 'configs' / 'escape_routes.json'
+        self.escape_routes_config_path = get_runtime_config_path('escape_routes.json')
         self.saved_escape_routes: dict[str, list[dict[str, int | str]]] = self._load_saved_escape_routes()
         if self.saved_escape_routes:
             default_name = sorted(self.saved_escape_routes.keys())[0]
             self.escape_route_name = default_name
             self.escape_route = [dict(step) for step in self.saved_escape_routes.get(default_name, [])]
-        self.template_path = Path(__file__).resolve().parent.parent / 'configs' / 'spot_template.png'
-        self.scan_addresses_config_path = Path(__file__).resolve().parent.parent / 'configs' / 'scan_addresses.json'
+        self.template_path = get_runtime_config_path('spot_template.png')
+        self.scan_addresses_config_path = get_runtime_config_path('scan_addresses.json')
         self.saved_scan_addresses: list[dict[str, str]] = self._load_scan_addresses()
         self._toast_notifier = None
         self._setup_windows_notifier()

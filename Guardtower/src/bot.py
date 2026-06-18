@@ -4,8 +4,10 @@ import random
 import re
 import time
 import unicodedata
+import webbrowser
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 import twitchio
 from twitchio.ext import commands
@@ -29,6 +31,7 @@ class TwitchBot(commands.Cog):
         ignored_usernames: list[str] | None = None,
         log_only_mode: bool = False,
         enable_logging: bool = False,
+        send_confirmation_callback: Callable[[dict[str, object]], dict[str, object]] | None = None,
     ):
         self.bot = bot
         self.config = config
@@ -45,8 +48,10 @@ class TwitchBot(commands.Cog):
         }
         self.log_only_mode = bool(log_only_mode)
         self.enable_logging = bool(enable_logging)
+        self.send_confirmation_callback = send_confirmation_callback
         self.notifier = WindowsNotifier(config.notification)
         self.is_shutting_down = False
+        self.SEND_CONFIRM_TIMEOUT_S: float = 30.0
         # Known online channels from GUI poller. None means status is unknown/unavailable.
         self.online_channels: set[str] | None = None
 
@@ -121,6 +126,63 @@ class TwitchBot(commands.Cog):
         if self.online_channels is None:
             return True
         return channel_name.strip().lower() in self.online_channels
+
+    async def _confirm_send(
+        self,
+        channel_name: str,
+        message_text: str,
+        *,
+        trigger_message: str | None = None,
+        default_reply_name: str | None = None,
+        won_prefix: str | None = None,
+        is_won_reply: bool = False,
+    ) -> str | None:
+        callback = self.send_confirmation_callback
+        if callback is None:
+            return message_text
+
+        request_payload = {
+            "channel_name": channel_name,
+            "message_text": message_text,
+            "account_name": self.account_name,
+            "timeout_s": self.SEND_CONFIRM_TIMEOUT_S,
+            "trigger_message": trigger_message,
+            "default_reply_name": default_reply_name,
+            "won_prefix": won_prefix,
+            "is_won_reply": is_won_reply,
+        }
+
+        try:
+            approved = await asyncio.to_thread(
+                callback,
+                request_payload,
+            )
+        except Exception as error:
+            log_line(
+                f"Send confirmation failed: {error}",
+                "ignore",
+                channel_name,
+                account=self.account_name,
+            )
+            return None
+
+        allowed = bool(approved.get("approved", False)) if isinstance(approved, dict) else False
+        approved_message = message_text
+        if isinstance(approved, dict):
+            candidate = approved.get("message_text")
+            if isinstance(candidate, str) and candidate.strip():
+                approved_message = candidate.strip()
+
+        if not allowed:
+            log_line(
+                "Send canceled by user or confirmation timed out",
+                "ignore",
+                channel_name,
+                account=self.account_name,
+            )
+            return None
+
+        return approved_message
 
     def reload_channel_triggers(self, channel_name: str) -> bool:
         """Re-read triggers for *channel_name* from config.json. Returns True on success."""
@@ -350,13 +412,6 @@ class TwitchBot(commands.Cog):
             "winner_seen_at": winner_seen_at,
             "join_count": join_count,
         }
-        if join_count == 1:
-            log_line(
-                f"Giveaway ACTIVE (score={score:.3f}, next_threshold={score * 1.5:.3f})",
-                "giveaway_active",
-                channel_name,
-                account=self.account_name,
-            )
 
     def _find_won_trigger_match(self, message_text: str, triggers: list[str], *, allow_username_wildcard: bool) -> str | None:
         for trigger in triggers:
@@ -433,7 +488,7 @@ class TwitchBot(commands.Cog):
         self._append_win_log(timestamp, channel_name)
         self._increment_channel_stat(channel_name, "wins")
 
-        if self.config.notification.enabled:
+        if self.config.notification.enabled and self.send_confirmation_callback is None:
             self.notifier.send_notification(
                 channel_name,
                 f"You won on {channel_name}!",
@@ -442,14 +497,41 @@ class TwitchBot(commands.Cog):
                 launch_url=f"https://www.twitch.tv/{channel_name}",
             )
 
-        won_reply = f"{channel_config.won_prefix}{self.account_nickname}"
-        if won_reply and send_channel is not None:
+        default_won_reply = f"{channel_config.won_prefix}{self.account_nickname}"
+        if default_won_reply and send_channel is not None:
             delay_sec = self._get_random_delay_s(channel_name, channel_config.delay_ms)
             if delay_sec > 0:
                 await asyncio.sleep(delay_sec)
+
+            won_reply = await self._confirm_send(
+                channel_name,
+                default_won_reply,
+                trigger_message=message_text,
+                default_reply_name=self.account_nickname,
+                won_prefix=channel_config.won_prefix,
+                is_won_reply=True,
+            )
+            if won_reply is None:
+                return
+
             log_line(f"Sending: {won_reply}", "send", channel_name, account=self.account_name)
             try:
                 await send_channel.send(won_reply)
+                try:
+                    webbrowser.open_new_tab(f"https://www.twitch.tv/{channel_name}")
+                    log_line(
+                        f"Opened streamer link after won reply: #{channel_name}",
+                        "notification",
+                        channel_name,
+                        account=self.account_name,
+                    )
+                except Exception as open_error:
+                    log_line(
+                        f"Failed to open streamer link: {open_error}",
+                        "ignore",
+                        channel_name,
+                        account=self.account_name,
+                    )
             except Exception as send_error:
                 log_line(
                     f"Send failed: {send_error}",
@@ -800,15 +882,25 @@ class TwitchBot(commands.Cog):
 
         # Reserve the session BEFORE sleeping so any concurrent trigger sees the active
         # session and gets blocked by the score guard during the delay window.
+        previous_session = self.channel_active_giveaway.get(channel_name)
+        previous_session_snapshot = dict(previous_session) if previous_session is not None else None
         self._record_successful_join(channel_name, giveaway_signature, now, current_score)
 
         delay_sec = self._get_random_delay_s(channel_name, channel_config.delay_ms)
         if delay_sec > 0:
             await asyncio.sleep(delay_sec)
 
-        log_line(f"Sending: {channel_config.giveaway_message}", "send", channel_name, account=self.account_name)
+        giveaway_message = await self._confirm_send(channel_name, channel_config.giveaway_message)
+        if giveaway_message is None:
+            if previous_session_snapshot is None:
+                self.channel_active_giveaway.pop(channel_name, None)
+            else:
+                self.channel_active_giveaway[channel_name] = previous_session_snapshot
+            return
+
+        log_line(f"Sending: {giveaway_message}", "send", channel_name, account=self.account_name)
         try:
-            await message.channel.send(channel_config.giveaway_message)
+            await message.channel.send(giveaway_message)
         except Exception as send_error:
             log_line(
                 f"Send failed: {send_error}",
@@ -816,6 +908,20 @@ class TwitchBot(commands.Cog):
                 channel_name,
                 account=self.account_name,
             )
+            if previous_session_snapshot is None:
+                self.channel_active_giveaway.pop(channel_name, None)
+            else:
+                self.channel_active_giveaway[channel_name] = previous_session_snapshot
             return
+
+        active_after_send = self.channel_active_giveaway.get(channel_name)
+        join_count = int(active_after_send.get("join_count", 0)) if isinstance(active_after_send, dict) else 0
+        if join_count == 1:
+            log_line(
+                f"Giveaway ACTIVE (score={current_score:.3f}, next_threshold={current_score * 1.5:.3f})",
+                "giveaway_active",
+                channel_name,
+                account=self.account_name,
+            )
         self._increment_channel_stat(channel_name, "giveaways")
 

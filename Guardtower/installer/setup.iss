@@ -13,7 +13,7 @@
 #define MyAppName      "Guardtower"
 #endif
 #ifndef MyAppVersion
-#define MyAppVersion   "1.0.4"
+#define MyAppVersion   "1.0.5"
 #endif
 #ifndef MyAppPublisher
 #define MyAppPublisher "Megamu Utilities"

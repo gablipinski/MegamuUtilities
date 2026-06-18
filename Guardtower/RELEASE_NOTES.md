@@ -17,3 +17,12 @@
 
 - feat: Add offline detection and notification system
 
+## 1.0.5 (2026-06-18)
+
+- Added `winsdk` to requirements for improved notification handling.
+- Updated PowerShell notification method to ensure reliable delivery.
+- Implemented confirmation dialog for outgoing messages in Twitch bot.
+- Enhanced GUI to manage confirmation notifications and focus behavior.
+- Refactored notification logic to utilize new DesktopNotificationService.
+- Updated versioning and release notes for Watchtower to reflect changes.
+

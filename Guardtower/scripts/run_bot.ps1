@@ -44,7 +44,7 @@ raise SystemExit(1 if missing else 0)
     return ($LASTEXITCODE -eq 0)
 }
 
-$RequiredModules = @('twitchio')
+$RequiredModules = @('twitchio', 'winotify', 'winsdk')
 if ($Gui) {
     $RequiredModules += 'cryptography'
 }

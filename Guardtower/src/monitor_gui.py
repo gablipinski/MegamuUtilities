@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import ctypes
 import json
 import shutil
 import queue
@@ -32,6 +33,7 @@ from config import BotConfig, load_config, resolve_default_config_path
 from console_log import set_gui_hook
 from license_manager import get_license_path, get_machine_id, validate_license
 from startup_logs import emit_startup_logs
+from windows_notifier import DesktopNotificationService
 
 GIVEAWAY_SESSION_DURATION_S = 300.0
 IDLE_ALERT_THRESHOLD_S = 3600.0
@@ -182,6 +184,8 @@ class MonitorUI:
         self._system_log_lines: list[tuple[str, str]] = []
         self._multitwitch_url: str = "(no channels online)"
         self._channel_views: dict[str, ChannelView] = {}
+        self._desktop_notifications = DesktopNotificationService(app_id="Guardtower")
+        self._active_confirmation_dialog: tk.Toplevel | None = None
 
         self._load_app_icon()
         self._apply_app_icon(self.root)
@@ -212,6 +216,7 @@ class MonitorUI:
         self.root.after(120, self._drain_events)
         self.root.after(1000, self._tick_statuses)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.root.bind("<FocusIn>", self._on_root_focus)
         self.root.deiconify()
 
     def run(self) -> None:
@@ -556,6 +561,496 @@ class MonitorUI:
             highlightcolor=self._colors["accent"],
         )
 
+    def _force_window_front(self, window: tk.Misc) -> None:
+        """Best-effort foreground/topmost enforcement, with Win32 fallback."""
+        try:
+            window.update_idletasks()
+            window.lift()
+            window.focus_force()
+        except Exception:
+            pass
+
+        if sys.platform != "win32":
+            return
+
+        try:
+            hwnd = int(window.winfo_id())
+            user32 = ctypes.windll.user32
+
+            sw_restore = 9
+            hwnd_topmost = -1
+            swp_nosize = 0x0001
+            swp_nomove = 0x0002
+            swp_showwindow = 0x0040
+
+            user32.ShowWindow(hwnd, sw_restore)
+            user32.SetWindowPos(
+                hwnd,
+                hwnd_topmost,
+                0,
+                0,
+                0,
+                0,
+                swp_nomove | swp_nosize | swp_showwindow,
+            )
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+
+    def _flash_taskbar(self) -> None:
+        """Flash the Guardtower taskbar button to attract attention from any workspace."""
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            hwnd = int(self.root.winfo_id())
+            flash_info = ctypes.create_string_buffer(ctypes.sizeof(ctypes.c_ulong) * 6)
+            # FLASHWINFO: cbSize, hwnd, dwFlags, uCount, dwTimeout
+            # FLASHW_ALL | FLASHW_TIMERNOFG = 0x0003 | 0x000C = 0x000F
+            ctypes.windll.user32.FlashWindowEx(ctypes.byref(
+                type('FLASHWINFO', (ctypes.Structure,), {
+                    '_fields_': [
+                        ('cbSize', ctypes.c_uint),
+                        ('hwnd', ctypes.c_void_p),
+                        ('dwFlags', ctypes.c_uint),
+                        ('uCount', ctypes.c_uint),
+                        ('dwTimeout', ctypes.c_uint),
+                    ]
+                })(
+                    cbSize=ctypes.sizeof(ctypes.c_uint) * 5,
+                    hwnd=hwnd,
+                    dwFlags=0x0000000F,  # FLASHW_ALL | FLASHW_TIMERNOFG
+                    uCount=0,           # flash until foreground
+                    dwTimeout=0,
+                )
+            ))
+        except Exception:
+            pass
+
+    def _on_root_focus(self, _event: tk.Event | None = None) -> None:
+        """Re-raise active confirmation dialog when main window gains focus."""
+        dlg = self._active_confirmation_dialog
+        if dlg is None:
+            return
+        try:
+            if bool(dlg.winfo_exists()):
+                self._force_window_front(dlg)
+        except Exception:
+            self._active_confirmation_dialog = None
+
+    def _focus_confirmation_window(self, dialog: tk.Misc | None = None) -> None:
+        """Bring Guardtower (and optionally its confirmation dialog) to the front."""
+        try:
+            self.root.deiconify()
+        except Exception:
+            pass
+        self._force_window_front(self.root)
+
+        if dialog is None:
+            return
+        try:
+            if bool(dialog.winfo_exists()):
+                self._force_window_front(dialog)
+        except Exception:
+            return
+
+    def _send_confirmation_attention_notification(
+        self,
+        *,
+        channel_name: str,
+        message_text: str,
+        dialog: tk.Misc,
+    ) -> None:
+        """Show a Windows notification and flash taskbar for confirmation."""
+        body = message_text if len(message_text) <= 120 else (message_text[:117] + "...")
+        ok, err = self._desktop_notifications.send_action(
+            f"Approval needed for #{channel_name} — switch to Guardtower",
+            body,
+            action_label="Open Guardtower",
+            action=lambda: self.root.after(0, lambda: self._focus_confirmation_window(dialog)),
+        )
+        if not ok:
+            self._append_system_log(
+                f"#{channel_name}: failed to show confirmation notification ({err or 'unknown backend error'})",
+                "ignore",
+            )
+        # Flash taskbar regardless of toast result so app is always visible in taskbar.
+        self._flash_taskbar()
+
+    def _schedule_confirmation_attention_notifications(
+        self,
+        *,
+        channel_name: str,
+        message_text: str,
+        dialog: tk.Misc,
+        interval_ms: int = 10000,
+    ) -> None:
+        """Send immediate and periodic actionable notifications while popup is open."""
+        self._send_confirmation_attention_notification(
+            channel_name=channel_name,
+            message_text=message_text,
+            dialog=dialog,
+        )
+
+        def _repeat() -> None:
+            try:
+                if not bool(dialog.winfo_exists()):
+                    return
+            except Exception:
+                return
+
+            self._send_confirmation_attention_notification(
+                channel_name=channel_name,
+                message_text=message_text,
+                dialog=dialog,
+            )
+            dialog.after(interval_ms, _repeat)
+
+        dialog.after(interval_ms, _repeat)
+
+    def _send_focus_attention_notification(
+        self,
+        *,
+        channel_name: str,
+        message_text: str,
+        title: str = "Guardtower alert",
+    ) -> None:
+        """Show a Windows notification and flash taskbar to attract attention."""
+        body = message_text if len(message_text) <= 120 else (message_text[:117] + "...")
+        ok, err = self._desktop_notifications.send_action(
+            f"{title} — switch to Guardtower",
+            body,
+            action_label="Open Guardtower",
+            action=lambda: self.root.after(0, self._focus_confirmation_window),
+        )
+        if not ok:
+            self._append_system_log(
+                f"#{channel_name}: failed to show attention notification ({err or 'unknown backend error'})",
+                "ignore",
+            )
+        # Flash taskbar so Guardtower is always visible regardless of toast delivery.
+        self._flash_taskbar()
+
+    def request_send_confirmation(self, payload: dict[str, object]) -> dict[str, object]:
+        """Runtime-thread entrypoint: ask user to approve one outgoing chat message."""
+        if self._shutdown_event.is_set():
+            return {"approved": False, "message_text": ""}
+
+        channel_name = str(payload.get("channel_name", "")).strip().lower()
+        message_text = str(payload.get("message_text", ""))
+        account_name_obj = payload.get("account_name")
+        account_name = str(account_name_obj).strip() if isinstance(account_name_obj, str) else None
+
+        timeout_obj = payload.get("timeout_s")
+        timeout_s = 30.0
+        if isinstance(timeout_obj, (int, float)):
+            timeout_s = float(timeout_obj)
+
+        trigger_obj = payload.get("trigger_message")
+        trigger_message = str(trigger_obj) if isinstance(trigger_obj, str) else None
+
+        reply_name_obj = payload.get("default_reply_name")
+        default_reply_name = str(reply_name_obj) if isinstance(reply_name_obj, str) else None
+
+        won_prefix_obj = payload.get("won_prefix")
+        won_prefix = str(won_prefix_obj) if isinstance(won_prefix_obj, str) else None
+
+        is_won_reply = bool(payload.get("is_won_reply", False))
+
+        result: dict[str, object] = {"approved": False, "message_text": message_text}
+        done_event = threading.Event()
+
+        def _show() -> None:
+            try:
+                result.update(self._show_send_confirmation_dialog(
+                    channel_name=channel_name,
+                    message_text=message_text,
+                    account_name=account_name,
+                    timeout_s=timeout_s,
+                    trigger_message=trigger_message,
+                    default_reply_name=default_reply_name,
+                    won_prefix=won_prefix,
+                    is_won_reply=is_won_reply,
+                ))
+            except Exception:
+                result["approved"] = False
+                result["message_text"] = message_text
+            finally:
+                done_event.set()
+
+        try:
+            self.root.after(0, _show)
+        except Exception:
+            return {"approved": False, "message_text": message_text}
+
+        done_event.wait(timeout=max(1.0, float(timeout_s) + 2.0))
+        if not done_event.is_set():
+            return {"approved": False, "message_text": message_text}
+        return {
+            "approved": bool(result.get("approved", False)),
+            "message_text": str(result.get("message_text", message_text)),
+        }
+
+    def _show_send_confirmation_dialog(
+        self,
+        *,
+        channel_name: str,
+        message_text: str,
+        account_name: str | None,
+        timeout_s: float,
+        trigger_message: str | None = None,
+        default_reply_name: str | None = None,
+        won_prefix: str | None = None,
+        is_won_reply: bool = False,
+    ) -> dict[str, object]:
+        approved = {"value": False}
+        approved_message = {"value": message_text}
+        timeout_ms = max(1000, int(timeout_s * 1000))
+        remaining = {"sec": max(1, int(timeout_s))}
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Confirm Chat Send")
+        dialog_w = 700 if is_won_reply else 640
+        dialog_h = 620 if is_won_reply else 420
+        screen_w = dialog.winfo_screenwidth()
+        screen_h = dialog.winfo_screenheight()
+        pos_x = max(0, (screen_w - dialog_w) // 2)
+        pos_y = max(0, (screen_h - dialog_h) // 2)
+        dialog.geometry(f"{dialog_w}x{dialog_h}+{pos_x}+{pos_y}")
+        dialog.resizable(False, False)
+        dialog.configure(bg=self._colors["bg"])
+
+        # Register dialog so focus-in events and notifications can re-raise it.
+        self._active_confirmation_dialog = dialog
+
+        # Force Guardtower and this confirmation dialog to front so approval is visible
+        # even when the user is currently on another app.
+        self._focus_confirmation_window(dialog)
+
+        dialog.transient(self.root)
+        dialog.grab_set()
+        self._apply_app_icon(dialog)
+        dialog.attributes("-topmost", True)
+        self._force_window_front(dialog)
+        dialog.after(120, lambda: self._force_window_front(dialog))
+        dialog.after(420, lambda: self._force_window_front(dialog))
+        self._schedule_confirmation_attention_notifications(
+            channel_name=channel_name,
+            message_text=message_text,
+            dialog=dialog,
+        )
+
+        panel = tk.Frame(
+            dialog,
+            bg=self._colors["panel"],
+            highlightthickness=1,
+            highlightbackground=self._colors["border"],
+            padx=14,
+            pady=14,
+        )
+        panel.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+
+        tk.Label(
+            panel,
+            text="Approve outgoing chat message",
+            bg=self._colors["panel"],
+            fg=self._colors["text"],
+            font=("Segoe UI Semibold", 12),
+            anchor="w",
+        ).pack(fill=tk.X)
+
+        tk.Label(
+            panel,
+            text=f"Destination: #{channel_name}",
+            bg=self._colors["panel"],
+            fg=self._colors["text"],
+            font=("Segoe UI", 10),
+            anchor="w",
+        ).pack(fill=tk.X, pady=(8, 0))
+
+        account_label = account_name.strip() if account_name else "(unknown account)"
+        tk.Label(
+            panel,
+            text=f"Account: {account_label}",
+            bg=self._colors["panel"],
+            fg=self._colors["muted"],
+            font=("Segoe UI", 9),
+            anchor="w",
+        ).pack(fill=tk.X, pady=(2, 8))
+
+        tk.Label(
+            panel,
+            text="Message:",
+            bg=self._colors["panel"],
+            fg=self._colors["muted"],
+            font=("Segoe UI", 9),
+            anchor="w",
+        ).pack(fill=tk.X)
+
+        preview = tk.Text(
+            panel,
+            height=5 if is_won_reply else 7,
+            wrap=tk.WORD,
+            bg=self._colors["input_bg"],
+            fg=self._colors["text"],
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=self._colors["border"],
+            padx=8,
+            pady=8,
+        )
+        preview.pack(fill=tk.X, pady=(4, 8))
+        preview.insert("1.0", message_text)
+        preview.configure(state=tk.DISABLED)
+
+        if trigger_message:
+            tk.Label(
+                panel,
+                text="Win trigger message:",
+                bg=self._colors["panel"],
+                fg=self._colors["muted"],
+                font=("Segoe UI", 9),
+                anchor="w",
+            ).pack(fill=tk.X, pady=(2, 0))
+
+            trigger_preview = tk.Text(
+                panel,
+                height=3,
+                wrap=tk.WORD,
+                bg=self._colors["input_bg"],
+                fg=self._colors["text"],
+                relief=tk.FLAT,
+                highlightthickness=1,
+                highlightbackground=self._colors["border"],
+                padx=8,
+                pady=8,
+            )
+            trigger_preview.pack(fill=tk.X, pady=(4, 8))
+            trigger_preview.insert("1.0", trigger_message)
+            trigger_preview.configure(state=tk.DISABLED)
+
+        name_var: tk.StringVar | None = None
+        send_preview_var: tk.StringVar | None = None
+        normalized_prefix = won_prefix or ""
+        normalized_default_name = (default_reply_name or "").strip()
+
+        if is_won_reply:
+            row_name = tk.Frame(panel, bg=self._colors["panel"])
+            row_name.pack(fill=tk.X, pady=(0, 6))
+
+            tk.Label(
+                row_name,
+                text="Reply Username",
+                bg=self._colors["panel"],
+                fg=self._colors["muted"],
+                font=("Segoe UI", 9),
+                width=15,
+                anchor="w",
+            ).pack(side=tk.LEFT)
+
+            name_var = tk.StringVar(value=normalized_default_name)
+            name_entry = tk.Entry(
+                row_name,
+                textvariable=name_var,
+                bg=self._colors["input_bg"],
+                fg=self._colors["text"],
+                insertbackground=self._colors["text"],
+                relief=tk.FLAT,
+                highlightthickness=1,
+                highlightbackground=self._colors["border"],
+                highlightcolor=self._colors["accent"],
+            )
+            name_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+            self._make_button(
+                row_name,
+                text="Use Registered",
+                width=14,
+                command=lambda: name_var.set(normalized_default_name),
+            ).pack(side=tk.LEFT, padx=(8, 0))
+
+            send_preview_var = tk.StringVar(value=f"Final send: {normalized_prefix}{normalized_default_name}")
+            tk.Label(
+                panel,
+                textvariable=send_preview_var,
+                bg=self._colors["panel"],
+                fg=self._colors["text"],
+                font=("Segoe UI", 9),
+                anchor="w",
+            ).pack(fill=tk.X, pady=(0, 6))
+
+            def _refresh_send_preview(*_args) -> None:
+                if name_var is None or send_preview_var is None:
+                    return
+                chosen_name = name_var.get().strip()
+                send_preview_var.set(f"Final send: {normalized_prefix}{chosen_name}")
+
+            name_var.trace_add("write", _refresh_send_preview)
+            name_entry.focus_set()
+
+        countdown_var = tk.StringVar(value=f"Auto-cancel in {remaining['sec']}s")
+        countdown_label = tk.Label(
+            panel,
+            textvariable=countdown_var,
+            bg=self._colors["panel"],
+            fg=self._colors["danger"],
+            font=("Segoe UI", 9),
+            anchor="w",
+        )
+        countdown_label.pack(fill=tk.X)
+
+        footer = tk.Frame(panel, bg=self._colors["panel"])
+        footer.pack(fill=tk.X, pady=(8, 0))
+
+        timer_handle: dict[str, str | None] = {"id": None}
+
+        def _close(value: bool) -> None:
+            if value and is_won_reply and name_var is not None:
+                chosen_name = name_var.get().strip()
+                if not chosen_name:
+                    messagebox.showerror("Missing value", "Reply Username is required.", parent=dialog)
+                    return
+                approved_message["value"] = f"{normalized_prefix}{chosen_name}"
+            elif value:
+                approved_message["value"] = message_text
+
+            approved["value"] = value
+            if timer_handle["id"] is not None:
+                try:
+                    dialog.after_cancel(timer_handle["id"])
+                except Exception:
+                    pass
+                timer_handle["id"] = None
+            # Release the active dialog reference so focus events stop re-raising it.
+            self._active_confirmation_dialog = None
+            if dialog.winfo_exists():
+                dialog.destroy()
+
+        def _tick() -> None:
+            remaining["sec"] -= 1
+            if remaining["sec"] <= 0:
+                countdown_var.set("Auto-cancel in 0s")
+                _close(False)
+                return
+            countdown_var.set(f"Auto-cancel in {remaining['sec']}s")
+            timer_handle["id"] = dialog.after(1000, _tick)
+
+        self._make_button(footer, text="Send", width=12, command=lambda: _close(True), accent=True).pack(side=tk.RIGHT)
+        self._make_button(footer, text="Do Not Send", width=14, command=lambda: _close(False), danger=True).pack(
+            side=tk.RIGHT,
+            padx=(0, 8),
+        )
+
+        dialog.protocol("WM_DELETE_WINDOW", lambda: _close(False))
+        timer_handle["id"] = dialog.after(1000, _tick)
+        dialog.after(timeout_ms, lambda: _close(False))
+        self.root.wait_window(dialog)
+        return {
+            "approved": bool(approved["value"]),
+            "message_text": str(approved_message["value"]),
+        }
+
     def _build_ui(self) -> None:
         container = tk.Frame(
             self.root,
@@ -596,7 +1091,7 @@ class MonitorUI:
             command=self._open_streamers_editor,
         ).pack(side=tk.RIGHT, padx=(0, 8))
 
-        self._make_button(title_row, text="Copy MultiTwitch URL", width=20, command=self._copy_multitwitch_url).pack(
+        self._make_button(title_row, text="Open MultiTwitch", width=20, command=self._open_multitwitch_url).pack(
             side=tk.RIGHT, padx=(0, 8)
         )
 
@@ -630,7 +1125,7 @@ class MonitorUI:
             cursor="hand2",
         )
         self.lbl_multitwitch.pack(fill=tk.X)
-        self.lbl_multitwitch.bind("<Button-1>", lambda _event: self._copy_multitwitch_url())
+        self.lbl_multitwitch.bind("<Button-1>", lambda _event: self._open_multitwitch_url())
 
         self.txt_system = tk.Text(
             system_panel,
@@ -666,7 +1161,7 @@ class MonitorUI:
 
         self.channels_container.bind("<Configure>", self._on_channels_configure)
         self.canvas.bind("<Configure>", self._on_canvas_configure)
-        self.canvas.bind_all("<MouseWheel>", self._on_mouse_wheel)
+        self.root.bind("<MouseWheel>", self._on_mouse_wheel)
 
     def _on_channels_configure(self, _event=None) -> None:
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
@@ -675,8 +1170,26 @@ class MonitorUI:
         self.canvas.itemconfigure(self._canvas_window, width=event.width)
 
     def _on_mouse_wheel(self, event: tk.Event) -> None:
-        if self.root.focus_displayof() is None:
+        # Ignore wheel events when Guardtower is not the foreground/focused app.
+        if self.root.focus_get() is None:
             return
+
+        widget = getattr(event, "widget", None)
+        if widget is None:
+            return
+
+        # Do not scroll the main channels canvas while the user is scrolling inside
+        # per-streamer text areas (or other text inputs) which have their own wheel behavior.
+        if isinstance(widget, (tk.Text, tk.Entry, tk.Listbox, tk.Spinbox)):
+            return
+
+        # Ignore wheel events coming from child dialogs or other toplevel windows.
+        try:
+            if widget.winfo_toplevel() is not self.root:
+                return
+        except Exception:
+            return
+
         delta = -1 * int(event.delta / 120)
         self.canvas.yview_scroll(delta, "units")
 
@@ -908,6 +1421,16 @@ class MonitorUI:
             self._append_system_log("Clipboard copy failed", "ignore")
             return
         self._append_system_log("MultiTwitch URL not available yet", "other")
+
+    def _open_multitwitch_url(self) -> None:
+        if not self._multitwitch_url.startswith("https://"):
+            self._append_system_log("MultiTwitch URL not available yet", "other")
+            return
+        try:
+            webbrowser.open_new_tab(self._multitwitch_url)
+            self._append_system_log("Opened MultiTwitch URL", "notification")
+        except Exception as exc:
+            self._append_system_log(f"Failed to open MultiTwitch URL: {exc}", "ignore")
 
     def _open_channel_link(self, channel_name: str) -> None:
         url = f"https://www.twitch.tv/{channel_name}"
@@ -1333,6 +1856,19 @@ class MonitorUI:
         channel = payload.get("channel")
         channel_name = str(channel) if isinstance(channel, str) else None
 
+        if kind == "monitor_start" and channel_name:
+            self._send_focus_attention_notification(
+                channel_name=channel_name,
+                message_text=message,
+                title=f"Join trigger detected in #{channel_name}",
+            )
+        elif kind == "win" and channel_name and message.strip().lower().startswith("won giveaway"):
+            self._send_focus_attention_notification(
+                channel_name=channel_name,
+                message_text=message,
+                title=f"Win detected in #{channel_name}",
+            )
+
         if channel_name and channel_name in self._channel_views:
             self._append_channel_log(self._channel_views[channel_name], message, kind)
             return
@@ -1498,6 +2034,7 @@ class MonitorUI:
                     ignored_usernames=account.ignored_usernames,
                     log_only_mode=self._bot_args.log_only,
                     enable_logging=(self._bot_args.log or self._bot_args.log_only),
+                    send_confirmation_callback=self.request_send_confirmation,
                 )
                 self._bot_instances.append(twitch_bot)
                 self._bot_clients.append(bot)

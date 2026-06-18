@@ -1,9 +1,40 @@
 import json
+import os
+import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / 'configs' / 'config.json'
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+BUNDLED_CONFIGS_DIR = PROJECT_ROOT / 'configs'
+
+
+def get_app_data_dir() -> Path:
+    if getattr(sys, 'frozen', False):
+        appdata = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming'))
+        target_dir = appdata / 'Watchtower'
+        target_dir.mkdir(parents=True, exist_ok=True)
+        return target_dir
+    return PROJECT_ROOT
+
+
+def get_runtime_config_path(file_name: str) -> Path:
+    bundled_path = BUNDLED_CONFIGS_DIR / file_name
+    if not getattr(sys, 'frozen', False):
+        return bundled_path
+
+    target_dir = get_app_data_dir() / 'configs'
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / file_name
+
+    if not target_path.exists() and bundled_path.exists():
+        shutil.copy2(bundled_path, target_path)
+
+    return target_path
+
+
+DEFAULT_CONFIG_PATH = get_runtime_config_path('config.json')
 
 @dataclass
 class WindowConfig:

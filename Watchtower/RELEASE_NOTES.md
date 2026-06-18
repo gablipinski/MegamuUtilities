@@ -26,7 +26,11 @@
 - Introduced a new JSON configuration file to define memory addresses for scanning.
 - Added entries for SLDetection and MapOverlay with relevant details including offsets and descriptions.
 
-## 1.0.4 (2026-06-17)
+## 1.0.4 (2026-06-18)
+
+- feat: Add config folder content to watchtower build chain
+
+## 1.0.5 (2026-06-18)
 
 - feat: Add config folder content to watchtower build chain
 
