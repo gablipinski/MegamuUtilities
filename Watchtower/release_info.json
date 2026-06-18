@@ -1,8 +1,8 @@
 {
   "app_name": "Watchtower",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "publisher": "Megamu Utilities",
   "patch_notes": [
-    "feat: Add config folder content to watchtower build chain"
+    "Filter process list to include only 'megamu' related processes in MonitorUI."
   ]
 }

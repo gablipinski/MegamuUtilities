@@ -34,3 +34,7 @@
 
 - feat: Add config folder content to watchtower build chain
 
+## 1.0.6 (2026-06-18)
+
+- Filter process list to include only 'megamu' related processes in MonitorUI.
+

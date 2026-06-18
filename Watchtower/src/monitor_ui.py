@@ -2358,9 +2358,12 @@ class MonitorUI:
             for proc in psutil.process_iter(['pid', 'name', 'exe']):
                 try:
                     info = proc.info
+                    process_name = info['name'] or ''
+                    if 'megamu' not in process_name.lower():
+                        continue
                     pid = info['pid']
                     entries.append((
-                        info['name'] or '',
+                        process_name,
                         pid,
                         info.get('exe'),
                         pid_titles.get(pid, []),
