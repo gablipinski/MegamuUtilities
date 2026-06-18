@@ -897,6 +897,9 @@ class MonitorUI:
                 'name': row['name_var'].get(),
                 'threshold': row['threshold_var'].get() if row.get('threshold_var') else '10',
                 'key': row['key_var'].get() if row.get('key_var') else '',
+                'escape_order': row['escape_order_var'].get() if row.get('escape_order_var') else '0',
+                'escape_delay_min_ms': row['escape_delay_min_ms_var'].get() if row.get('escape_delay_min_ms_var') else '0',
+                'escape_delay_max_ms': row['escape_delay_max_ms_var'].get() if row.get('escape_delay_max_ms_var') else '1200',
                 'is_slayer': row['is_slayer_var'].get() if row.get('is_slayer_var') else True,
                 'radar': row['radar_var'].get() if row.get('radar_var') else '',
                 'process_path': row.get('process_path'),
@@ -911,6 +914,9 @@ class MonitorUI:
             name_var = tk.StringVar(value=s.get('name', ''))
             threshold_var = tk.StringVar(value=s.get('threshold', '10'))
             key_var = tk.StringVar(value=s.get('key', ''))
+            escape_order_var = tk.StringVar(value=s.get('escape_order', str(i)))
+            escape_delay_min_ms_var = tk.StringVar(value=s.get('escape_delay_min_ms', '0'))
+            escape_delay_max_ms_var = tk.StringVar(value=s.get('escape_delay_max_ms', '1200'))
             is_slayer_var = tk.BooleanVar(value=s.get('is_slayer', True))
             radar_var = tk.StringVar(value=s.get('radar', ''))
             status_var = tk.StringVar(value='Not attached')
@@ -1037,10 +1043,76 @@ class MonitorUI:
                     sf.pack_forget()
                     rf.pack(fill=tk.X)
 
+            # --- Shared escape controls (apply to slayer and radar rows) ---
+            escape_frame = tk.Frame(row_frame, bg=self._colors['panel_alt'])
+            escape_frame.pack(fill=tk.X, padx=6, pady=(0, 6))
+
+            tk.Label(
+                escape_frame,
+                text='Escape order:',
+                bg=self._colors['panel_alt'],
+                fg=self._colors['muted'],
+                font=('Segoe UI', 9),
+            ).pack(side=tk.LEFT)
+            tk.Entry(
+                escape_frame,
+                textvariable=escape_order_var,
+                width=4,
+                bg=self._colors['input_bg'],
+                fg=self._colors['text'],
+                insertbackground=self._colors['text'],
+                relief=tk.FLAT,
+                highlightthickness=1,
+                highlightbackground=self._colors['border'],
+                highlightcolor=self._colors['accent'],
+            ).pack(side=tk.LEFT, padx=(6, 14))
+
+            tk.Label(
+                escape_frame,
+                text='Delay ms:',
+                bg=self._colors['panel_alt'],
+                fg=self._colors['muted'],
+                font=('Segoe UI', 9),
+            ).pack(side=tk.LEFT)
+            tk.Entry(
+                escape_frame,
+                textvariable=escape_delay_min_ms_var,
+                width=6,
+                bg=self._colors['input_bg'],
+                fg=self._colors['text'],
+                insertbackground=self._colors['text'],
+                relief=tk.FLAT,
+                highlightthickness=1,
+                highlightbackground=self._colors['border'],
+                highlightcolor=self._colors['accent'],
+            ).pack(side=tk.LEFT, padx=(6, 4))
+            tk.Label(
+                escape_frame,
+                text='to',
+                bg=self._colors['panel_alt'],
+                fg=self._colors['muted'],
+                font=('Segoe UI', 9),
+            ).pack(side=tk.LEFT)
+            tk.Entry(
+                escape_frame,
+                textvariable=escape_delay_max_ms_var,
+                width=6,
+                bg=self._colors['input_bg'],
+                fg=self._colors['text'],
+                insertbackground=self._colors['text'],
+                relief=tk.FLAT,
+                highlightthickness=1,
+                highlightbackground=self._colors['border'],
+                highlightcolor=self._colors['accent'],
+            ).pack(side=tk.LEFT, padx=(4, 0))
+
             row_data: dict = {
                 'name_var': name_var,
                 'threshold_var': threshold_var,
                 'key_var': key_var,
+                'escape_order_var': escape_order_var,
+                'escape_delay_min_ms_var': escape_delay_min_ms_var,
+                'escape_delay_max_ms_var': escape_delay_max_ms_var,
                 'is_slayer_var': is_slayer_var,
                 'radar_var': radar_var,
                 'radar_combo': radar_combo,
@@ -1065,8 +1137,8 @@ class MonitorUI:
             row['show_bot']()
         self._refresh_radar_combos()
 
-        # Resize canvas: ~90px per 2-line row, cap at 4 visible
-        row_h = 90
+        # Resize canvas: ~124px per 3-line row, cap at 4 visible
+        row_h = 124
         canvas_h = max(row_h, min(count * row_h, 4 * row_h))
         self._process_tower_canvas.configure(height=canvas_h)
 

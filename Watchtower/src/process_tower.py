@@ -25,6 +25,124 @@ def find_scan_address_entry_any(ui, names: list[str]) -> dict | None:
     return None
 
 
+def _read_non_negative_int(raw_value: object, default_value: int = 0) -> int:
+    try:
+        value = int(str(raw_value).strip())
+        if value < 0:
+            return default_value
+        return value
+    except (TypeError, ValueError):
+        return default_value
+
+
+def _row_escape_order(row: dict) -> int:
+    order_var = row.get('escape_order_var')
+    if order_var is None:
+        return 0
+    return _read_non_negative_int(order_var.get(), 0)
+
+
+def _row_escape_delay_ms_bounds(row: dict) -> tuple[int, int]:
+    min_var = row.get('escape_delay_min_ms_var')
+    max_var = row.get('escape_delay_max_ms_var')
+    min_ms = _read_non_negative_int(min_var.get() if min_var is not None else 0, 0)
+    max_ms = _read_non_negative_int(max_var.get() if max_var is not None else min_ms, min_ms)
+    if max_ms < min_ms:
+        min_ms, max_ms = max_ms, min_ms
+    return min_ms, max_ms
+
+
+def _build_group_escape_targets(ui, slayer_idx: int, slayer_label: str) -> list[dict]:
+    targets: list[dict] = []
+
+    if 0 <= slayer_idx < len(ui._process_tower_rows):
+        slayer_row = ui._process_tower_rows[slayer_idx]
+        targets.append({'idx': slayer_idx, 'row': slayer_row, 'reason': 'slayer'})
+
+    if not slayer_label:
+        return targets
+
+    for sub_idx, sub_row in enumerate(ui._process_tower_rows):
+        if sub_idx == slayer_idx:
+            continue
+        is_slayer = bool(sub_row.get('is_slayer_var') and sub_row['is_slayer_var'].get())
+        if is_slayer:
+            continue
+        if sub_row['radar_var'].get() == slayer_label:
+            targets.append({'idx': sub_idx, 'row': sub_row, 'reason': 'radar'})
+
+    if targets:
+        max_order = len(targets) - 1
+        for target in targets:
+            raw_order = _row_escape_order(target['row'])
+            target['order'] = max(0, min(raw_order, max_order))
+
+    targets.sort(key=lambda t: (int(t.get('order', 0)), int(t['idx'])))
+    return targets
+
+
+def _trigger_escape_group(
+    ui,
+    stop_event: threading.Event,
+    slayer_idx: int,
+    slayer_label: str,
+    value: int,
+    threshold: int,
+) -> None:
+    targets = _build_group_escape_targets(ui, slayer_idx, slayer_label)
+    if not targets:
+        ui._event_queue.put(('log', f'Character #{slayer_idx + 1}: no escape targets available.'))
+        return
+
+    for target in targets:
+        if stop_event.is_set():
+            return
+
+        idx = int(target['idx'])
+        row = target['row']
+        key_combo = row['key_var'].get().strip()
+        if not key_combo:
+            ui._event_queue.put(('log', f'Character #{idx + 1}: trigger key not set; skipped.'))
+            continue
+
+        pid = row.get('pid')
+        if not pid:
+            ui._event_queue.put(('log', f'Character #{idx + 1}: no attached PID; trigger skipped.'))
+            continue
+
+        order_value = int(target.get('order', 0))
+        min_delay_ms, max_delay_ms = _row_escape_delay_ms_bounds(row)
+        delay_ms = random.randint(min_delay_ms, max_delay_ms)
+        if delay_ms > 0 and stop_event.wait(delay_ms / 1000.0):
+            return
+
+        try:
+            ui._focus_process_window(pid)
+            if not ui._send_key_combo_to_pid(pid, key_combo):
+                ui._event_queue.put(('log', f'Character #{idx + 1}: PostMessage failed for PID {pid}; trigger skipped.'))
+                continue
+
+            if idx == slayer_idx:
+                ui._event_queue.put((
+                    'log',
+                    (
+                        f'Character #{idx + 1}: triggered "{key_combo}" '
+                        f'(value={value} > max={threshold}, order={order_value}, delay={delay_ms}ms).'
+                    ),
+                ))
+            else:
+                ui._event_queue.put((
+                    'log',
+                    (
+                        f'Character #{idx + 1}: triggered via radar "{slayer_label}" '
+                        f'(key={key_combo}, order={order_value}, delay={delay_ms}ms).'
+                    ),
+                ))
+        except Exception as exc:
+            label = 'key trigger error' if idx == slayer_idx else 'radar trigger error'
+            ui._event_queue.put(('log', f'Character #{idx + 1}: {label}: {exc}'))
+
+
 def diagnose_pointer_chain(ui, handle: int, module_name: str, base_offset_hex: str, offsets_hex: list[str]) -> str:
     lines = []
     module_base = ui._get_module_base(handle, module_name)
@@ -109,6 +227,9 @@ def start_process_tower_scan(ui, idx: int) -> None:
         messagebox.showerror('No trigger key', 'Set a trigger key first using "Set Key".', parent=ui.root)
         return
 
+    order_value = _row_escape_order(row)
+    min_delay_ms, max_delay_ms = _row_escape_delay_ms_bounds(row)
+
     pid = row.get('pid')
     stop_ev = row['scan_stop']
     stop_ev.clear()
@@ -128,7 +249,13 @@ def start_process_tower_scan(ui, idx: int) -> None:
     )
     row['status_var'].set(f'Scanning  •  PID {pid}')
     thread.start()
-    ui._log(f'Character #{idx + 1}: scan started (SLDetection, max={threshold}, key={key_combo}).')
+    ui._log(
+        (
+            f'Character #{idx + 1}: scan started '
+            f'(SLDetection, max={threshold}, key={key_combo}, '
+            f'order={order_value}, delay={min_delay_ms}-{max_delay_ms}ms).'
+        )
+    )
 
 
 def stop_process_tower_scan(ui, idx: int) -> None:
@@ -224,37 +351,7 @@ def scan_loop(
         if value is not None and value > threshold:
             if now - last_triggered >= cooldown:
                 last_triggered = now
-                try:
-                    if not pid:
-                        ui._event_queue.put(('log', f'Character #{idx + 1}: no attached PID; trigger skipped.'))
-                        continue
-                    time.sleep(random.uniform(0.0, 2.0))
-                    ui._focus_process_window(pid)
-                    if not ui._send_key_combo_to_pid(pid, key_combo):
-                        ui._event_queue.put(('log', f'Character #{idx + 1}: PostMessage failed for PID {pid}; trigger skipped.'))
-                        continue
-                    ui._event_queue.put(('log', f'Character #{idx + 1}: triggered "{key_combo}" (value={value} > max={threshold}).'))
-                except Exception as exc:
-                    ui._event_queue.put(('log', f'Character #{idx + 1}: key trigger error: {exc}'))
-                if slayer_label:
-                    for sub_idx, sub_row in enumerate(ui._process_tower_rows):
-                        if sub_row.get('is_slayer_var') and not sub_row['is_slayer_var'].get():
-                            if sub_row['radar_var'].get() == slayer_label:
-                                sub_key = sub_row['key_var'].get().strip()
-                                if sub_key:
-                                    sub_pid = sub_row.get('pid')
-                                    if not sub_pid:
-                                        ui._event_queue.put(('log', f'Character #{sub_idx + 1}: no attached PID; radar trigger skipped.'))
-                                        continue
-                                    try:
-                                        time.sleep(random.uniform(0.0, 2.0))
-                                        ui._focus_process_window(sub_pid)
-                                        if not ui._send_key_combo_to_pid(sub_pid, sub_key):
-                                            ui._event_queue.put(('log', f'Character #{sub_idx + 1}: PostMessage failed for PID {sub_pid}; radar trigger skipped.'))
-                                            continue
-                                        ui._event_queue.put(('log', f'Character #{sub_idx + 1}: triggered via radar "{slayer_label}" (key={sub_key}).'))
-                                    except Exception as exc:
-                                        ui._event_queue.put(('log', f'Character #{sub_idx + 1}: radar trigger error: {exc}'))
+                _trigger_escape_group(ui, stop_event, idx, slayer_label, int(value), threshold)
                 ui._event_queue.put(('process_scan_auto_stop', {'idx': idx}))
                 stop_event.set()
                 break

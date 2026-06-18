@@ -48,5 +48,9 @@
 
 ## 1.1.1 (2026-06-18)
 
-- Update scan address handling and add default addresses for Process Tower.
+- Add escape order and delay controls to Process Tower functionality.
+
+## 1.1.2 (2026-06-18)
+
+- Add escape order and delay controls to Process Tower functionality.
 
