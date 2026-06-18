@@ -30,3 +30,7 @@
 
 - Enhance XML sanitization in WindowsNotifier for reliable toast delivery.
 
+## 1.0.7 (2026-06-18)
+
+- Refine notification logic to focus on giveaway wins in MonitorUI.
+

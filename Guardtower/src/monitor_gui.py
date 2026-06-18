@@ -1856,13 +1856,7 @@ class MonitorUI:
         channel = payload.get("channel")
         channel_name = str(channel) if isinstance(channel, str) else None
 
-        if kind == "monitor_start" and channel_name:
-            self._send_focus_attention_notification(
-                channel_name=channel_name,
-                message_text=message,
-                title=f"Join trigger detected in #{channel_name}",
-            )
-        elif kind == "win" and channel_name and message.strip().lower().startswith("won giveaway"):
+        if kind == "win" and channel_name and message.strip().lower().startswith("won giveaway"):
             self._send_focus_attention_notification(
                 channel_name=channel_name,
                 message_text=message,
