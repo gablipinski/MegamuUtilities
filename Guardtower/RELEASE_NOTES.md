@@ -26,3 +26,7 @@
 - Refactored notification logic to utilize new DesktopNotificationService.
 - Updated versioning and release notes for Watchtower to reflect changes.
 
+## 1.0.6 (2026-06-18)
+
+- Enhance XML sanitization in WindowsNotifier for reliable toast delivery.
+

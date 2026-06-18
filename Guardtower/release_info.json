@@ -1,13 +1,8 @@
 {
   "app_name": "Guardtower",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "publisher": "Megamu Utilities",
   "patch_notes": [
-    "Added `winsdk` to requirements for improved notification handling.",
-    "Updated PowerShell notification method to ensure reliable delivery.",
-    "Implemented confirmation dialog for outgoing messages in Twitch bot.",
-    "Enhanced GUI to manage confirmation notifications and focus behavior.",
-    "Refactored notification logic to utilize new DesktopNotificationService.",
-    "Updated versioning and release notes for Watchtower to reflect changes."
+    "Enhance XML sanitization in WindowsNotifier for reliable toast delivery."
   ]
 }

@@ -15,6 +15,21 @@ from console_log import log_line
 _PS_AUMID = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe"
 
 
+def _sanitize_xml_text(value: str) -> str:
+    """Remove codepoints not allowed by XML 1.0.
+
+    Twitch/GUI text can occasionally contain control characters that make
+    XmlDocument.LoadXml fail. Filtering these keeps toast delivery reliable.
+    """
+
+    allowed_chars: list[str] = []
+    for ch in value:
+        cp = ord(ch)
+        if cp in (0x9, 0xA, 0xD) or (0x20 <= cp <= 0xD7FF) or (0xE000 <= cp <= 0xFFFD) or (0x10000 <= cp <= 0x10FFFF):
+            allowed_chars.append(ch)
+    return "".join(allowed_chars)
+
+
 class DesktopNotificationService:
     """Desktop toast service.
 
@@ -43,12 +58,16 @@ class DesktopNotificationService:
         if ps is None:
             return False, "powershell not found"
 
+        safe_title = _sanitize_xml_text(title)
+        safe_message = _sanitize_xml_text(message)
+        safe_hint = _sanitize_xml_text(hint) if hint else None
+
         lines = [
-            f"<text>{escape(title)}</text>",
-            f"<text>{escape(message)}</text>",
+            f"<text>{escape(safe_title)}</text>",
+            f"<text>{escape(safe_message)}</text>",
         ]
-        if hint:
-            lines.append(f"<text>{escape(hint)}</text>")
+        if safe_hint:
+            lines.append(f"<text>{escape(safe_hint)}</text>")
 
         inner = "".join(lines)
         xml_str = (
@@ -68,14 +87,29 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{_PS_AUMID}').Show($toast)
 """
         try:
-            subprocess.Popen(
-                [ps, "-WindowStyle", "Hidden", "-NonInteractive", "-Command", script],
+            completed = subprocess.run(
+                [
+                    ps,
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-NonInteractive",
+                    "-Command",
+                    script,
+                ],
                 creationflags=subprocess.CREATE_NO_WINDOW
                 if sys.platform == "win32"
                 else 0,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=6,
             )
+            if completed.returncode != 0:
+                err = (completed.stderr or completed.stdout or "powershell returned non-zero").strip()
+                return False, err[:300]
             return True, None
         except Exception as exc:
             return False, str(exc)
@@ -96,11 +130,15 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             return False, "winsdk unavailable"
 
         try:
-            hint_line = f"<text>{escape(hint)}</text>" if hint else ""
+            safe_title = _sanitize_xml_text(title)
+            safe_message = _sanitize_xml_text(message)
+            safe_hint = _sanitize_xml_text(hint) if hint else None
+
+            hint_line = f"<text>{escape(safe_hint)}</text>" if safe_hint else ""
             toast_xml = (
                 '<toast duration="long"><visual><binding template="ToastGeneric">'
-                f"<text>{escape(title)}</text>"
-                f"<text>{escape(message)}</text>"
+                f"<text>{escape(safe_title)}</text>"
+                f"<text>{escape(safe_message)}</text>"
                 f"{hint_line}"
                 "</binding></visual></toast>"
             )
