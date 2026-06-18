@@ -46,3 +46,7 @@
 - Developed `process_tower.py` to manage process scanning, including starting and stopping scans, and handling key triggers based on detected characters.
 - Added `spot_tower.py` for monitoring player detection with an asynchronous approach, integrating action sequences upon detection.
 
+## 1.1.1 (2026-06-18)
+
+- Update scan address handling and add default addresses for Process Tower.
+

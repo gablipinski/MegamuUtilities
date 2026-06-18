@@ -91,7 +91,7 @@ def start_process_tower_scan(ui, idx: int) -> None:
     if entry is None:
         messagebox.showerror(
             'SLDetection not configured',
-            'No address named "SLDetection" found in scan_addresses.py.\nUse the "Addresses" button to add it.',
+            'No address named "SLDetection" is configured.\nUse the "Addresses" button to add it.',
             parent=ui.root,
         )
         return
