@@ -1407,6 +1407,10 @@ class MonitorUI:
         previous_online = self._online_channels
         self._online_channels = online_channels
 
+        self._call_runtime_thread(
+            lambda: self._set_bot_online_channels_runtime(set(online_channels))
+        )
+
         went_online = online_channels - previous_online
         went_offline = previous_online - online_channels
 
@@ -1433,6 +1437,10 @@ class MonitorUI:
     def _reset_all_bot_channels_runtime(self) -> None:
         for channel in self._bot_config.channels:
             self._reset_bot_channel_runtime(channel.name)
+
+    def _set_bot_online_channels_runtime(self, online_channels: set[str]) -> None:
+        for twitch_bot in self._bot_instances:
+            twitch_bot.update_online_channels(online_channels)
 
     def _start_runtime_thread(self) -> None:
         self._runtime_thread = threading.Thread(target=self._runtime_thread_main, daemon=True)
@@ -1493,6 +1501,7 @@ class MonitorUI:
                 )
                 self._bot_instances.append(twitch_bot)
                 self._bot_clients.append(bot)
+                twitch_bot.update_online_channels(set(self._online_channels))
                 bot.add_cog(twitch_bot)
                 start_tasks.append(asyncio.create_task(bot.start()))
 

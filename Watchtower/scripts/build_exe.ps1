@@ -41,6 +41,7 @@ $SetupIss       = Join-Path $ProjectRoot "installer\setup.iss"
 $PrivateKeyPath = Join-Path $ProjectRoot "licenses\keys\private_key.pem"
 $IconPngPath    = Join-Path $ProjectRoot "icons\watchtower.png"
 $IconIcoPath    = Join-Path $ProjectRoot "icons\watchtower.ico"
+$ConfigDir      = Join-Path $ProjectRoot "configs"
 
 function Get-AppMetadata {
     param(
@@ -204,31 +205,53 @@ if (-not (Test-Path $IconIcoPath)) {
 
 Write-Host "[3/4] Compiling with Nuitka (this may take a few minutes)..." -ForegroundColor Cyan
 
-& "$VenvPython" -m nuitka `
-    --onefile `
-    --standalone `
-    --assume-yes-for-downloads `
-    --remove-output `
-    --lto=yes `
-    --python-flag=no_docstrings `
-    --python-flag=-O `
-    --enable-plugin=tk-inter `
-    --windows-console-mode=disable `
-    --company-name="$AppPublisher" `
-    --product-name="$AppName" `
-    --file-description="$AppName" `
-    --file-version="$WindowsVersion" `
-    --product-version="$WindowsVersion" `
-    --include-package=pyautogui `
-    --include-package=pyscreeze `
-    --include-package=mouseinfo `
-    --include-package=cryptography `
-    --include-data-files="$ProjectRoot\configs\config.json=configs\config.json" `
-    --include-data-files="$ProjectRoot\configs\escape_routes.json=configs\escape_routes.json" `
-    --windows-icon-from-ico="$IconIcoPath" `
-    --output-dir="$DistDir" `
-    --output-filename="$AppName.exe" `
+if (-not (Test-Path $ConfigDir)) {
+    Write-Host "[X] Config directory not found: $ConfigDir" -ForegroundColor Red
+    exit 1
+}
+
+$ConfigDataArgs = @()
+Get-ChildItem -Path $ConfigDir -File -Recurse |
+    Where-Object { $_.Extension.ToLowerInvariant() -ne '.png' } |
+    ForEach-Object {
+        $relativePath = [System.IO.Path]::GetRelativePath($ProjectRoot, $_.FullName)
+        $ConfigDataArgs += "--include-data-files=$($_.FullName)=$relativePath"
+    }
+
+if ($ConfigDataArgs.Count -eq 0) {
+    Write-Host "[X] No config files found to package in $ConfigDir (excluding PNG files)." -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "      Including $($ConfigDataArgs.Count) config file(s) from configs\ (excluding PNG files)." -ForegroundColor DarkGray
+
+$NuitkaArgs = @(
+    '--onefile',
+    '--standalone',
+    '--assume-yes-for-downloads',
+    '--remove-output',
+    '--lto=yes',
+    '--python-flag=no_docstrings',
+    '--python-flag=-O',
+    '--enable-plugin=tk-inter',
+    '--windows-console-mode=disable',
+    "--company-name=$AppPublisher",
+    "--product-name=$AppName",
+    "--file-description=$AppName",
+    "--file-version=$WindowsVersion",
+    "--product-version=$WindowsVersion",
+    '--include-package=pyautogui',
+    '--include-package=pyscreeze',
+    '--include-package=mouseinfo',
+    '--include-package=cryptography'
+) + $ConfigDataArgs + @(
+    "--windows-icon-from-ico=$IconIcoPath",
+    "--output-dir=$DistDir",
+    "--output-filename=$AppName.exe",
     "$MainPath"
+)
+
+& "$VenvPython" -m nuitka @NuitkaArgs
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[X] Compilation failed (exit code $LASTEXITCODE)." -ForegroundColor Red

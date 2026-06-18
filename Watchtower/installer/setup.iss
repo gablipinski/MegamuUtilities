@@ -13,7 +13,7 @@
 #define MyAppName      "Watchtower"
 #endif
 #ifndef MyAppVersion
-#define MyAppVersion   "1.0.3"
+#define MyAppVersion   "1.0.4"
 #endif
 #ifndef MyAppPublisher
 #define MyAppPublisher "Megamu Utilities"
@@ -85,6 +85,7 @@ begin
     );
   end;
 end;
+
 
 
 

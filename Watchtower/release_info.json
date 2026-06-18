@@ -1,11 +1,8 @@
 {
   "app_name": "Watchtower",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "publisher": "Megamu Utilities",
   "patch_notes": [
-    "Created the new operational mode: PROCESS TOWER",
-    "Add scan_addresses.json for address scanning configuration",
-    "Introduced a new JSON configuration file to define memory addresses for scanning.",
-    "Added entries for SLDetection and MapOverlay with relevant details including offsets and descriptions."
+    "feat: Add config folder content to watchtower build chain"
   ]
 }
