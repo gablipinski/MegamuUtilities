@@ -13,3 +13,7 @@
 
 - feat: Refactor giveaway triggers in config.json and enhance TwitchBot with per-channel cooldown for won triggers
 
+## 1.0.4 (2026-06-17)
+
+- feat: Add offline detection and notification system
+

@@ -47,6 +47,8 @@ class TwitchBot(commands.Cog):
         self.enable_logging = bool(enable_logging)
         self.notifier = WindowsNotifier(config.notification)
         self.is_shutting_down = False
+        # Known online channels from GUI poller. None means status is unknown/unavailable.
+        self.online_channels: set[str] | None = None
 
         # Map channel names to their configs
         self.channels_map = {ch.name: ch for ch in config.channels}
@@ -109,6 +111,16 @@ class TwitchBot(commands.Cog):
             enable_file_logging=self.enable_logging,
         )
         self.chat_monitor = ChatMonitorLogger(logs_dir=self.logs_dir) if self.logs_dir is not None else None
+
+    def update_online_channels(self, online_channels: set[str]) -> None:
+        """Update the latest known online-channel set from runtime poller."""
+        self.online_channels = {name.strip().lower() for name in online_channels if name and name.strip()}
+
+    def _is_channel_online(self, channel_name: str) -> bool:
+        # If no status is available (e.g. non-GUI runtime), keep current behavior.
+        if self.online_channels is None:
+            return True
+        return channel_name.strip().lower() in self.online_channels
 
     def reload_channel_triggers(self, channel_name: str) -> bool:
         """Re-read triggers for *channel_name* from config.json. Returns True on success."""
@@ -371,6 +383,15 @@ class TwitchBot(commands.Cog):
         send_channel,
     ):
         now = time.monotonic()
+
+        if not self._is_channel_online(channel_name):
+            log_line(
+                "Won trigger ignored - channel is OFFLINE (NAY message suppressed)",
+                "ignore",
+                channel_name,
+                account=self.account_name,
+            )
+            return
 
         # Per-channel cooldown: ignore all won triggers until WON_COOLDOWN_S has elapsed
         # since the last reply we actually sent in this channel.

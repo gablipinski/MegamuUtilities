@@ -1,8 +1,8 @@
 {
   "app_name": "Guardtower",
-  "version": "1.0.2",
+  "version": "1.0.4",
   "publisher": "Megamu Utilities",
   "patch_notes": [
-    "feat: Refactor giveaway triggers in config.json and enhance TwitchBot with per-channel cooldown for won triggers"
+    "feat: Add offline detection and notification system"
   ]
 }
