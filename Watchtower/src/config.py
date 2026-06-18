@@ -1,5 +1,6 @@
 import json
 import os
+import importlib.util
 import shutil
 import sys
 from dataclasses import dataclass
@@ -34,7 +35,7 @@ def get_runtime_config_path(file_name: str) -> Path:
     return target_path
 
 
-DEFAULT_CONFIG_PATH = get_runtime_config_path('config.json')
+DEFAULT_CONFIG_PATH = get_runtime_config_path('config.py')
 
 @dataclass
 class WindowConfig:
@@ -86,16 +87,34 @@ class MonitorConfig:
     minimap_min_confidence: float  # Minimum confidence to accept the player marker
     minimap_center_tolerance_px: int  # Allowed center movement across consecutive frames
 
-def load_config(config_file: Optional[str] = None) -> MonitorConfig:
-    """Loads configuration from a JSON file."""
-    
-    config_path = Path(config_file) if config_file else DEFAULT_CONFIG_PATH
-    
-    if not config_path.exists():
-        raise FileNotFoundError(f"Configuration file '{config_path}' was not found")
-    
+def _load_config_data(config_path: Path) -> dict:
+    if config_path.suffix.lower() == '.py':
+        spec = importlib.util.spec_from_file_location('watchtower_config', config_path)
+        if spec is None or spec.loader is None:
+            raise FileNotFoundError(f"Configuration file '{config_path}' could not be loaded")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        data = getattr(module, 'CONFIG', None)
+        if not isinstance(data, dict):
+            raise ValueError(f"Configuration file '{config_path}' does not define CONFIG")
+        return data
+
     with open(config_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"Configuration file '{config_path}' must contain a JSON object")
+    return data
+
+
+def load_config(config_file: Optional[str] = None) -> MonitorConfig:
+    """Loads configuration from a Python module or JSON file."""
+
+    config_path = Path(config_file) if config_file else DEFAULT_CONFIG_PATH
+
+    if not config_path.exists():
+        raise FileNotFoundError(f"Configuration file '{config_path}' was not found")
+
+    data = _load_config_data(config_path)
     
     # Parse windows
     windows = []

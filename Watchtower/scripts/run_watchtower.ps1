@@ -12,7 +12,7 @@ param()
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $VenvActivate = Join-Path $ProjectRoot "venv\Scripts\Activate.ps1"
-$ConfigPath = Join-Path $ProjectRoot "configs\config.json"
+$ConfigPath = Join-Path $ProjectRoot "configs\config.py"
 $MainPath = Join-Path $ProjectRoot "src\main.py"
 
 # Check if the venv exists
@@ -22,10 +22,10 @@ if (-not (Test-Path $VenvActivate)) {
     exit 1
 }
 
-# Check if config.json exists
+# Check if config.py exists
 if (-not (Test-Path $ConfigPath)) {
-    Write-Host "[ERROR] File configs\config.json was not found." -ForegroundColor Red
-    Write-Host "[INFO] Copy/edit config.json and configure game windows." -ForegroundColor Cyan
+    Write-Host "[ERROR] File configs\config.py was not found." -ForegroundColor Red
+    Write-Host "[INFO] Copy/edit config.py and configure game windows." -ForegroundColor Cyan
     exit 1
 }
 

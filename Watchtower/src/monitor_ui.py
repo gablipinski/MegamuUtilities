@@ -1,4 +1,5 @@
 import asyncio
+import importlib.util
 import json
 import random
 import queue
@@ -17,18 +18,40 @@ from typing import TYPE_CHECKING
 import mss
 from PIL import Image, ImageTk
 
-from action_controller import ActionController
 from area_selector import select_area_and_snapshot_with_parent, select_area_with_parent, select_points_with_parent
 from app_version import APP_NAME, APP_VERSION
-from player_monitor import PlayerMonitor
-from config import WindowConfig, get_runtime_config_path, load_config
+from config import get_runtime_config_path
+from common_components import (
+    get_module_base,
+    make_button,
+    open_process_for_reading,
+    position_popup_at_main_window,
+    read_int_from_process,
+    read_numeric_from_process,
+    read_ptr_from_process,
+    read_ubyte_from_process,
+    read_uint_from_process,
+    read_ushort_from_process,
+    read_value_pointer,
+)
+from process_tower import (
+    diagnose_pointer_chain,
+    find_scan_address_entry,
+    find_scan_address_entry_any,
+    on_process_tower_toggle_scan,
+    scan_loop,
+    reset_process_tower_scan_row,
+    start_process_tower_scan,
+    stop_process_tower_scan,
+)
+from spot_tower import run_spot_tower_monitor
 
 if TYPE_CHECKING:
-    from screen_monitor import ScreenMonitor
+    pass
 
 
 class MonitorUI:
-    def __init__(self):
+    def __init__(self, initial_mode: str = 'SPOT TOWER'):
         self.root = tk.Tk()
         self._colors = {
             'bg': '#111418',
@@ -73,7 +96,7 @@ class MonitorUI:
             self.escape_route_name = default_name
             self.escape_route = [dict(step) for step in self.saved_escape_routes.get(default_name, [])]
         self.template_path = get_runtime_config_path('spot_template.png')
-        self.scan_addresses_config_path = get_runtime_config_path('scan_addresses.json')
+        self.scan_addresses_config_path = get_runtime_config_path('scan_addresses.py')
         self.saved_scan_addresses: list[dict[str, str]] = self._load_scan_addresses()
         self._toast_notifier = None
         self._setup_windows_notifier()
@@ -81,14 +104,16 @@ class MonitorUI:
         self._event_queue: queue.Queue[tuple[str, object | None]] = queue.Queue()
         self._monitor_thread: threading.Thread | None = None
         self._monitor_loop: asyncio.AbstractEventLoop | None = None
-        self._player_monitor: PlayerMonitor | None = None
-        self._tower_monitor: 'ScreenMonitor | None' = None
+        self._player_monitor: object | None = None
         self._detected_waiting_stop = False
         self._stop_requested = False
         self._stop_requested_at: float | None = None
         self._stop_retry_count = 0
-        self._mode_var = tk.StringVar(value='SPOT TOWER')
-        self._last_mode_selection = 'SPOT TOWER'
+        normalized_mode = str(initial_mode).strip().upper()
+        if normalized_mode not in {'SPOT TOWER', 'PROCESS TOWER'}:
+            normalized_mode = 'SPOT TOWER'
+        self._mode_var = tk.StringVar(value=normalized_mode)
+        self._last_mode_selection = normalized_mode
         self._compact_controls: bool | None = None
         self._process_tower_count_var = tk.StringVar(value='1')
         self._process_tower_rows: list[dict] = []
@@ -152,42 +177,16 @@ class MonitorUI:
         success: bool = False,
         danger: bool = False,
     ) -> tk.Button:
-        bg = self._colors['panel_alt']
-        hover_bg = '#2a313a'
-        fg = self._colors['text']
-
-        if accent:
-            bg = self._colors['accent']
-            hover_bg = self._colors['accent_hover']
-            fg = '#ffffff'
-        elif success:
-            bg = self._colors['success']
-            hover_bg = '#1f8f58'
-            fg = '#ffffff'
-        elif danger:
-            bg = self._colors['danger']
-            hover_bg = self._colors['danger_hover']
-            fg = '#ffffff'
-
-        button = tk.Button(
+        return make_button(
             parent,
-            text=text,
+            self._colors,
+            text,
             width=width,
             command=command,
-            relief=tk.FLAT,
-            bd=0,
-            cursor='hand2',
-            padx=8,
-            pady=6,
-            bg=bg,
-            fg=fg,
-            activebackground=hover_bg,
-            activeforeground='#ffffff',
-            highlightthickness=1,
-            highlightbackground=self._colors['border'],
-            highlightcolor=self._colors['accent'],
+            accent=accent,
+            success=success,
+            danger=danger,
         )
-        return button
 
     def _load_app_icon(self) -> None:
         icon_path = Path(__file__).resolve().parent.parent / 'icons' / 'watchtower.png'
@@ -208,43 +207,7 @@ class MonitorUI:
             pass
 
     def _position_popup_at_main_window(self, popup: tk.Misc, size: str | None = None) -> None:
-        """Center popup over the main window, or over the screen when the root is hidden."""
-        self.root.update_idletasks()
-        popup.update_idletasks()
-
-        # Determine popup dimensions
-        if size:
-            try:
-                w_str, h_str = size.split('x', 1)
-                popup_w = int(w_str)
-                popup_h = int(h_str)
-            except (TypeError, ValueError):
-                popup_w = popup.winfo_reqwidth() or 480
-                popup_h = popup.winfo_reqheight() or 340
-        else:
-            popup_w = popup.winfo_reqwidth() or 480
-            popup_h = popup.winfo_reqheight() or 340
-
-        if self.root.winfo_viewable():
-            root_x = self.root.winfo_rootx()
-            root_y = self.root.winfo_rooty()
-            root_w = self.root.winfo_width()
-            root_h = self.root.winfo_height()
-            x = root_x + (root_w - popup_w) // 2
-            y = root_y + (root_h - popup_h) // 2
-        else:
-            screen_w = self.root.winfo_screenwidth()
-            screen_h = self.root.winfo_screenheight()
-            x = (screen_w - popup_w) // 2
-            y = (screen_h - popup_h) // 2
-
-        x = max(0, x)
-        y = max(0, y)
-
-        if size:
-            popup.geometry(f'{size}+{x}+{y}')
-        else:
-            popup.geometry(f'+{x}+{y}')
+        position_popup_at_main_window(self.root, popup, size)
 
     def _setup_windows_notifier(self) -> None:
         try:
@@ -523,7 +486,7 @@ class MonitorUI:
             mode_row,
             state='readonly',
             textvariable=self._mode_var,
-            values=['SPOT TOWER', 'SAFE TOWER', 'PROCESS TOWER'],
+            values=['SPOT TOWER', 'PROCESS TOWER'],
             width=18,
             style='Dark.TCombobox',
         )
@@ -873,8 +836,6 @@ class MonitorUI:
 
     def _selected_mode(self) -> str:
         val = self._mode_var.get()
-        if val == 'SAFE TOWER':
-            return 'safe-tower'
         if val == 'PROCESS TOWER':
             return 'process-tower'
         return 'spot-tower'
@@ -902,14 +863,9 @@ class MonitorUI:
             self.btn_last_snapshot.pack(fill=tk.X, pady=(0, 8), before=self.log)
             self.log.configure(height=10)
             self.root.minsize(360, 320)
-            if mode == 'safe-tower':
-                self.btn_select_route.configure(state=tk.DISABLED)
-                self.lbl_route.configure(text='Escape route: not required in SAFE TOWER mode')
-                self._log('Mode set to SAFE TOWER.')
-            else:
-                self.btn_select_route.configure(state=tk.NORMAL)
-                self._update_route_label()
-                self._log('Mode set to SPOT TOWER.')
+            self.btn_select_route.configure(state=tk.NORMAL)
+            self._update_route_label()
+            self._log('Mode set to SPOT TOWER.')
 
     def _update_route_label(self):
         if not self.escape_route:
@@ -1143,12 +1099,32 @@ class MonitorUI:
         self._refresh_radar_combos()
 
 
-    # ── Scan address JSON helpers ─────────────────────────────────────────────
+    # ── Scan address module helpers ───────────────────────────────────────────
+
+    @staticmethod
+    def _format_scan_addresses_module(addresses: list[dict]) -> str:
+        return (
+            '# Auto-generated by Watchtower.\n'
+            '# Keep this file as the single source of truth for scan addresses.\n\n'
+            'SCAN_ADDRESSES = '
+            + json.dumps(addresses, indent=2, ensure_ascii=True)
+            + '\n'
+        )
 
     def _load_scan_addresses(self) -> list[dict]:
         try:
-            payload = json.loads(self.scan_addresses_config_path.read_text(encoding='utf-8'))
-            entries = payload.get('addresses', []) if isinstance(payload, dict) else []
+            if self.scan_addresses_config_path.suffix.lower() == '.py':
+                spec = importlib.util.spec_from_file_location('watchtower_scan_addresses', self.scan_addresses_config_path)
+                if spec is None or spec.loader is None:
+                    return []
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                entries = getattr(module, 'SCAN_ADDRESSES', [])
+                if not isinstance(entries, list):
+                    entries = []
+            else:
+                payload = json.loads(self.scan_addresses_config_path.read_text(encoding='utf-8'))
+                entries = payload.get('addresses', []) if isinstance(payload, dict) else []
             result = []
             for e in entries:
                 if not isinstance(e, dict):
@@ -1179,11 +1155,10 @@ class MonitorUI:
             return []
 
     def _save_scan_addresses(self) -> bool:
-        payload = {'addresses': self.saved_scan_addresses}
         try:
             self.scan_addresses_config_path.parent.mkdir(parents=True, exist_ok=True)
             self.scan_addresses_config_path.write_text(
-                json.dumps(payload, indent=2, ensure_ascii=True),
+                self._format_scan_addresses_module(self.saved_scan_addresses),
                 encoding='utf-8',
             )
             return True
@@ -1531,14 +1506,7 @@ class MonitorUI:
 
     @staticmethod
     def _open_process_for_reading(pid: int) -> int | None:
-        """Open a Windows process handle with VM_READ + QUERY_INFORMATION. Returns handle or None."""
-        import ctypes
-        PROCESS_VM_READ = 0x0010
-        PROCESS_QUERY_INFORMATION = 0x0400
-        handle = ctypes.windll.kernel32.OpenProcess(
-            PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, False, pid
-        )
-        return int(handle) if handle else None
+        return open_process_for_reading(pid)
 
     @staticmethod
     def _close_process_handle(handle: int) -> None:
@@ -1645,94 +1613,19 @@ class MonitorUI:
     # ── Process Tower: scanning ───────────────────────────────────────────────
 
     def _find_scan_address_entry(self, name: str) -> dict | None:
-        """Look up a saved address entry by name."""
-        for e in self.saved_scan_addresses:
-            if e['name'] == name:
-                return e
-        return None
+        return find_scan_address_entry(self, name)
 
     def _on_process_tower_toggle_scan(self, idx: int) -> None:
-        row = self._process_tower_rows[idx]
-        thread = row.get('scan_thread')
-        if thread and thread.is_alive():
-            self._stop_process_tower_scan(idx)
-        else:
-            self._start_process_tower_scan(idx)
+        on_process_tower_toggle_scan(self, idx)
 
     def _start_process_tower_scan(self, idx: int) -> None:
-        row = self._process_tower_rows[idx]
-
-        handle = row.get('handle')
-        if not handle:
-            messagebox.showerror('Not attached', 'Attach to a process first.', parent=self.root)
-            return
-
-        # Slayer rows auto-use the SLDetection address
-        entry = self._find_scan_address_entry('SLDetection')
-        if entry is None:
-            messagebox.showerror(
-                'SLDetection not configured',
-                'No address named "SLDetection" found in scan_addresses.json.\n'
-                'Use the "Addresses" button to add it.',
-                parent=self.root,
-            )
-            return
-
-        try:
-            threshold = int(row['threshold_var'].get().strip())
-            if threshold < 0:
-                raise ValueError
-        except ValueError:
-            messagebox.showerror('Invalid Max', 'Max must be a positive integer.', parent=self.root)
-            return
-
-        key_combo = row['key_var'].get().strip()
-        if not key_combo:
-            messagebox.showerror('No trigger key', 'Set a trigger key first using "Set Key".', parent=self.root)
-            return
-
-        pid = row.get('pid')
-        stop_ev = row['scan_stop']
-        stop_ev.clear()
-        is_slayer = bool(row.get('is_slayer_var') and row['is_slayer_var'].get())
-        map_entry = self._find_scan_address_entry('MapOverlay') if is_slayer else None
-
-        thread = threading.Thread(
-            target=self._scan_loop,
-            args=(idx, handle, pid, entry, threshold, key_combo, stop_ev, self._slayer_label(idx), is_slayer, map_entry),
-            daemon=True,
-        )
-        row['scan_thread'] = thread
-        row['btn_start'].configure(
-            text='Stop',
-            bg=self._colors['danger'],
-            activebackground=self._colors['danger_hover'],
-        )
-        row['status_var'].set(f'Scanning  •  PID {pid}')
-        thread.start()
-        self._log(f'Character #{idx + 1}: scan started (SLDetection, max={threshold}, key={key_combo}).')
+        start_process_tower_scan(self, idx)
 
     def _stop_process_tower_scan(self, idx: int) -> None:
-        row = self._process_tower_rows[idx]
-        row['scan_stop'].set()
-        thread = row.get('scan_thread')
-        if thread:
-            thread.join(timeout=2.0)
-        self._reset_process_tower_scan_row(idx)
-        self._log(f'Character #{idx + 1}: scan stopped.')
+        stop_process_tower_scan(self, idx)
 
     def _reset_process_tower_scan_row(self, idx: int, status_text: str | None = None) -> None:
-        row = self._process_tower_rows[idx]
-        row['scan_thread'] = None
-        row['btn_start'].configure(
-            text='Start',
-            bg=self._colors['success'],
-            activebackground='#1f8f58',
-        )
-        if status_text is None:
-            pid = row.get('pid')
-            status_text = f'Attached  •  PID {pid}' if pid else 'Not attached'
-        row['status_var'].set(status_text)
+        reset_process_tower_scan_row(self, idx, status_text)
 
     def _scan_loop(
         self,
@@ -1747,109 +1640,7 @@ class MonitorUI:
         is_slayer: bool = False,
         map_entry: dict | None = None,
     ) -> None:
-        last_triggered = 0.0
-        cooldown = 3.0
-        overlay_open_sent = False
-        map_tab_last_sent = 0.0
-
-        while not stop_event.is_set():
-            if entry.get('type') == 'pointer':
-                value = self._read_value_pointer(
-                    handle, pid,
-                    entry['module'], entry['base_offset'], entry['offsets'],
-                )
-            elif '_resolved' in entry:
-                value = self._read_int_from_process(handle, entry['_resolved'])
-            else:
-                raw = entry.get('address', '').replace('0x', '').replace('0X', '')
-                try:
-                    value = self._read_int_from_process(handle, int(raw, 16))
-                except ValueError:
-                    value = None
-
-            now = time.monotonic()
-            self._event_queue.put(('radar_count', {'idx': idx, 'value': value}))
-
-            map_value = None
-            if is_slayer and map_entry is not None:
-                try:
-                    if map_entry.get('type') == 'pointer':
-                        map_value = self._read_value_pointer(
-                            handle, pid,
-                            map_entry['module'], map_entry['base_offset'], map_entry['offsets'],
-                        )
-                    elif '_resolved' in map_entry:
-                        map_value = self._read_int_from_process(handle, map_entry['_resolved'])
-                    else:
-                        raw_map = map_entry.get('address', '').replace('0x', '').replace('0X', '')
-                        map_value = self._read_int_from_process(handle, int(raw_map, 16))
-                except Exception:
-                    map_value = None
-            self._event_queue.put(('map_count', {'idx': idx, 'value': map_value}))
-
-            if is_slayer:
-                if value == 1:
-                    overlay_open_sent = False
-                else:
-                    overlay_open_sent = True
-
-                if map_value == 0 and pid:
-                    if now - map_tab_last_sent >= 0.5:
-                        map_tab_last_sent = now
-                        try:
-                            if self._send_tab_key_to_pid(pid):
-                                self._event_queue.put(('log', f'Character #{idx + 1}: sent Tab because MapOverlay=0.'))
-                            else:
-                                self._event_queue.put(('log', f'Character #{idx + 1}: Tab injection failed for PID {pid}.'))
-                        except Exception as exc:
-                            self._event_queue.put(('log', f'Character #{idx + 1}: overlay Tab error: {exc}'))
-
-            if value is not None and value > threshold:
-                if now - last_triggered >= cooldown:
-                    last_triggered = now
-                    try:
-                        if not pid:
-                            self._event_queue.put(('log', f'Character #{idx + 1}: no attached PID; trigger skipped.'))
-                            continue
-                        time.sleep(random.uniform(0.0, 2.0))
-                        self._focus_process_window(pid)
-                        if not self._send_key_combo_to_pid(pid, key_combo):
-                            self._event_queue.put(('log', f'Character #{idx + 1}: PostMessage failed for PID {pid}; trigger skipped.'))
-                            continue
-                        self._event_queue.put((
-                            'log',
-                            f'Character #{idx + 1}: triggered "{key_combo}" (value={value} > max={threshold}).',
-                        ))
-                    except Exception as exc:
-                        self._event_queue.put(('log', f'Character #{idx + 1}: key trigger error: {exc}'))
-                    # Trigger all non-slayer rows that have this slayer as radar
-                    if slayer_label:
-                        for sub_idx, sub_row in enumerate(self._process_tower_rows):
-                            if sub_row.get('is_slayer_var') and not sub_row['is_slayer_var'].get():
-                                if sub_row['radar_var'].get() == slayer_label:
-                                    sub_key = sub_row['key_var'].get().strip()
-                                    if sub_key:
-                                        sub_pid = sub_row.get('pid')
-                                        if not sub_pid:
-                                            self._event_queue.put(('log', f'Character #{sub_idx + 1}: no attached PID; radar trigger skipped.'))
-                                            continue
-                                        try:
-                                            time.sleep(random.uniform(0.0, 2.0))
-                                            self._focus_process_window(sub_pid)
-                                            if not self._send_key_combo_to_pid(sub_pid, sub_key):
-                                                self._event_queue.put(('log', f'Character #{sub_idx + 1}: PostMessage failed for PID {sub_pid}; radar trigger skipped.'))
-                                                continue
-                                            self._event_queue.put((
-                                                'log',
-                                                f'Character #{sub_idx + 1}: triggered via radar "{slayer_label}" (key={sub_key}).',
-                                            ))
-                                        except Exception as exc:
-                                            self._event_queue.put(('log', f'Character #{sub_idx + 1}: radar trigger error: {exc}'))
-                    # Stop scanning automatically after a successful escape-route trigger.
-                    self._event_queue.put(('process_scan_auto_stop', {'idx': idx}))
-                    stop_event.set()
-                    break
-            stop_event.wait(0.1)
+        scan_loop(self, idx, handle, pid, entry, threshold, key_combo, stop_event, slayer_label, is_slayer, map_entry)
 
     @staticmethod
     def _find_process_windows(pid: int) -> list[int]:
@@ -2173,101 +1964,30 @@ class MonitorUI:
 
     @staticmethod
     def _read_int_from_process(handle: int, address: int) -> int | None:
-        import ctypes
-        buf = ctypes.c_int32()
-        bytes_read = ctypes.c_size_t(0)
-        ok = ctypes.windll.kernel32.ReadProcessMemory(
-            handle,
-            ctypes.c_void_p(address),
-            ctypes.byref(buf),
-            ctypes.sizeof(buf),
-            ctypes.byref(bytes_read),
-        )
-        if ok and bytes_read.value == ctypes.sizeof(buf):
-            return buf.value
-        return None
+        return read_int_from_process(handle, address)
+
+    @staticmethod
+    def _read_uint_from_process(handle: int, address: int) -> int | None:
+        return read_uint_from_process(handle, address)
+
+    @staticmethod
+    def _read_ushort_from_process(handle: int, address: int) -> int | None:
+        return read_ushort_from_process(handle, address)
+
+    @staticmethod
+    def _read_ubyte_from_process(handle: int, address: int) -> int | None:
+        return read_ubyte_from_process(handle, address)
+
+    def _read_numeric_from_process(self, handle: int, address: int) -> int | None:
+        return read_numeric_from_process(handle, address)
 
     @staticmethod
     def _read_ptr_from_process(handle: int, address: int) -> int | None:
-        """Read a 64-bit pointer from the process at the given address."""
-        import ctypes
-        buf = ctypes.c_uint64()
-        bytes_read = ctypes.c_size_t(0)
-        ok = ctypes.windll.kernel32.ReadProcessMemory(
-            handle,
-            ctypes.c_void_p(address),
-            ctypes.byref(buf),
-            ctypes.sizeof(buf),
-            ctypes.byref(bytes_read),
-        )
-        if ok and bytes_read.value == ctypes.sizeof(buf):
-            return int(buf.value)
-        return None
+        return read_ptr_from_process(handle, address)
 
     @staticmethod
     def _get_module_base(handle: int, module_name: str) -> int | None:
-        """Return the base address of a module loaded in the target process."""
-        import ctypes
-        import ctypes.wintypes
-        psapi = ctypes.WinDLL('psapi', use_last_error=True)
-
-        class MODULEINFO(ctypes.Structure):
-            _fields_ = [
-                ('lpBaseOfDll', ctypes.c_void_p),
-                ('SizeOfImage', ctypes.wintypes.DWORD),
-                ('EntryPoint', ctypes.c_void_p),
-            ]
-
-        # Explicit prototypes avoid bad default int conversions on 64-bit handles.
-        psapi.EnumProcessModulesEx.argtypes = [
-            ctypes.wintypes.HANDLE,
-            ctypes.POINTER(ctypes.wintypes.HMODULE),
-            ctypes.wintypes.DWORD,
-            ctypes.POINTER(ctypes.wintypes.DWORD),
-            ctypes.wintypes.DWORD,
-        ]
-        psapi.EnumProcessModulesEx.restype = ctypes.wintypes.BOOL
-        psapi.GetModuleBaseNameW.argtypes = [
-            ctypes.wintypes.HANDLE,
-            ctypes.wintypes.HMODULE,
-            ctypes.wintypes.LPWSTR,
-            ctypes.wintypes.DWORD,
-        ]
-        psapi.GetModuleBaseNameW.restype = ctypes.wintypes.DWORD
-        psapi.GetModuleInformation.argtypes = [
-            ctypes.wintypes.HANDLE,
-            ctypes.wintypes.HMODULE,
-            ctypes.POINTER(MODULEINFO),
-            ctypes.wintypes.DWORD,
-        ]
-        psapi.GetModuleInformation.restype = ctypes.wintypes.BOOL
-
-        process_handle = ctypes.wintypes.HANDLE(handle)
-        hmod_array = (ctypes.wintypes.HMODULE * 1024)()
-        bytes_needed = ctypes.wintypes.DWORD(0)
-        if not psapi.EnumProcessModulesEx(
-            process_handle,
-            hmod_array,
-            ctypes.sizeof(hmod_array),
-            ctypes.byref(bytes_needed),
-            0x03,  # LIST_MODULES_ALL
-        ):
-            return None
-
-        count = bytes_needed.value // ctypes.sizeof(ctypes.wintypes.HMODULE)
-        target = module_name.lower()
-        for i in range(min(count, 1024)):
-            mod = hmod_array[i]
-            name_buf = ctypes.create_unicode_buffer(260)
-            if psapi.GetModuleBaseNameW(process_handle, mod, name_buf, 260) == 0:
-                continue
-            if name_buf.value.lower() == target:
-                info = MODULEINFO()
-                if psapi.GetModuleInformation(process_handle, mod, ctypes.byref(info), ctypes.sizeof(info)):
-                    return int(info.lpBaseOfDll)
-                # Fallback to module handle value
-                return int(mod)
-        return None
+        return get_module_base(handle, module_name)
 
     def _read_value_pointer(
         self,
@@ -2277,35 +1997,7 @@ class MonitorUI:
         base_offset_hex: str,
         offsets_hex: list[str],
     ) -> int | None:
-        """Resolve a CE-style pointer chain and return the final 4-byte integer value."""
-        module_base = self._get_module_base(handle, module_name)
-        if module_base is None:
-            return None
-        try:
-            base_off = int(base_offset_hex.replace('0x', '').replace('0X', ''), 16)
-        except ValueError:
-            return None
-
-        ptr = self._read_ptr_from_process(handle, module_base + base_off)
-        if ptr is None:
-            return None
-
-        # Follow all offsets except the last one as pointer dereferences
-        for off_hex in offsets_hex[:-1]:
-            try:
-                off = int(off_hex.replace('0x', '').replace('0X', ''), 16)
-            except ValueError:
-                return None
-            ptr = self._read_ptr_from_process(handle, ptr + off)
-            if ptr is None:
-                return None
-
-        # Final offset: read the 4-byte integer value
-        try:
-            final_off = int(offsets_hex[-1].replace('0x', '').replace('0X', ''), 16)
-        except ValueError:
-            return None
-        return self._read_int_from_process(handle, ptr + final_off)
+        return read_value_pointer(handle, module_name, base_offset_hex, offsets_hex)
 
     def _pick_running_process(self) -> tuple[int, str | None, str] | None:
         """Open a dialog listing running processes; returns (pid, exe_path_or_None, display_name) or None if cancelled."""
@@ -3209,14 +2901,9 @@ class MonitorUI:
             self._player_monitor._running = False
             self._player_monitor._active = False
 
-        if self._tower_monitor is not None:
-            self._tower_monitor.is_running = False
-
         if self._monitor_loop is not None:
             if self._player_monitor is not None:
                 asyncio.run_coroutine_threadsafe(self._player_monitor.stop(), self._monitor_loop)
-            if self._tower_monitor is not None:
-                asyncio.run_coroutine_threadsafe(self._tower_monitor.stop_monitoring(), self._monitor_loop)
 
     def _run_monitor_thread(self):
         asyncio.run(self._run_monitor_async())
@@ -3230,94 +2917,11 @@ class MonitorUI:
                 return
             assert self.region is not None
             if mode == 'spot-tower':
-                marker_template = self.template_path if self.template_path.exists() else None
-                monitor = PlayerMonitor(
-                    self.region,
-                    interval_ms=100,
-                    confirm_frames=1,
-                    min_movement_px=0.0,
-                    min_confidence=0.50,
-                    template_path=str(marker_template) if marker_template is not None else None,
-                    template_match_threshold=0.50,
-                    startup_ignore_frames=0,
-                    background_ack_frames=1,
-                    require_background_ack=False,
-                    log_each_poll=True,
-                    fast_trigger_on_blue_spike=True,
-                    fast_trigger_min_blue_pixels=170,
-                    fast_trigger_min_increase=100,
-                    fast_trigger_ratio=2.1,
-                    fast_trigger_confidence=0.56,
-                    fast_trigger_circle_min_area_px=24,
-                    fast_trigger_circle_max_area_px=320,
-                    fast_trigger_circle_min_circularity=0.68,
-                    fast_trigger_circle_min_aspect=0.75,
-                    fast_trigger_circle_min_new_pixels=30,
-                    debug=False,
-                )
-                self._player_monitor = monitor
-                action_controller = ActionController(actions=self.escape_route, cooldown_seconds=2.0)
-
-                async def on_detection(detection):
-                    nonlocal triggered
-                    if triggered:
-                        return
-                    triggered = True
-                    snapshot = self._capture_scan_area_snapshot()
-                    if snapshot is not None:
-                        self._event_queue.put(('trigger_snapshot', {'image': snapshot, 'mode': 'SPOT TOWER'}))
-                    self._event_queue.put(('detected', detection))
-                    await action_controller.execute_escape_sequence('Player detected')
-                    self._event_queue.put(('safe_zone', None))
-                    await monitor.stop()
-
-                monitor.detection_callback = on_detection
-                await monitor.start()
-            else:
-                from screen_monitor import ScreenMonitor
-
-                try:
-                    app_config = load_config()
-                except Exception as exc:
-                    self._event_queue.put(('error', f'Could not load config: {exc}'))
-                    return
-
-                x1, y1, x2, y2 = self.region
-                app_config.windows = [
-                    WindowConfig(
-                        position='ui-safe-region',
-                        x=int(x1),
-                        y=int(y1),
-                        width=int(x2 - x1),
-                        height=int(y2 - y1),
-                        map_name='UIRegion',
-                    )
-                ]
-                app_config.scan_region = {
-                    'left_pct': 0.0,
-                    'top_pct': 0.0,
-                    'right_pct': 1.0,
-                    'bottom_pct': 1.0,
-                }
-                tower_monitor = ScreenMonitor(app_config)
-                self._tower_monitor = tower_monitor
-
-                async def on_tower_detection(char_name: str, map_name: str, guild_name: str | None):
-                    snapshot = self._capture_scan_area_snapshot()
-                    if snapshot is not None:
-                        self._event_queue.put(('trigger_snapshot', {'image': snapshot, 'mode': 'SAFE TOWER'}))
-                    self._event_queue.put(
-                        ('tower_detected', {'char_name': char_name, 'map_name': map_name, 'guild_name': guild_name})
-                    )
-                    return True
-
-                tower_monitor.detection_callback = on_tower_detection
-                await tower_monitor.start_monitoring()
+                await run_spot_tower_monitor(self)
         except Exception as exc:
             self._event_queue.put(('error', f'Scanner runtime error: {exc}'))
         finally:
             self._player_monitor = None
-            self._tower_monitor = None
             self._monitor_loop = None
             self._event_queue.put(('stopped', {'triggered': triggered, 'mode': mode}))
 
@@ -3331,15 +2935,6 @@ class MonitorUI:
             if event == 'detected':
                 self._set_state_detected()
                 self._log('Player detected. Escape route executed.')
-            elif event == 'tower_detected':
-                info = payload if isinstance(payload, dict) else {}
-                char_name = info.get('char_name', 'Unknown')
-                map_name = info.get('map_name', 'Unknown')
-                guild_name = info.get('guild_name')
-                if guild_name:
-                    self._log(f'SAFE TOWER detection: {char_name} [{guild_name}] in {map_name}.')
-                else:
-                    self._log(f'SAFE TOWER detection: {char_name} in {map_name}.')
             elif event == 'safe_zone':
                 self._notify_safe_zone()
                 self._log('Character moved to safe zone.')
@@ -3422,7 +3017,6 @@ class MonitorUI:
                     self._monitor_thread = None
                     self._monitor_loop = None
                     self._player_monitor = None
-                    self._tower_monitor = None
                     self._detected_waiting_stop = False
                     self._set_state_idle('Stopped (forced)')
                     self._log('Scanner stop did not finish in time. Forced reset applied.')

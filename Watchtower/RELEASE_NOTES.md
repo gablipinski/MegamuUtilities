@@ -38,3 +38,11 @@
 
 - Filter process list to include only 'megamu' related processes in MonitorUI.
 
+## 1.1.0 (2026-06-18)
+
+- Introduced a new configuration file `config.py` to centralize runtime settings including notification options, character detection parameters, and minimap settings.
+- Created `scan_addresses.py` to define memory addresses for scanning, including SLDetection and MapOverlay.
+- Implemented common components in `common_components.py` for UI button creation and process memory reading functions.
+- Developed `process_tower.py` to manage process scanning, including starting and stopping scans, and handling key triggers based on detected characters.
+- Added `spot_tower.py` for monitoring player detection with an asynchronous approach, integrating action sequences upon detection.
+
