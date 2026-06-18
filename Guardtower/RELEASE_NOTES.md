@@ -34,3 +34,7 @@
 
 - Refine notification logic to focus on giveaway wins in MonitorUI.
 
+## 1.0.8 (2026-06-18)
+
+- Implement force join functionality for Twitch channels in MonitorUI and TwitchBot.
+

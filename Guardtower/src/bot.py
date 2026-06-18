@@ -413,6 +413,92 @@ class TwitchBot(commands.Cog):
             "join_count": join_count,
         }
 
+    async def force_join_channel(self, channel_name: str) -> bool:
+        """Force-send the configured giveaway command for a channel.
+
+        Returns True when the command was sent successfully.
+        """
+        if self.is_shutting_down:
+            return False
+
+        normalized_channel = channel_name.strip().lower()
+        channel_config = self.channels_map.get(normalized_channel)
+        if channel_config is None:
+            log_line(
+                "Force join failed: unknown channel config",
+                "ignore",
+                normalized_channel,
+                account=self.account_name,
+            )
+            return False
+
+        giveaway_signature = self._build_giveaway_signature(
+            normalized_channel,
+            "manual_force_join",
+            channel_config.giveaway_message,
+        )
+        now = time.monotonic()
+        current_score = 1.0
+
+        previous_session = self.channel_active_giveaway.get(normalized_channel)
+        previous_session_snapshot = dict(previous_session) if previous_session is not None else None
+        self._record_successful_join(normalized_channel, giveaway_signature, now, current_score)
+
+        send_channel = self.bot.get_channel(normalized_channel)
+        if send_channel is None:
+            log_line(
+                "Force join failed: channel is not available to this bot yet",
+                "ignore",
+                normalized_channel,
+                account=self.account_name,
+            )
+            if previous_session_snapshot is None:
+                self.channel_active_giveaway.pop(normalized_channel, None)
+            else:
+                self.channel_active_giveaway[normalized_channel] = previous_session_snapshot
+            return False
+
+        giveaway_message = await self._confirm_send(normalized_channel, channel_config.giveaway_message)
+        if giveaway_message is None:
+            if previous_session_snapshot is None:
+                self.channel_active_giveaway.pop(normalized_channel, None)
+            else:
+                self.channel_active_giveaway[normalized_channel] = previous_session_snapshot
+            return False
+
+        log_line(
+            f"Force sending: {giveaway_message}",
+            "send",
+            normalized_channel,
+            account=self.account_name,
+        )
+        try:
+            await send_channel.send(giveaway_message)
+        except Exception as send_error:
+            log_line(
+                f"Force send failed: {send_error}",
+                "ignore",
+                normalized_channel,
+                account=self.account_name,
+            )
+            if previous_session_snapshot is None:
+                self.channel_active_giveaway.pop(normalized_channel, None)
+            else:
+                self.channel_active_giveaway[normalized_channel] = previous_session_snapshot
+            return False
+
+        active_after_send = self.channel_active_giveaway.get(normalized_channel)
+        join_count = int(active_after_send.get("join_count", 0)) if isinstance(active_after_send, dict) else 0
+        if join_count == 1:
+            log_line(
+                f"Giveaway ACTIVE (score={current_score:.3f}, next_threshold={current_score * 1.5:.3f})",
+                "giveaway_active",
+                normalized_channel,
+                account=self.account_name,
+            )
+        self._increment_channel_stat(normalized_channel, "giveaways")
+        return True
+
     def _find_won_trigger_match(self, message_text: str, triggers: list[str], *, allow_username_wildcard: bool) -> str | None:
         for trigger in triggers:
             if self._contains_trigger(message_text, trigger, allow_username_wildcard=allow_username_wildcard):

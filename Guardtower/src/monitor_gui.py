@@ -1256,6 +1256,13 @@ class MonitorUI:
         ).pack(side=tk.LEFT, padx=(6, 0))
         self._make_button(
             actions,
+            text="Force Join",
+            width=10,
+            command=lambda ch=channel_name: self._force_join_channel(ch),
+            accent=True,
+        ).pack(side=tk.LEFT, padx=(6, 0))
+        self._make_button(
+            actions,
             text="Open Channel",
             width=12,
             command=lambda ch=channel_name: self._open_channel_link(ch),
@@ -1395,6 +1402,36 @@ class MonitorUI:
                 if twitch_bot.reload_channel_triggers(channel_name):
                     success = True
             self._event_queue.put(("reload_result", {"channel": channel_name, "success": success}))
+
+        self._call_runtime_thread(_job)
+
+    def _force_join_channel(self, channel_name: str) -> None:
+        if self._runtime_loop is None:
+            self._append_system_log("Runtime is not ready yet", "ignore")
+            return
+
+        self._append_system_log(f"Force join requested for #{channel_name}", "notification")
+
+        def _job() -> None:
+            async def _run_force_join() -> None:
+                attempted = 0
+                sent = 0
+                for twitch_bot in self._bot_instances:
+                    attempted += 1
+                    try:
+                        if await twitch_bot.force_join_channel(channel_name):
+                            sent += 1
+                    except Exception as exc:
+                        self._event_queue.put((
+                            "runtime_error",
+                            f"Force join failed in one bot for #{channel_name}: {exc}",
+                        ))
+                self._event_queue.put((
+                    "force_join_result",
+                    {"channel": channel_name, "attempted": attempted, "sent": sent},
+                ))
+
+            asyncio.create_task(_run_force_join())
 
         self._call_runtime_thread(_job)
 
@@ -1845,6 +1882,20 @@ class MonitorUI:
                     self._append_system_log(f"#{channel_name} triggers reloaded", "notification")
                 else:
                     self._append_system_log(f"#{channel_name} trigger reload failed", "ignore")
+            elif event_name == "force_join_result" and isinstance(payload, dict):
+                channel_name = str(payload.get("channel", ""))
+                attempted = int(payload.get("attempted", 0))
+                sent = int(payload.get("sent", 0))
+                if sent > 0:
+                    self._append_system_log(
+                        f"#{channel_name} force join sent ({sent}/{attempted} bot instance(s))",
+                        "notification",
+                    )
+                else:
+                    self._append_system_log(
+                        f"#{channel_name} force join not sent (0/{attempted} bot instance(s))",
+                        "ignore",
+                    )
             elif event_name == "runtime_error" and isinstance(payload, str):
                 self._append_system_log(f"Bot error: {payload}", "ignore")
 
