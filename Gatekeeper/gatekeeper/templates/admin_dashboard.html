@@ -201,6 +201,37 @@
 
 <section class="grid two-col">
     <div class="card">
+        <h2>Active product access grants</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>User</th>
+                    <th>Product</th>
+                    <th>Granted at</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for grant in active_access_grants %}
+                    <tr>
+                        <td>{{ grant.user.display_name }}</td>
+                        <td>{{ grant.product.display_name }}</td>
+                        <td>{{ grant.created_at.strftime('%Y-%m-%d') }}</td>
+                        <td>
+                            <form method="post" action="/admin/access-grants/{{ grant.id }}/revoke" class="inline-form">
+                                <input type="text" name="admin_note" placeholder="Optional reason">
+                                <button type="submit" class="button danger">Revoke access</button>
+                            </form>
+                        </td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="4">No active product access grants.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="card">
         <h2>Users</h2>
         <table>
             <thead>

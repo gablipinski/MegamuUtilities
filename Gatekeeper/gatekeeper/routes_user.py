@@ -220,6 +220,17 @@ def register_user_routes(templates: Jinja2Templates) -> APIRouter:
         )
         if license_row is None:
             raise HTTPException(status_code=404, detail='License not found')
+        has_access = (
+            db.query(ProductAccessGrant)
+            .filter(
+                ProductAccessGrant.user_id == current_user.id,
+                ProductAccessGrant.product_id == license_row.product_id,
+                ProductAccessGrant.is_active.is_(True),
+            )
+            .first()
+        )
+        if has_access is None:
+            raise HTTPException(status_code=403, detail='You do not have access to this license file')
         file_path = Path(license_row.file_path)
         if not file_path.exists():
             raise HTTPException(status_code=404, detail='Generated license file is missing')

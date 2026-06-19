@@ -29,6 +29,12 @@ def register_admin_routes(templates: Jinja2Templates) -> APIRouter:
     @router.get('')
     def admin_dashboard(request: Request, db: Session = Depends(get_db)):
         admin_user = require_admin(request, db)
+        active_access_grants = (
+            db.query(ProductAccessGrant)
+            .filter(ProductAccessGrant.is_active.is_(True))
+            .order_by(ProductAccessGrant.created_at.desc())
+            .all()
+        )
         pending_access_requests = (
             db.query(ProductAccessRequest)
             .filter(ProductAccessRequest.status == 'pending')
@@ -67,6 +73,7 @@ def register_admin_routes(templates: Jinja2Templates) -> APIRouter:
             {
                 'page_title': 'Admin Dashboard',
                 'current_user': admin_user,
+                'active_access_grants': active_access_grants,
                 'pending_access_requests': pending_access_requests,
                 'pending_requests': pending_requests,
                 'recent_requests': recent_requests,
@@ -191,6 +198,45 @@ def register_admin_routes(templates: Jinja2Templates) -> APIRouter:
         request_row.reviewed_at = datetime.utcnow()
         db.commit()
         push_flash(request, 'success', 'Access request rejected.')
+        return RedirectResponse('/admin', status_code=303)
+
+    @router.post('/access-grants/{grant_id}/revoke')
+    def revoke_access_grant(
+        grant_id: int,
+        request: Request,
+        admin_note: str = Form(''),
+        db: Session = Depends(get_db),
+    ):
+        admin_user = require_admin(request, db)
+        grant = db.query(ProductAccessGrant).filter(ProductAccessGrant.id == grant_id).first()
+        if grant is None:
+            push_flash(request, 'error', 'Access grant not found.')
+            return RedirectResponse('/admin', status_code=303)
+        if not grant.is_active:
+            push_flash(request, 'error', 'Access grant is already inactive.')
+            return RedirectResponse('/admin', status_code=303)
+
+        grant.is_active = False
+
+        # Mark any pending access request as revoked for traceability.
+        pending_access_request = (
+            db.query(ProductAccessRequest)
+            .filter(
+                ProductAccessRequest.user_id == grant.user_id,
+                ProductAccessRequest.product_id == grant.product_id,
+                ProductAccessRequest.status == 'pending',
+            )
+            .order_by(ProductAccessRequest.created_at.desc())
+            .first()
+        )
+        if pending_access_request is not None:
+            pending_access_request.status = 'rejected'
+            pending_access_request.admin_note = admin_note.strip() or 'Access revoked by admin.'
+            pending_access_request.reviewed_by = admin_user
+            pending_access_request.reviewed_at = datetime.utcnow()
+
+        db.commit()
+        push_flash(request, 'success', 'Access revoked. User can no longer download installer or license files for this product.')
         return RedirectResponse('/admin', status_code=303)
 
     @router.post('/users/{user_id}/toggle-admin')
