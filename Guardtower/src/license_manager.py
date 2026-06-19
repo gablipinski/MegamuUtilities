@@ -46,13 +46,23 @@ def _is_packaged_runtime() -> bool:
 
 
 def get_license_path() -> Path:
-    """Return the expected location of license.dat."""
-    if _is_packaged_runtime():
-        appdata = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming'))
-        target_dir = appdata / 'Guardtower'
-        target_dir.mkdir(parents=True, exist_ok=True)
-        return target_dir / 'license.dat'
-    return Path(__file__).parent.parent / 'license.dat'
+    """Return the expected location of license.dat.
+
+    - Default       : %APPDATA%\\Guardtower\\license.dat
+    - Override       : MEGAMU_LICENSE_PATH (file or directory)
+    """
+    override = os.environ.get('MEGAMU_LICENSE_PATH', '').strip()
+    if override:
+        override_path = Path(override).expanduser()
+        if override_path.suffix.lower() != '.dat':
+            override_path = override_path / 'license.dat'
+        override_path.parent.mkdir(parents=True, exist_ok=True)
+        return override_path
+
+    appdata = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming'))
+    target_dir = appdata / 'Guardtower'
+    target_dir.mkdir(parents=True, exist_ok=True)
+    return target_dir / 'license.dat'
 
 
 def _wmic(args: list[str]) -> str:

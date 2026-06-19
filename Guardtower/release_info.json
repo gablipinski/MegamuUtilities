@@ -1,8 +1,8 @@
 {
   "app_name": "Guardtower",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "publisher": "Megamu Utilities",
   "patch_notes": [
-    "Implement force join functionality for Twitch channels in MonitorUI and TwitchBot."
+    "Enhance license path handling and add folder opening option after activation."
   ]
 }

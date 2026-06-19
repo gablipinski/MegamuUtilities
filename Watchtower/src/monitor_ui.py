@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import random
 import queue
 import shutil
@@ -422,10 +423,20 @@ class MonitorUI:
                 return
             target = get_license_path()
             try:
-                shutil.copy(selected, target)
+                shutil.copy2(selected, target)
             except Exception as exc:
                 status_var.set(f'Could not copy license: {exc}\nCopy manually to: {target}')
                 return
+            open_folder = messagebox.askyesno(
+                'License Activated',
+                f'License copied successfully to:\n\n{target}\n\nOpen this folder now?',
+                parent=dlg,
+            )
+            if open_folder:
+                try:
+                    os.startfile(str(target.parent))
+                except Exception:
+                    pass
             result['activated'] = True
             dlg.destroy()
 

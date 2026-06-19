@@ -58,3 +58,7 @@
 
 - - Refactored license management to support packaged executables.
 
+## 1.1.4 (2026-06-19)
+
+- Enhance license path handling and add folder opening option after activation.
+

@@ -34,7 +34,11 @@
 
 - Refine notification logic to focus on giveaway wins in MonitorUI.
 
-## 1.0.8 (2026-06-18)
+## 1.0.8 (2026-06-19)
 
-- Implement force join functionality for Twitch channels in MonitorUI and TwitchBot.
+- Enhance license path handling and add folder opening option after activation.
+
+## 1.0.9 (2026-06-19)
+
+- Enhance license path handling and add folder opening option after activation.
 
