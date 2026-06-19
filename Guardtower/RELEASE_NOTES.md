@@ -42,3 +42,7 @@
 
 - Enhance license path handling and add folder opening option after activation.
 
+## 1.0.10 (2026-06-19)
+
+- Add toast expiration time to desktop notifications for improved user experience.
+

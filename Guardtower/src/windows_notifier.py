@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import webbrowser
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 from xml.sax.saxutils import escape
 
@@ -44,6 +45,7 @@ class DesktopNotificationService:
 
     def __init__(self, app_id: str = "Guardtower") -> None:
         self.app_id = app_id
+        self.toast_timeout_seconds = 10
 
     def _send_via_powershell(
         self,
@@ -84,6 +86,7 @@ Add-Type -AssemblyName System.Runtime.WindowsRuntime | Out-Null
 $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
 $xml.LoadXml('{xml_str.replace("'", "''")}')
 $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
+$toast.ExpirationTime = [System.DateTimeOffset]::Now.AddSeconds({self.toast_timeout_seconds})
 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{_PS_AUMID}').Show($toast)
 """
         try:
@@ -145,6 +148,11 @@ $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
             xml_doc = XmlDocument()
             xml_doc.load_xml(toast_xml)
             toast = ToastNotification(xml_doc)
+            try:
+                toast.expiration_time = datetime.now(timezone.utc) + timedelta(seconds=self.toast_timeout_seconds)
+            except Exception:
+                # Some winsdk environments may not expose this setter correctly.
+                pass
             notifier = ToastNotificationManager.create_toast_notifier(_PS_AUMID)
             notifier.show(toast)
             return True, None

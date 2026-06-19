@@ -1,8 +1,8 @@
 {
   "app_name": "Guardtower",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "publisher": "Megamu Utilities",
   "patch_notes": [
-    "Enhance license path handling and add folder opening option after activation."
+    "Add toast expiration time to desktop notifications for improved user experience."
   ]
 }
