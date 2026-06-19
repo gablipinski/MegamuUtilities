@@ -216,7 +216,17 @@ def register_admin_routes(templates: Jinja2Templates) -> APIRouter:
             push_flash(request, 'error', 'Access grant is already inactive.')
             return RedirectResponse('/admin', status_code=303)
 
-        grant.is_active = False
+        related_active_grants = (
+            db.query(ProductAccessGrant)
+            .filter(
+                ProductAccessGrant.user_id == grant.user_id,
+                ProductAccessGrant.product_id == grant.product_id,
+                ProductAccessGrant.is_active.is_(True),
+            )
+            .all()
+        )
+        for grant_row in related_active_grants:
+            grant_row.is_active = False
 
         # Mark any pending access request as revoked for traceability.
         pending_access_request = (
@@ -237,6 +247,39 @@ def register_admin_routes(templates: Jinja2Templates) -> APIRouter:
 
         db.commit()
         push_flash(request, 'success', 'Access revoked. User can no longer download installer or license files for this product.')
+        return RedirectResponse('/admin', status_code=303)
+
+    @router.post('/licenses/{license_id}/delete')
+    def delete_issued_license(license_id: int, request: Request, db: Session = Depends(get_db)):
+        admin_user = require_admin(request, db)
+        license_row = db.query(IssuedLicense).filter(IssuedLicense.id == license_id).first()
+        if license_row is None:
+            push_flash(request, 'error', 'License not found.')
+            return RedirectResponse('/admin', status_code=303)
+
+        request_row = license_row.request
+        license_file_path = Path(license_row.file_path)
+
+        db.delete(license_row)
+
+        if request_row is not None:
+            request_row.status = 'rejected'
+            existing_note = (request_row.admin_note or '').strip()
+            delete_note = f'License deleted by admin {admin_user.email}.'
+            request_row.admin_note = f'{existing_note}\n{delete_note}' if existing_note else delete_note
+            request_row.reviewed_by = admin_user
+            request_row.reviewed_at = datetime.utcnow()
+
+        db.commit()
+
+        file_note = ''
+        if license_file_path.exists():
+            try:
+                license_file_path.unlink()
+            except OSError:
+                file_note = ' License record removed, but file deletion failed.'
+
+        push_flash(request, 'success', f'License deleted successfully.{file_note}')
         return RedirectResponse('/admin', status_code=303)
 
     @router.post('/users/{user_id}/toggle-admin')

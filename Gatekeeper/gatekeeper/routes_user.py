@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
 from .dependencies import get_db, get_current_user, pop_flashes, push_flash
@@ -27,7 +29,12 @@ def register_user_routes(templates: Jinja2Templates) -> APIRouter:
     def dashboard(request: Request, db: Session = Depends(get_db)):
         current_user = get_current_user(request, db)
         products = db.query(Product).filter(Product.is_active.is_(True)).order_by(Product.display_name.asc()).all()
-        machines = db.query(Machine).filter(Machine.user_id == current_user.id).order_by(Machine.created_at.desc()).all()
+        machines = (
+            db.query(Machine)
+            .filter(Machine.user_id == current_user.id, Machine.is_active.is_(True))
+            .order_by(Machine.created_at.desc())
+            .all()
+        )
         access_requests = (
             db.query(ProductAccessRequest)
             .filter(ProductAccessRequest.user_id == current_user.id)
@@ -42,16 +49,35 @@ def register_user_routes(templates: Jinja2Templates) -> APIRouter:
         granted_product_ids = {row.product_id for row in access_grants}
         requests = (
             db.query(LicenseRequest)
-            .filter(LicenseRequest.user_id == current_user.id)
+            .join(
+                ProductAccessGrant,
+                and_(
+                    ProductAccessGrant.user_id == LicenseRequest.user_id,
+                    ProductAccessGrant.product_id == LicenseRequest.product_id,
+                    ProductAccessGrant.is_active.is_(True),
+                ),
+            )
+            .filter(
+                LicenseRequest.user_id == current_user.id,
+            )
+            .distinct()
             .order_by(LicenseRequest.created_at.desc())
             .all()
         )
         issued_licenses = (
             db.query(IssuedLicense)
+            .join(
+                ProductAccessGrant,
+                and_(
+                    ProductAccessGrant.user_id == IssuedLicense.user_id,
+                    ProductAccessGrant.product_id == IssuedLicense.product_id,
+                    ProductAccessGrant.is_active.is_(True),
+                ),
+            )
             .filter(
                 IssuedLicense.user_id == current_user.id,
-                IssuedLicense.product_id.in_(granted_product_ids) if granted_product_ids else False,
             )
+            .distinct()
             .order_by(IssuedLicense.created_at.desc())
             .all()
         )
@@ -173,6 +199,9 @@ def register_user_routes(templates: Jinja2Templates) -> APIRouter:
         if product is None or machine is None:
             push_flash(request, 'error', 'Invalid product or machine selection.')
             return RedirectResponse('/app', status_code=303)
+        if not machine.is_active:
+            push_flash(request, 'error', 'This machine is no longer active. Register another machine to request a license.')
+            return RedirectResponse('/app', status_code=303)
 
         grant = (
             db.query(ProductAccessGrant)
@@ -211,6 +240,40 @@ def register_user_routes(templates: Jinja2Templates) -> APIRouter:
         db.add(request_row)
         db.commit()
         push_flash(request, 'success', 'Machine license request submitted.')
+        return RedirectResponse('/app', status_code=303)
+
+    @router.post('/app/machines/{machine_id}/delete')
+    def delete_machine(machine_id: int, request: Request, db: Session = Depends(get_db)):
+        current_user = get_current_user(request, db)
+        machine = (
+            db.query(Machine)
+            .filter(Machine.id == machine_id, Machine.user_id == current_user.id)
+            .first()
+        )
+        if machine is None:
+            push_flash(request, 'error', 'Machine not found.')
+            return RedirectResponse('/app', status_code=303)
+        if not machine.is_active:
+            push_flash(request, 'error', 'Machine is already deleted.')
+            return RedirectResponse('/app', status_code=303)
+
+        machine.is_active = False
+        pending_requests = (
+            db.query(LicenseRequest)
+            .filter(
+                LicenseRequest.user_id == current_user.id,
+                LicenseRequest.machine_id_ref == machine.id,
+                LicenseRequest.status == 'pending',
+            )
+            .all()
+        )
+        for request_row in pending_requests:
+            request_row.status = 'rejected'
+            request_row.admin_note = 'Machine deleted by user.'
+            request_row.reviewed_at = datetime.utcnow()
+
+        db.commit()
+        push_flash(request, 'success', 'Machine deleted successfully.')
         return RedirectResponse('/app', status_code=303)
 
     @router.get('/app/licenses/{license_id}/download')
