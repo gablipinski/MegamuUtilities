@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="grid two-col">
+    <div class="card">
+        <h2>Welcome, {{ current_user.display_name }}</h2>
+        <p>Register machine IDs from the apps, request access, then download licenses and installers after approval.</p>
+    </div>
+    <div class="card">
+        <h2>Register machine</h2>
+        <form method="post" action="/app/machines" class="stack-form">
+            <label>
+                <span>Label</span>
+                <input type="text" name="label" placeholder="Main PC" required>
+            </label>
+            <label>
+                <span>Machine ID</span>
+                <input type="text" name="machine_id" placeholder="A3F2-9C1B-D47E-8801" required>
+            </label>
+            <button type="submit" class="button primary">Add machine</button>
+        </form>
+    </div>
+</section>
+
+<section class="grid two-col">
+    <div class="card">
+        <h2>Request software access</h2>
+        <form method="post" action="/app/requests" class="stack-form">
+            <label>
+                <span>Product</span>
+                <select name="product_id" required>
+                    {% for product in products %}
+                        <option value="{{ product.id }}">{{ product.display_name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>
+                <span>Machine</span>
+                <select name="machine_id_ref" required>
+                    {% for machine in machines %}
+                        <option value="{{ machine.id }}">{{ machine.label }} · {{ machine.machine_id }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>
+                <span>Request note</span>
+                <textarea name="requested_note" rows="3" placeholder="Optional note for the admin"></textarea>
+            </label>
+            <button type="submit" class="button primary" {% if not machines %}disabled{% endif %}>Submit request</button>
+        </form>
+        {% if not machines %}
+            <p class="muted">Add at least one machine before creating a request.</p>
+        {% endif %}
+    </div>
+
+    <div class="card">
+        <h2>Your machines</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Label</th>
+                    <th>Machine ID</th>
+                    <th>Created</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for machine in machines %}
+                    <tr>
+                        <td>{{ machine.label }}</td>
+                        <td>{{ machine.machine_id }}</td>
+                        <td>{{ machine.created_at.strftime('%Y-%m-%d') }}</td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="3">No machines registered yet.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="grid two-col">
+    <div class="card">
+        <h2>Request history</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Product</th>
+                    <th>Machine</th>
+                    <th>Status</th>
+                    <th>Note</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for req in requests %}
+                    <tr>
+                        <td>{{ req.product.display_name }}</td>
+                        <td>{{ req.machine.label }}</td>
+                        <td>{{ req.status }}</td>
+                        <td>{{ req.admin_note or req.requested_note or '-' }}</td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="4">No requests yet.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="card">
+        <h2>Issued licenses and installers</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Product</th>
+                    <th>License</th>
+                    <th>Installer</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for license_row in issued_licenses %}
+                    <tr>
+                        <td>
+                            {{ license_row.product.display_name }}
+                            {% if license_row.expiry_date %}
+                                <div class="cell-note">Expires {{ license_row.expiry_date.isoformat() }}</div>
+                            {% endif %}
+                        </td>
+                        <td><a href="/app/licenses/{{ license_row.id }}/download">Download license</a></td>
+                        <td>
+                            {% set release = latest_releases.get(license_row.product_id) %}
+                            {% if release %}
+                                <a href="/app/releases/{{ release.id }}/download">{{ release.version }}</a>
+                            {% else %}
+                                <span class="muted">No installer uploaded</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="3">No licenses issued yet.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock %}

@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ page_title or "Gatekeeper" }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='styles.css') }}">
+</head>
+<body>
+    <header class="site-header">
+        <div>
+            <h1>Gatekeeper</h1>
+            <p>Megamu Utilities licensing portal</p>
+        </div>
+        <nav class="site-nav">
+            {% if current_user %}
+                <a href="{{ '/admin' if current_user.is_admin else '/app' }}">Dashboard</a>
+                <form method="post" action="/logout">
+                    <button type="submit" class="button subtle">Logout</button>
+                </form>
+            {% else %}
+                <a href="/login">Login</a>
+                <a href="/register">Register</a>
+            {% endif %}
+        </nav>
+    </header>
+
+    <main class="page-shell">
+        {% if flashes %}
+            <section class="flash-stack">
+                {% for flash in flashes %}
+                    <div class="flash flash-{{ flash.level }}">{{ flash.message }}</div>
+                {% endfor %}
+            </section>
+        {% endif %}
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

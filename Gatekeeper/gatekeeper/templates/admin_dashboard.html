@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="grid two-col">
+    <div class="card">
+        <h2>Pending license requests</h2>
+        <div class="stack-list">
+            {% for req in pending_requests %}
+                <article class="subcard">
+                    <h3>{{ req.product.display_name }} · {{ req.user.display_name }}</h3>
+                    <p>Machine: {{ req.machine.label }} · {{ req.machine.machine_id }}</p>
+                    <p>User note: {{ req.requested_note or '-' }}</p>
+                    <div class="action-row">
+                        <form method="post" action="/admin/requests/{{ req.id }}/approve" class="inline-form">
+                            <input type="date" name="expiry_date">
+                            <input type="text" name="admin_note" placeholder="Optional approval note">
+                            <button type="submit" class="button primary">Approve</button>
+                        </form>
+                        <form method="post" action="/admin/requests/{{ req.id }}/reject" class="inline-form">
+                            <input type="text" name="admin_note" placeholder="Reason" required>
+                            <button type="submit" class="button danger">Reject</button>
+                        </form>
+                    </div>
+                </article>
+            {% else %}
+                <p class="muted">No pending requests.</p>
+            {% endfor %}
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Upload installer release</h2>
+        <form method="post" action="/admin/releases" enctype="multipart/form-data" class="stack-form">
+            <label>
+                <span>Product</span>
+                <select name="product_id" required>
+                    {% for product in products %}
+                        <option value="{{ product.id }}">{{ product.display_name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>
+                <span>Version</span>
+                <input type="text" name="version" placeholder="1.1.2" required>
+            </label>
+            <label>
+                <span>Notes</span>
+                <textarea name="notes" rows="3" placeholder="Release notes for users"></textarea>
+            </label>
+            <label>
+                <span>Installer file</span>
+                <input type="file" name="installer_file" required>
+            </label>
+            <label class="checkbox-row">
+                <input type="checkbox" name="is_latest" checked>
+                <span>Mark as latest release</span>
+            </label>
+            <button type="submit" class="button primary">Upload installer</button>
+        </form>
+
+        <h3>Current latest releases</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Product</th>
+                    <th>Latest</th>
+                    <th>Uploaded</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for product in products %}
+                    {% set release = latest_releases.get(product.id) %}
+                    <tr>
+                        <td>{{ product.display_name }}</td>
+                        <td>{{ release.version if release else '-' }}</td>
+                        <td>{{ release.created_at.strftime('%Y-%m-%d') if release else '-' }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="grid two-col">
+    <div class="card">
+        <h2>Users</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Email</th>
+                    <th>Role</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for user in users %}
+                    <tr>
+                        <td>{{ user.display_name }}</td>
+                        <td>{{ user.email }}</td>
+                        <td>{{ 'Admin' if user.is_admin else 'User' }}</td>
+                        <td>
+                            {% if user.id != current_user.id %}
+                                <form method="post" action="/admin/users/{{ user.id }}/toggle-admin">
+                                    <button type="submit" class="button subtle">Toggle admin</button>
+                                </form>
+                            {% else %}
+                                <span class="muted">Current session</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="card">
+        <h2>Recent licenses</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>User</th>
+                    <th>Product</th>
+                    <th>Machine</th>
+                    <th>Issued</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for license_row in recent_licenses %}
+                    <tr>
+                        <td>{{ license_row.user.display_name }}</td>
+                        <td>{{ license_row.product.display_name }}</td>
+                        <td>{{ license_row.machine.machine_id }}</td>
+                        <td>{{ license_row.created_at.strftime('%Y-%m-%d') }}</td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="4">No licenses issued yet.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="card">
+    <h2>Recent requests</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>User</th>
+                <th>Product</th>
+                <th>Machine</th>
+                <th>Status</th>
+                <th>Admin note</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for req in recent_requests %}
+                <tr>
+                    <td>{{ req.user.display_name }}</td>
+                    <td>{{ req.product.display_name }}</td>
+                    <td>{{ req.machine.machine_id }}</td>
+                    <td>{{ req.status }}</td>
+                    <td>{{ req.admin_note or '-' }}</td>
+                </tr>
+            {% else %}
+                <tr><td colspan="5">No requests yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endblock %}

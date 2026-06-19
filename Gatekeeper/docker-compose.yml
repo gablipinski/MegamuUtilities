@@ -1,0 +1,25 @@
+services:
+  gatekeeper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gatekeeper
+    ports:
+      - "8000:8000"
+    environment:
+      GATEKEEPER_HOST: 0.0.0.0
+      GATEKEEPER_PORT: 8000
+      GATEKEEPER_WORKSPACE_ROOT: /workspace
+      GATEKEEPER_SECRET_KEY: change-me-before-production
+      GATEKEEPER_BOOTSTRAP_ADMIN_EMAIL: admin@example.com
+      GATEKEEPER_BOOTSTRAP_ADMIN_PASSWORD: ChangeMeNow123!
+      GATEKEEPER_DEFAULT_LICENSE_DAYS: 365
+    volumes:
+      - gatekeeper_data:/app/data
+      - ../Guardtower:/workspace/Guardtower:ro
+      - ../Watchtower:/workspace/Watchtower:ro
+      - ../Siegetower:/workspace/Siegetower:ro
+    restart: unless-stopped
+
+volumes:
+  gatekeeper_data:
