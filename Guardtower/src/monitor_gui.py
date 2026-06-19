@@ -187,6 +187,12 @@ class MonitorUI:
         self._channel_views: dict[str, ChannelView] = {}
         self._desktop_notifications = DesktopNotificationService(app_id="Guardtower")
         self._active_confirmation_dialog: tk.Toplevel | None = None
+        self._notification_center_window: tk.Toplevel | None = None
+        self._notification_listbox: tk.Listbox | None = None
+        self._notification_center_ids: list[str] = []
+        self._notification_history: list[dict[str, object]] = []
+        self._notification_seq = 0
+        self._notification_bell_button: tk.Button | None = None
 
         self._load_app_icon()
         self._apply_app_icon(self.root)
@@ -689,36 +695,188 @@ class MonitorUI:
         # Flash taskbar regardless of toast result so app is always visible in taskbar.
         self._flash_taskbar()
 
-    def _schedule_confirmation_attention_notifications(
+    def _next_notification_id(self) -> str:
+        self._notification_seq += 1
+        return f"n{self._notification_seq}"
+
+    def _add_confirmation_notification_item(
         self,
         *,
         channel_name: str,
         message_text: str,
-        dialog: tk.Misc,
-        interval_ms: int = 10000,
-    ) -> None:
-        """Send immediate and periodic actionable notifications while popup is open."""
-        self._send_confirmation_attention_notification(
-            channel_name=channel_name,
-            message_text=message_text,
-            dialog=dialog,
+        open_action,
+    ) -> str:
+        item_id = self._next_notification_id()
+        self._notification_history.insert(
+            0,
+            {
+                "id": item_id,
+                "type": "confirmation",
+                "channel": channel_name,
+                "message": message_text,
+                "created_at": time.strftime("%H:%M:%S"),
+                "status": "pending",
+                "open_action": open_action,
+                "closed_reason": "",
+            },
         )
+        self._notification_history = self._notification_history[:40]
+        self._refresh_notification_center_view()
+        return item_id
 
-        def _repeat() -> None:
+    def _set_confirmation_notification_status(self, item_id: str, status: str, reason: str = "") -> None:
+        for item in self._notification_history:
+            if str(item.get("id", "")) != item_id:
+                continue
+            item["status"] = status
+            item["closed_reason"] = reason
+            if status != "pending":
+                item["open_action"] = None
+            break
+        self._refresh_notification_center_view()
+
+    def _pending_notification_count(self) -> int:
+        return sum(1 for item in self._notification_history if str(item.get("status", "")) == "pending")
+
+    def _refresh_notification_center_view(self) -> None:
+        pending = self._pending_notification_count()
+        if self._notification_bell_button is not None:
+            self._notification_bell_button.configure(text=f"🔔 Notifications ({pending})")
+
+        if self._notification_listbox is None or not bool(self._notification_listbox.winfo_exists()):
+            return
+
+        self._notification_listbox.delete(0, tk.END)
+        self._notification_center_ids = []
+        for item in self._notification_history:
+            item_id = str(item.get("id", ""))
+            status = str(item.get("status", "pending")).upper()
+            timestamp = str(item.get("created_at", "--:--:--"))
+            channel = str(item.get("channel", "")).strip()
+            message = str(item.get("message", "")).strip().replace("\n", " ")
+            if len(message) > 70:
+                message = message[:67] + "..."
+            suffix = ""
+            closed_reason = str(item.get("closed_reason", "")).strip()
+            if closed_reason:
+                suffix = f" [{closed_reason}]"
+
+            label = f"[{status}] {timestamp} #{channel}: {message}{suffix}"
+            self._notification_center_ids.append(item_id)
+            self._notification_listbox.insert(tk.END, label)
+
+    def _open_notification_center(self) -> None:
+        win = self._notification_center_window
+        if win is not None:
             try:
-                if not bool(dialog.winfo_exists()):
+                if bool(win.winfo_exists()):
+                    self._force_window_front(win)
+                    self._refresh_notification_center_view()
                     return
             except Exception:
+                pass
+
+        win = tk.Toplevel(self.root)
+        win.title("Recent Notifications")
+        win.geometry("760x320")
+        win.resizable(True, True)
+        win.configure(bg=self._colors["panel"])
+        self._apply_app_icon(win)
+        self._notification_center_window = win
+
+        panel = tk.Frame(
+            win,
+            bg=self._colors["panel"],
+            highlightthickness=1,
+            highlightbackground=self._colors["border"],
+            padx=10,
+            pady=10,
+        )
+        panel.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        tk.Label(
+            panel,
+            text="Pending items can be reopened from here.",
+            bg=self._colors["panel"],
+            fg=self._colors["muted"],
+            anchor="w",
+        ).pack(fill=tk.X, pady=(0, 8))
+
+        list_shell = tk.Frame(panel, bg=self._colors["panel"])
+        list_shell.pack(fill=tk.BOTH, expand=True)
+
+        listbox = tk.Listbox(
+            list_shell,
+            bg=self._colors["input_bg"],
+            fg=self._colors["text"],
+            selectbackground=self._colors["accent"],
+            selectforeground="#ffffff",
+            relief=tk.FLAT,
+            highlightthickness=1,
+            highlightbackground=self._colors["border"],
+            activestyle="none",
+        )
+        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        scrollbar = tk.Scrollbar(list_shell, orient=tk.VERTICAL, command=listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        listbox.configure(yscrollcommand=scrollbar.set)
+
+        footer = tk.Frame(panel, bg=self._colors["panel"])
+        footer.pack(fill=tk.X, pady=(8, 0))
+
+        def _open_selected() -> None:
+            if self._notification_listbox is None:
+                return
+            selected = self._notification_listbox.curselection()
+            if not selected:
+                return
+            idx = int(selected[0])
+            if idx < 0 or idx >= len(self._notification_center_ids):
+                return
+            item_id = self._notification_center_ids[idx]
+            for item in self._notification_history:
+                if str(item.get("id", "")) != item_id:
+                    continue
+                if str(item.get("status", "")) != "pending":
+                    self._append_system_log("Selected notification is no longer pending", "other")
+                    return
+                action = item.get("open_action")
+                if callable(action):
+                    try:
+                        action()
+                    except Exception:
+                        self._append_system_log("Failed to reopen pending confirmation popup", "ignore")
                 return
 
-            self._send_confirmation_attention_notification(
-                channel_name=channel_name,
-                message_text=message_text,
-                dialog=dialog,
-            )
-            dialog.after(interval_ms, _repeat)
+        self._make_button(
+            footer,
+            text="Open Selected",
+            width=14,
+            command=_open_selected,
+            accent=True,
+        ).pack(side=tk.RIGHT)
+        self._make_button(
+            footer,
+            text="Close",
+            width=12,
+            command=lambda: _on_close(),
+        ).pack(side=tk.RIGHT, padx=(0, 8))
 
-        dialog.after(interval_ms, _repeat)
+        def _on_double_click(_event: tk.Event) -> None:
+            _open_selected()
+
+        listbox.bind("<Double-Button-1>", _on_double_click)
+        self._notification_listbox = listbox
+        self._refresh_notification_center_view()
+
+        def _on_close() -> None:
+            self._notification_center_window = None
+            self._notification_listbox = None
+            self._notification_center_ids = []
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", _on_close)
 
     def _send_focus_attention_notification(
         self,
@@ -832,11 +990,7 @@ class MonitorUI:
         dialog.resizable(False, False)
         dialog.configure(bg=self._colors["bg"])
 
-        # Register dialog so focus-in events and notifications can re-raise it.
         self._active_confirmation_dialog = dialog
-
-        # Force Guardtower and this confirmation dialog to front so approval is visible
-        # even when the user is currently on another app.
         self._focus_confirmation_window(dialog)
 
         dialog.transient(self.root)
@@ -846,10 +1000,30 @@ class MonitorUI:
         self._force_window_front(dialog)
         dialog.after(120, lambda: self._force_window_front(dialog))
         dialog.after(420, lambda: self._force_window_front(dialog))
-        self._schedule_confirmation_attention_notifications(
+        self._send_confirmation_attention_notification(
             channel_name=channel_name,
             message_text=message_text,
             dialog=dialog,
+        )
+
+        hidden = {"value": False}
+
+        def _reopen_dialog_from_notification() -> None:
+            if not bool(dialog.winfo_exists()):
+                return
+            if hidden["value"]:
+                try:
+                    dialog.deiconify()
+                    dialog.grab_set()
+                except Exception:
+                    pass
+                hidden["value"] = False
+            self._focus_confirmation_window(dialog)
+
+        notif_item_id = self._add_confirmation_notification_item(
+            channel_name=channel_name,
+            message_text=message_text,
+            open_action=lambda: self.root.after(0, _reopen_dialog_from_notification),
         )
 
         panel = tk.Frame(
@@ -1016,7 +1190,21 @@ class MonitorUI:
 
         timer_handle: dict[str, str | None] = {"id": None}
 
-        def _close(value: bool) -> None:
+        def _hide_dialog() -> None:
+            if not bool(dialog.winfo_exists()):
+                return
+            try:
+                dialog.grab_release()
+            except Exception:
+                pass
+            hidden["value"] = True
+            dialog.withdraw()
+            self._append_system_log(
+                f"Confirmation popup for #{channel_name} was hidden. Open it from the bell notifications.",
+                "notification",
+            )
+
+        def _close(value: bool, reason: str) -> None:
             if value and is_won_reply and name_var is not None:
                 chosen_name = name_var.get().strip()
                 if not chosen_name:
@@ -1033,29 +1221,34 @@ class MonitorUI:
                 except Exception:
                     pass
                 timer_handle["id"] = None
-            # Release the active dialog reference so focus events stop re-raising it.
             self._active_confirmation_dialog = None
+            self._set_confirmation_notification_status(notif_item_id, "approved" if value else "closed", reason)
             if dialog.winfo_exists():
+                try:
+                    dialog.grab_release()
+                except Exception:
+                    pass
                 dialog.destroy()
 
         def _tick() -> None:
             remaining["sec"] -= 1
             if remaining["sec"] <= 0:
                 countdown_var.set("Auto-cancel in 0s")
-                _close(False)
+                _close(False, "timed out")
                 return
             countdown_var.set(f"Auto-cancel in {remaining['sec']}s")
             timer_handle["id"] = dialog.after(1000, _tick)
 
-        self._make_button(footer, text="Send", width=12, command=lambda: _close(True), accent=True).pack(side=tk.RIGHT)
-        self._make_button(footer, text="Do Not Send", width=14, command=lambda: _close(False), danger=True).pack(
+        self._make_button(footer, text="Send", width=12, command=lambda: _close(True, "sent"), accent=True).pack(side=tk.RIGHT)
+        self._make_button(footer, text="Do Not Send", width=14, command=lambda: _close(False, "declined"), danger=True).pack(
             side=tk.RIGHT,
             padx=(0, 8),
         )
+        self._make_button(footer, text="Hide", width=10, command=_hide_dialog).pack(side=tk.RIGHT, padx=(0, 8))
 
-        dialog.protocol("WM_DELETE_WINDOW", lambda: _close(False))
+        dialog.protocol("WM_DELETE_WINDOW", _hide_dialog)
         timer_handle["id"] = dialog.after(1000, _tick)
-        dialog.after(timeout_ms, lambda: _close(False))
+        dialog.after(timeout_ms, lambda: _close(False, "timed out"))
         self.root.wait_window(dialog)
         return {
             "approved": bool(approved["value"]),
@@ -1087,6 +1280,14 @@ class MonitorUI:
         self._make_button(title_row, text="Refresh All", width=14, command=self._refresh_all, accent=True).pack(
             side=tk.RIGHT
         )
+
+        self._notification_bell_button = self._make_button(
+            title_row,
+            text="🔔 Notifications (0)",
+            width=18,
+            command=self._open_notification_center,
+        )
+        self._notification_bell_button.pack(side=tk.RIGHT, padx=(0, 8))
 
         self._make_button(
             title_row,

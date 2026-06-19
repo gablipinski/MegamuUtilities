@@ -1,8 +1,8 @@
 {
   "app_name": "Guardtower",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "publisher": "Megamu Utilities",
   "patch_notes": [
-    "Add toast expiration time to desktop notifications for improved user experience."
+    "Implement notification center for managing confirmation notifications."
   ]
 }

@@ -46,3 +46,7 @@
 
 - Add toast expiration time to desktop notifications for improved user experience.
 
+## 1.0.11 (2026-06-19)
+
+- Implement notification center for managing confirmation notifications.
+
