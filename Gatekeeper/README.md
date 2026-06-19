@@ -90,6 +90,13 @@ Notes:
 - Normal user accounts are not blocked by the admin MAC allowlist.
 - MAC-based checks rely on ARP visibility and are most reliable on local networks.
 
+Admin 2FA (Google Authenticator-compatible TOTP):
+
+- Admin login always requires a second factor.
+- On first admin login, Gatekeeper will require TOTP setup before access is granted.
+- On every later admin login, Gatekeeper will require a valid 6-digit TOTP code.
+- Any standard TOTP app works (Google Authenticator, Microsoft Authenticator, Authy).
+
 To stop the container:
 
 ```powershell

@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card narrow-card">
+    <h2>Admin 2FA Verification</h2>
+    <p>Enter the current 6-digit code from Google Authenticator to complete admin login.</p>
+
+    <form method="post" action="/admin/2fa/verify" class="stack-form">
+        <label>
+            <span>6-digit code</span>
+            <input type="text" name="otp_code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="123456" required>
+        </label>
+        <button type="submit" class="button primary">Verify and sign in</button>
+    </form>
+</section>
+{% endblock %}

@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 
 from .config import ensure_runtime_dirs, settings
-from .database import Base, SessionLocal, engine
+from .database import Base, SessionLocal, engine, ensure_runtime_schema
 from .license_service import bootstrap_admin_user, seed_default_products
 from .routes_admin import register_admin_routes
 from .routes_auth import register_auth_routes
@@ -31,6 +31,7 @@ app.include_router(register_admin_routes(templates))
 @app.on_event('startup')
 def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
+    ensure_runtime_schema()
     db: Session = SessionLocal()
     try:
         seed_default_products(db)
