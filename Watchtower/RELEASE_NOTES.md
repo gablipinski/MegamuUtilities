@@ -62,3 +62,7 @@
 
 - Enhance license path handling and add folder opening option after activation.
 
+## 1.1.5 (2026-06-19)
+
+- Fixed minimap reload logic.
+
