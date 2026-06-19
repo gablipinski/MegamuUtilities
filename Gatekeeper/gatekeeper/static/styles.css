@@ -192,6 +192,126 @@ table {
     border-collapse: collapse;
 }
 
+.table-wrap {
+    width: 100%;
+    overflow-x: auto;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 14px;
+    background: rgba(13, 17, 23, 0.44);
+}
+
+.releases-table {
+    min-width: 980px;
+}
+
+.releases-table th,
+.releases-table td {
+    padding: 14px 10px;
+    vertical-align: middle;
+}
+
+.releases-table tbody tr:nth-child(odd) {
+    background: rgba(255, 255, 255, 0.012);
+}
+
+.releases-table tbody tr:hover {
+    background: rgba(47, 129, 247, 0.08);
+}
+
+.releases-card h2 {
+    margin-bottom: 14px;
+    font-size: 32px;
+    letter-spacing: 0.2px;
+}
+
+.release-pill {
+    display: inline-block;
+    padding: 3px 9px;
+    border: 1px solid rgba(47, 129, 247, 0.4);
+    border-radius: 999px;
+    background: rgba(47, 129, 247, 0.14);
+    color: #d8e7ff;
+    font-weight: 600;
+    font-size: 0.88rem;
+}
+
+.release-pill.missing {
+    border-color: rgba(154, 167, 183, 0.3);
+    background: rgba(154, 167, 183, 0.12);
+    color: var(--muted);
+}
+
+.release-installer {
+    display: inline-block;
+    max-width: 240px;
+    overflow-wrap: anywhere;
+}
+
+.release-note-hint {
+    color: var(--muted);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 0.35rem;
+}
+
+.release-notes-box {
+    display: block;
+    white-space: pre-line;
+    max-height: 9.5rem;
+    overflow: auto;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 10px;
+    padding: 0.6rem 0.7rem;
+    min-width: 240px;
+    max-width: 360px;
+    background: rgba(7, 11, 16, 0.38);
+    line-height: 1.35;
+    color: #7f8a99 !important;
+    font-weight: 400;
+    text-align: left;
+}
+
+.release-notes-box * {
+    color: #7f8a99 !important;
+}
+
+.import-button {
+    white-space: nowrap;
+}
+
+.import-progress-panel {
+    margin-top: 1.4rem;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    padding: 12px 14px;
+    background: rgba(8, 13, 19, 0.42);
+}
+
+.import-progress-panel h3 {
+    margin-bottom: 10px;
+}
+
+#import-progress {
+    width: 100%;
+    height: 0.9rem;
+    appearance: none;
+}
+
+#import-progress::-webkit-progress-bar {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 999px;
+}
+
+#import-progress::-webkit-progress-value {
+    background: linear-gradient(90deg, #2f81f7 0%, #58a6ff 100%);
+    border-radius: 999px;
+}
+
+#import-progress-text {
+    margin-top: 0.65rem;
+}
+
 th,
 td {
     text-align: left;

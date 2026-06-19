@@ -11,8 +11,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BUNDLED_CONFIGS_DIR = PROJECT_ROOT / 'configs'
 
 
+def _is_packaged_runtime() -> bool:
+    """Return True for packaged executables (PyInstaller/Nuitka/cx_Freeze)."""
+    return bool(getattr(sys, 'frozen', False) or '__compiled__' in globals())
+
+
 def get_app_data_dir() -> Path:
-    if getattr(sys, 'frozen', False):
+    if _is_packaged_runtime():
         appdata = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming'))
         target_dir = appdata / 'Watchtower'
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -22,7 +27,7 @@ def get_app_data_dir() -> Path:
 
 def get_runtime_config_path(file_name: str) -> Path:
     bundled_path = BUNDLED_CONFIGS_DIR / file_name
-    if not getattr(sys, 'frozen', False):
+    if not _is_packaged_runtime():
         return bundled_path
 
     target_dir = get_app_data_dir() / 'configs'

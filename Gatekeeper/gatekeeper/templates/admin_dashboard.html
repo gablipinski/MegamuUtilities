@@ -1,6 +1,30 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="grid two-col">
+<section class="grid">
+    <div class="card">
+        <h2>Pending product access requests</h2>
+        <div class="stack-list">
+            {% for req in pending_access_requests %}
+                <article class="subcard">
+                    <h3>{{ req.product.display_name }} · {{ req.user.display_name }}</h3>
+                    <p>User note: {{ req.requested_note or '-' }}</p>
+                    <div class="action-row">
+                        <form method="post" action="/admin/access-requests/{{ req.id }}/approve" class="inline-form">
+                            <input type="text" name="admin_note" placeholder="Optional approval note">
+                            <button type="submit" class="button primary">Approve access</button>
+                        </form>
+                        <form method="post" action="/admin/access-requests/{{ req.id }}/reject" class="inline-form">
+                            <input type="text" name="admin_note" placeholder="Reason" required>
+                            <button type="submit" class="button danger">Reject</button>
+                        </form>
+                    </div>
+                </article>
+            {% else %}
+                <p class="muted">No pending product access requests.</p>
+            {% endfor %}
+        </div>
+    </div>
+
     <div class="card">
         <h2>Pending license requests</h2>
         <div class="stack-list">
@@ -27,56 +51,151 @@
         </div>
     </div>
 
-    <div class="card">
-        <h2>Upload installer release</h2>
-        <form method="post" action="/admin/releases" enctype="multipart/form-data" class="stack-form">
-            <label>
-                <span>Product</span>
-                <select name="product_id" required>
-                    {% for product in products %}
-                        <option value="{{ product.id }}">{{ product.display_name }}</option>
-                    {% endfor %}
-                </select>
-            </label>
-            <label>
-                <span>Version</span>
-                <input type="text" name="version" placeholder="1.1.2" required>
-            </label>
-            <label>
-                <span>Notes</span>
-                <textarea name="notes" rows="3" placeholder="Release notes for users"></textarea>
-            </label>
-            <label>
-                <span>Installer file</span>
-                <input type="file" name="installer_file" required>
-            </label>
-            <label class="checkbox-row">
-                <input type="checkbox" name="is_latest" checked>
-                <span>Mark as latest release</span>
-            </label>
-            <button type="submit" class="button primary">Upload installer</button>
-        </form>
-
-        <h3>Current latest releases</h3>
-        <table>
+    <div class="card releases-card">
+        <h2>Releases</h2>
+        <div class="table-wrap">
+        <table class="releases-table">
             <thead>
                 <tr>
                     <th>Product</th>
-                    <th>Latest</th>
-                    <th>Uploaded</th>
+                    <th>Hosted version</th>
+                    <th>Workspace version</th>
+                    <th>Workspace installer</th>
+                    <th>Release notes</th>
+                    <th>Action</th>
                 </tr>
             </thead>
             <tbody>
                 {% for product in products %}
                     {% set release = latest_releases.get(product.id) %}
+                    {% set ws = workspace_info.get(product.id) %}
                     <tr>
                         <td>{{ product.display_name }}</td>
-                        <td>{{ release.version if release else '-' }}</td>
-                        <td>{{ release.created_at.strftime('%Y-%m-%d') if release else '-' }}</td>
+                        <td id="hosted-version-{{ product.id }}">
+                            <span class="release-pill {{ 'missing' if not release else '' }}">{{ release.version if release else '-' }}</span>
+                        </td>
+                        <td>
+                            <span class="release-pill {{ 'missing' if not (ws and ws.version) else '' }}">{{ ws.version if ws and ws.version else '-' }}</span>
+                            {% if ws and ws.error %}<div class="cell-note">{{ ws.error }}</div>{% endif %}
+                        </td>
+                        <td>
+                            {% if ws and ws.installer_path %}
+                                <span class="release-installer">{{ ws.installer_path.name }}</span>
+                            {% else %}
+                                <span class="muted">Not found</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div class="release-note-hint">Detected release notes</div>
+                            {% if ws and ws.patch_notes %}
+                                <div class="release-notes-box">
+{{- ws.patch_notes -}}
+                                </div>
+                            {% else %}
+                                <div class="muted">No notes found for this version.</div>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if ws and ws.version and ws.installer_path %}
+                                <button type="button" class="button primary import-button"
+                                    data-product-id="{{ product.id }}"
+                                    data-product-name="{{ product.display_name }}"
+                                    data-workspace-version="{{ ws.version }}"
+                                    data-hosted-cell-id="hosted-version-{{ product.id }}"
+                                        {% if release and release.version == ws.version %}title="Already hosted"{% endif %}>
+                                    {% if release and release.version == ws.version %}Re-import{% else %}Import{% endif %}
+                                </button>
+                            {% else %}
+                                <span class="muted">No build available</span>
+                            {% endif %}
+                        </td>
                     </tr>
                 {% endfor %}
             </tbody>
         </table>
+        </div>
+        <div class="import-progress-panel">
+            <h3>Import progress</h3>
+            <progress id="import-progress" max="100" value="0"></progress>
+            <p id="import-progress-text" class="muted">Idle. Click Import to sync a binary from workspace.</p>
+        </div>
+        <script>
+            (function () {
+                const progressBar = document.getElementById('import-progress');
+                const progressText = document.getElementById('import-progress-text');
+                let timerId = null;
+
+                function setProgress(value, text) {
+                    progressBar.value = value;
+                    progressText.textContent = text;
+                }
+
+                function startProgress(productName) {
+                    if (timerId) {
+                        clearInterval(timerId);
+                    }
+                    setProgress(5, 'Starting import for ' + productName + '...');
+                    timerId = setInterval(function () {
+                        if (progressBar.value < 90) {
+                            progressBar.value += 6;
+                            progressText.textContent = 'Uploading binary into backend... ' + Math.floor(progressBar.value) + '%';
+                        }
+                    }, 200);
+                }
+
+                function stopProgress() {
+                    if (timerId) {
+                        clearInterval(timerId);
+                        timerId = null;
+                    }
+                }
+
+                async function runImport(button) {
+                    const productId = button.dataset.productId;
+                    const productName = button.dataset.productName;
+                    const hostedCellId = button.dataset.hostedCellId;
+                    const hostedCell = document.getElementById(hostedCellId);
+                    const originalLabel = button.textContent;
+
+                    button.disabled = true;
+                    startProgress(productName);
+
+                    try {
+                        const response = await fetch('/admin/releases/import/' + productId, {
+                            method: 'POST',
+                            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                        });
+                        const payload = await response.json();
+
+                        if (!response.ok || !payload.ok) {
+                            throw new Error(payload.message || 'Import failed.');
+                        }
+
+                        stopProgress();
+                        setProgress(100, payload.message + ' Users can now download this release.');
+                        if (hostedCell) {
+                            hostedCell.textContent = payload.version || button.dataset.workspaceVersion || '-';
+                        }
+                        button.textContent = 'Re-import';
+                        button.title = 'Already hosted';
+                    } catch (error) {
+                        stopProgress();
+                        setProgress(0, error.message || 'Import failed.');
+                    } finally {
+                        button.disabled = false;
+                        if (!button.textContent || button.textContent === originalLabel) {
+                            button.textContent = originalLabel;
+                        }
+                    }
+                }
+
+                document.querySelectorAll('.import-button').forEach(function (button) {
+                    button.addEventListener('click', function () {
+                        runImport(button);
+                    });
+                });
+            })();
+        </script>
     </div>
 </section>
 

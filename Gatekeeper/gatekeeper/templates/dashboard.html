@@ -3,28 +3,11 @@
 <section class="grid two-col">
     <div class="card">
         <h2>Welcome, {{ current_user.display_name }}</h2>
-        <p>Register machine IDs from the apps, request access, then download licenses and installers after approval.</p>
+        <p>Flow: request product access, download installer after approval, then register machine ID and request a machine-bound license.</p>
     </div>
     <div class="card">
-        <h2>Register machine</h2>
-        <form method="post" action="/app/machines" class="stack-form">
-            <label>
-                <span>Label</span>
-                <input type="text" name="label" placeholder="Main PC" required>
-            </label>
-            <label>
-                <span>Machine ID</span>
-                <input type="text" name="machine_id" placeholder="A3F2-9C1B-D47E-8801" required>
-            </label>
-            <button type="submit" class="button primary">Add machine</button>
-        </form>
-    </div>
-</section>
-
-<section class="grid two-col">
-    <div class="card">
-        <h2>Request software access</h2>
-        <form method="post" action="/app/requests" class="stack-form">
+        <h2>Request product access</h2>
+        <form method="post" action="/app/access-requests" class="stack-form">
             <label>
                 <span>Product</span>
                 <select name="product_id" required>
@@ -34,23 +17,105 @@
                 </select>
             </label>
             <label>
+                <span>Request note</span>
+                <textarea name="requested_note" rows="3" placeholder="Optional note for admin"></textarea>
+            </label>
+            <button type="submit" class="button primary">Request access</button>
+        </form>
+    </div>
+</section>
+
+<section class="grid two-col">
+    <div class="card">
+        <h2>Register machine</h2>
+        <form method="post" action="/app/machines" class="stack-form">
+            <label>
+                <span>Label</span>
+                <input type="text" name="label" placeholder="Main PC" required>
+            </label>
+            <label>
+                <span>Machine ID</span>
+                <input id="machine-id-input" type="text" name="machine_id" placeholder="Copy Machine ID from your app" readonly required>
+            </label>
+            <button id="fill-machine-id-btn" type="button" class="button subtle">Auto-fill from clipboard</button>
+            <p id="machine-id-status" class="muted">Machine ID is read-only. Copy it from your app and click auto-fill.</p>
+            <button type="submit" class="button primary">Add machine</button>
+        </form>
+        <script>
+            (function () {
+                const machineInput = document.getElementById('machine-id-input');
+                const fillButton = document.getElementById('fill-machine-id-btn');
+                const status = document.getElementById('machine-id-status');
+                const machineIdPattern = /^[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}$/;
+
+                function setStatus(message, isError) {
+                    status.textContent = message;
+                    status.style.color = isError ? 'var(--danger)' : 'var(--muted)';
+                }
+
+                async function fillFromClipboard() {
+                    if (!navigator.clipboard || !navigator.clipboard.readText) {
+                        setStatus('Clipboard read is not available in this browser. Paste is required in a supported browser.', true);
+                        return;
+                    }
+                    try {
+                        const raw = await navigator.clipboard.readText();
+                        const normalized = (raw || '').trim().toUpperCase();
+                        if (!machineIdPattern.test(normalized)) {
+                            setStatus('Clipboard does not contain a valid Machine ID (format: XXXX-XXXX-XXXX-XXXX).', true);
+                            return;
+                        }
+                        machineInput.value = normalized;
+                        setStatus('Machine ID auto-filled from clipboard.', false);
+                    } catch (error) {
+                        setStatus('Clipboard permission denied. Click the button again and allow clipboard access.', true);
+                    }
+                }
+
+                fillButton.addEventListener('click', fillFromClipboard);
+                // Best effort auto-fill on load if permission is already granted.
+                fillFromClipboard();
+            })();
+        </script>
+    </div>
+    <div class="card">
+        <h2>Request machine license</h2>
+        <form method="post" action="/app/requests" class="stack-form">
+            <label>
+                <span>Product</span>
+                <select name="product_id" required {% if not granted_product_ids %}disabled{% endif %}>
+                    {% for product in products %}
+                        {% if product.id in granted_product_ids %}
+                            <option value="{{ product.id }}">{{ product.display_name }}</option>
+                        {% endif %}
+                    {% endfor %}
+                </select>
+            </label>
+            <label>
                 <span>Machine</span>
-                <select name="machine_id_ref" required>
+                <select name="machine_id_ref" required {% if not machines %}disabled{% endif %}>
                     {% for machine in machines %}
                         <option value="{{ machine.id }}">{{ machine.label }} · {{ machine.machine_id }}</option>
                     {% endfor %}
                 </select>
             </label>
             <label>
-                <span>Request note</span>
+                <span>License note</span>
                 <textarea name="requested_note" rows="3" placeholder="Optional note for the admin"></textarea>
             </label>
-            <button type="submit" class="button primary" {% if not machines %}disabled{% endif %}>Submit request</button>
+            <button type="submit" class="button primary" {% if not machines or not granted_product_ids %}disabled{% endif %}>Request license</button>
         </form>
+        {% if not granted_product_ids %}
+            <p class="muted">Request and get access approved first before submitting machine license requests.</p>
+        {% endif %}
         {% if not machines %}
-            <p class="muted">Add at least one machine before creating a request.</p>
+            <p class="muted">Add at least one machine before requesting license.</p>
         {% endif %}
     </div>
+
+</section>
+
+<section class="grid two-col">
 
     <div class="card">
         <h2>Your machines</h2>
@@ -75,11 +140,35 @@
             </tbody>
         </table>
     </div>
+
+    <div class="card">
+        <h2>Product access history</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Product</th>
+                    <th>Status</th>
+                    <th>Note</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for req in access_requests %}
+                    <tr>
+                        <td>{{ req.product.display_name }}</td>
+                        <td>{{ req.status }}</td>
+                        <td>{{ req.admin_note or req.requested_note or '-' }}</td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="3">No product access requests yet.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
 </section>
 
 <section class="grid two-col">
     <div class="card">
-        <h2>Request history</h2>
+        <h2>Machine license request history</h2>
         <table>
             <thead>
                 <tr>
@@ -105,13 +194,44 @@
     </div>
 
     <div class="card">
-        <h2>Issued licenses and installers</h2>
+        <h2>Available installers</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Product</th>
+                    <th>Latest installer</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for product in products %}
+                    {% if product.id in granted_product_ids %}
+                        {% set release = latest_releases.get(product.id) %}
+                        <tr>
+                            <td>{{ product.display_name }}</td>
+                            <td>
+                                {% if release %}
+                                    <a href="/app/releases/{{ release.id }}/download">{{ release.version }}</a>
+                                {% else %}
+                                    <span class="muted">No installer uploaded</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                    {% endif %}
+                {% else %}
+                    <tr><td colspan="2">No products available.</td></tr>
+                {% endfor %}
+                {% if not granted_product_ids %}
+                    <tr><td colspan="2">No installer access approved yet.</td></tr>
+                {% endif %}
+            </tbody>
+        </table>
+
+        <h3 style="margin-top:1rem">Issued licenses</h3>
         <table>
             <thead>
                 <tr>
                     <th>Product</th>
                     <th>License</th>
-                    <th>Installer</th>
                 </tr>
             </thead>
             <tbody>
@@ -124,17 +244,9 @@
                             {% endif %}
                         </td>
                         <td><a href="/app/licenses/{{ license_row.id }}/download">Download license</a></td>
-                        <td>
-                            {% set release = latest_releases.get(license_row.product_id) %}
-                            {% if release %}
-                                <a href="/app/releases/{{ release.id }}/download">{{ release.version }}</a>
-                            {% else %}
-                                <span class="muted">No installer uploaded</span>
-                            {% endif %}
-                        </td>
                     </tr>
                 {% else %}
-                    <tr><td colspan="3">No licenses issued yet.</td></tr>
+                    <tr><td colspan="2">No licenses issued yet.</td></tr>
                 {% endfor %}
             </tbody>
         </table>

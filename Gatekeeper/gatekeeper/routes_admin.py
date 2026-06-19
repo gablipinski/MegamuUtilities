@@ -4,15 +4,22 @@ import re
 from datetime import date
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
+from datetime import datetime
 
-from .config import settings
 from .dependencies import get_db, pop_flashes, push_flash, require_admin
-from .license_service import approve_request, latest_releases_by_product, reject_request, sanitize_segment
-from .models import IssuedLicense, LicenseRequest, Product, ProductRelease, User
+from .license_service import (
+    approve_request,
+    import_release_from_workspace,
+    latest_releases_by_product,
+    read_workspace_release_info,
+    reject_request,
+    _parse_all_release_notes,
+)
+from .models import IssuedLicense, LicenseRequest, Product, ProductAccessGrant, ProductAccessRequest, User
 
 
 router = APIRouter(prefix='/admin')
@@ -22,6 +29,12 @@ def register_admin_routes(templates: Jinja2Templates) -> APIRouter:
     @router.get('')
     def admin_dashboard(request: Request, db: Session = Depends(get_db)):
         admin_user = require_admin(request, db)
+        pending_access_requests = (
+            db.query(ProductAccessRequest)
+            .filter(ProductAccessRequest.status == 'pending')
+            .order_by(ProductAccessRequest.created_at.asc())
+            .all()
+        )
         pending_requests = (
             db.query(LicenseRequest)
             .filter(LicenseRequest.status == 'pending')
@@ -43,18 +56,26 @@ def register_admin_routes(templates: Jinja2Templates) -> APIRouter:
         products = db.query(Product).filter(Product.is_active.is_(True)).order_by(Product.display_name.asc()).all()
         users = db.query(User).order_by(User.created_at.desc()).limit(30).all()
         latest_releases = latest_releases_by_product(db)
+        workspace_info = {p.id: read_workspace_release_info(p) for p in products}
+        workspace_all_notes = {
+            p.id: _parse_all_release_notes(Path(p.app_root_path) / 'RELEASE_NOTES.md')
+            for p in products
+        }
         return templates.TemplateResponse(
             request,
             'admin_dashboard.html',
             {
                 'page_title': 'Admin Dashboard',
                 'current_user': admin_user,
+                'pending_access_requests': pending_access_requests,
                 'pending_requests': pending_requests,
                 'recent_requests': recent_requests,
                 'recent_licenses': recent_licenses,
                 'products': products,
                 'users': users,
                 'latest_releases': latest_releases,
+                'workspace_info': workspace_info,
+                'workspace_all_notes': workspace_all_notes,
                 'flashes': pop_flashes(request),
             },
         )
@@ -112,6 +133,66 @@ def register_admin_routes(templates: Jinja2Templates) -> APIRouter:
         push_flash(request, 'success', 'Request rejected.')
         return RedirectResponse('/admin', status_code=303)
 
+    @router.post('/access-requests/{request_id}/approve')
+    def approve_access_request(
+        request_id: int,
+        request: Request,
+        admin_note: str = Form(''),
+        db: Session = Depends(get_db),
+    ):
+        admin_user = require_admin(request, db)
+        request_row = db.query(ProductAccessRequest).filter(ProductAccessRequest.id == request_id).first()
+        if request_row is None:
+            push_flash(request, 'error', 'Access request not found.')
+            return RedirectResponse('/admin', status_code=303)
+        request_row.status = 'approved'
+        request_row.admin_note = admin_note.strip()
+        request_row.reviewed_by = admin_user
+        request_row.reviewed_at = datetime.utcnow()
+
+        grant = (
+            db.query(ProductAccessGrant)
+            .filter(
+                ProductAccessGrant.user_id == request_row.user_id,
+                ProductAccessGrant.product_id == request_row.product_id,
+            )
+            .first()
+        )
+        if grant is None:
+            grant = ProductAccessGrant(
+                user_id=request_row.user_id,
+                product_id=request_row.product_id,
+                is_active=True,
+                granted_by=admin_user,
+            )
+            db.add(grant)
+        else:
+            grant.is_active = True
+            grant.granted_by = admin_user
+        db.commit()
+        push_flash(request, 'success', 'Access request approved. User can now download installer.')
+        return RedirectResponse('/admin', status_code=303)
+
+    @router.post('/access-requests/{request_id}/reject')
+    def reject_access_request(
+        request_id: int,
+        request: Request,
+        admin_note: str = Form(...),
+        db: Session = Depends(get_db),
+    ):
+        admin_user = require_admin(request, db)
+        request_row = db.query(ProductAccessRequest).filter(ProductAccessRequest.id == request_id).first()
+        if request_row is None:
+            push_flash(request, 'error', 'Access request not found.')
+            return RedirectResponse('/admin', status_code=303)
+        request_row.status = 'rejected'
+        request_row.admin_note = admin_note.strip()
+        request_row.reviewed_by = admin_user
+        request_row.reviewed_at = datetime.utcnow()
+        db.commit()
+        push_flash(request, 'success', 'Access request rejected.')
+        return RedirectResponse('/admin', status_code=303)
+
     @router.post('/users/{user_id}/toggle-admin')
     def toggle_admin(user_id: int, request: Request, db: Session = Depends(get_db)):
         admin_user = require_admin(request, db)
@@ -127,48 +208,35 @@ def register_admin_routes(templates: Jinja2Templates) -> APIRouter:
         push_flash(request, 'success', f'Updated admin status for {target.email}.')
         return RedirectResponse('/admin', status_code=303)
 
-    @router.post('/releases')
-    async def upload_release(
-        request: Request,
-        product_id: int = Form(...),
-        version: str = Form(...),
-        notes: str = Form(''),
-        is_latest: str = Form('on'),
-        installer_file: UploadFile = File(...),
-        db: Session = Depends(get_db),
-    ):
+    @router.post('/releases/import/{product_id}')
+    def import_release(product_id: int, request: Request, db: Session = Depends(get_db)):
         require_admin(request, db)
         product = db.query(Product).filter(Product.id == product_id, Product.is_active.is_(True)).first()
+        is_async_request = request.headers.get('x-requested-with', '').lower() == 'xmlhttprequest'
         if product is None:
-            push_flash(request, 'error', 'Invalid product selected.')
+            if is_async_request:
+                return JSONResponse({'ok': False, 'message': 'Product not found.'}, status_code=404)
+            push_flash(request, 'error', 'Product not found.')
             return RedirectResponse('/admin', status_code=303)
-
-        file_name = installer_file.filename or 'installer.bin'
-        version_slug = sanitize_segment(version)
-        target_dir = settings.installers_dir / product.slug / version_slug
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target_path = target_dir / sanitize_segment(file_name)
-        file_bytes = await installer_file.read()
-        if not file_bytes:
-            push_flash(request, 'error', 'Installer upload was empty.')
-            return RedirectResponse('/admin', status_code=303)
-        target_path.write_bytes(file_bytes)
-
-        mark_latest = str(is_latest).lower() in {'on', 'true', '1', 'yes'}
-        if mark_latest:
-            db.query(ProductRelease).filter(ProductRelease.product_id == product.id).update({'is_latest': False})
-
-        release = ProductRelease(
-            product_id=product.id,
-            version=version.strip(),
-            notes=notes.strip(),
-            original_filename=file_name,
-            installer_path=str(target_path),
-            is_latest=mark_latest,
-        )
-        db.add(release)
-        db.commit()
-        push_flash(request, 'success', f'Uploaded installer for {product.display_name} {version.strip()}.')
+        try:
+            release = import_release_from_workspace(db, product)
+            message = f'Imported {product.display_name} {release.version}. Binary is ready for download.'
+            if is_async_request:
+                return JSONResponse(
+                    {
+                        'ok': True,
+                        'product_id': product.id,
+                        'product_name': product.display_name,
+                        'version': release.version,
+                        'message': message,
+                    }
+                )
+            push_flash(request, 'success',
+                       f'Imported {product.display_name} {release.version} from workspace. Previous binaries replaced.')
+        except Exception as exc:
+            if is_async_request:
+                return JSONResponse({'ok': False, 'message': f'Import failed for {product.display_name}: {exc}'}, status_code=400)
+            push_flash(request, 'error', f'Import failed for {product.display_name}: {exc}')
         return RedirectResponse('/admin', status_code=303)
 
     return router

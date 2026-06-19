@@ -40,9 +40,14 @@ kQIDAQAB
 """
 
 
+def _is_packaged_runtime() -> bool:
+    """Return True for packaged executables (PyInstaller/Nuitka/cx_Freeze)."""
+    return bool(getattr(sys, 'frozen', False) or '__compiled__' in globals())
+
+
 def get_license_path() -> Path:
     """Return the expected location of license.dat."""
-    if getattr(sys, 'frozen', False):
+    if _is_packaged_runtime():
         appdata = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming'))
         target_dir = appdata / 'Guardtower'
         target_dir.mkdir(parents=True, exist_ok=True)

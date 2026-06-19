@@ -50,7 +50,11 @@
 
 - Add escape order and delay controls to Process Tower functionality.
 
-## 1.1.2 (2026-06-18)
+## 1.1.2 (2026-06-19)
 
-- Add escape order and delay controls to Process Tower functionality.
+- - Refactored license management to support packaged executables.
+
+## 1.1.3 (2026-06-19)
+
+- - Refactored license management to support packaged executables.
 

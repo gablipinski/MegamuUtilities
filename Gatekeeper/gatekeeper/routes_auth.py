@@ -5,6 +5,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
+from .admin_access import can_admin_login_from_request
 from .dependencies import get_db, get_current_user_optional, pop_flashes, push_flash
 from .models import User
 from .security import hash_password, verify_password
@@ -32,10 +33,17 @@ def register_auth_routes(templates: Jinja2Templates) -> APIRouter:
         password: str = Form(...),
         db: Session = Depends(get_db),
     ):
-        user = db.query(User).filter(User.email == email.strip().lower()).first()
+        normalized_login = email.strip().lower()
+        user = db.query(User).filter(User.email == normalized_login).first()
         if user is None or not user.is_active or not verify_password(password, user.password_hash):
             push_flash(request, 'error', 'Invalid email or password.')
             return RedirectResponse('/login', status_code=303)
+
+        if user.is_admin:
+            allowed, message = can_admin_login_from_request(request)
+            if not allowed:
+                push_flash(request, 'error', message)
+                return RedirectResponse('/login', status_code=303)
 
         request.session['user_id'] = user.id
         push_flash(request, 'success', 'Login successful.')

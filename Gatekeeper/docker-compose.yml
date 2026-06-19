@@ -11,9 +11,11 @@ services:
       GATEKEEPER_PORT: 8000
       GATEKEEPER_WORKSPACE_ROOT: /workspace
       GATEKEEPER_SECRET_KEY: change-me-before-production
-      GATEKEEPER_BOOTSTRAP_ADMIN_EMAIL: admin@example.com
-      GATEKEEPER_BOOTSTRAP_ADMIN_PASSWORD: ChangeMeNow123!
-      GATEKEEPER_DEFAULT_LICENSE_DAYS: 365
+      GATEKEEPER_BOOTSTRAP_ADMIN_EMAIL: admin
+      GATEKEEPER_BOOTSTRAP_ADMIN_PASSWORD: admin
+      GATEKEEPER_ENFORCE_ADMIN_MAC: "1"
+      GATEKEEPER_ADMIN_ALLOWED_MACS: "8A:32:8B:9A:95:E8"
+      GATEKEEPER_DEFAULT_LICENSE_DAYS: 30
     volumes:
       - gatekeeper_data:/app/data
       - ../Guardtower:/workspace/Guardtower:ro
@@ -23,3 +25,4 @@ services:
 
 volumes:
   gatekeeper_data:
+ 

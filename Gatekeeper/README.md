@@ -77,6 +77,18 @@ Before real use, change these values in [Gatekeeper/docker-compose.yml](c:/Proje
 - `GATEKEEPER_SECRET_KEY`
 - `GATEKEEPER_BOOTSTRAP_ADMIN_EMAIL`
 - `GATEKEEPER_BOOTSTRAP_ADMIN_PASSWORD`
+- `GATEKEEPER_ADMIN_ALLOWED_MACS`
+
+To keep Gatekeeper available on LAN while restricting admin login to specific client machines, configure:
+
+- `GATEKEEPER_ENFORCE_ADMIN_MAC=1`
+- `GATEKEEPER_ADMIN_ALLOWED_MACS=AA:BB:CC:DD:EE:FF,11:22:33:44:55:66`
+
+Notes:
+
+- This MAC check is applied only for admin accounts.
+- Normal user accounts are not blocked by the admin MAC allowlist.
+- MAC-based checks rely on ARP visibility and are most reliable on local networks.
 
 To stop the container:
 
@@ -106,10 +118,16 @@ On first startup it seeds these products and points license generation at:
 
 1. User registers and logs in.
 2. User registers one or more machine IDs.
-3. User submits a license request for a product and machine.
-4. Admin approves the request and optionally sets an expiry date.
-5. Gatekeeper generates a signed `license.dat` file.
-6. User downloads the issued license and the latest installer.
+3. Admin uploads the latest installer per product.
+4. User submits a license request for a product and machine.
+5. Admin approves the request and optionally sets an expiry date.
+6. Gatekeeper generates a signed `license.dat` file.
+7. User downloads the issued license and the latest installer.
+
+Installer storage policy:
+
+- Each new installer upload replaces previous installers for that product.
+- Only one latest installer per product is kept on the server.
 
 ## Notes
 
