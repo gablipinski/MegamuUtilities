@@ -16,10 +16,6 @@
                     {% endfor %}
                 </select>
             </label>
-            <label>
-                <span>Request note</span>
-                <textarea name="requested_note" rows="3" placeholder="Optional note for admin"></textarea>
-            </label>
             <button type="submit" class="button primary">Request access</button>
         </form>
     </div>
@@ -35,48 +31,11 @@
             </label>
             <label>
                 <span>Machine ID</span>
-                <input id="machine-id-input" type="text" name="machine_id" placeholder="Copy Machine ID from your app" readonly required>
+                <input type="text" name="machine_id" placeholder="Paste Machine ID from your app" required>
             </label>
-            <button id="fill-machine-id-btn" type="button" class="button subtle">Auto-fill from clipboard</button>
-            <p id="machine-id-status" class="muted">Machine ID is read-only. Copy it from your app and click auto-fill.</p>
+            <p class="muted">Copy the Machine ID from your app and paste it here.</p>
             <button type="submit" class="button primary">Add machine</button>
         </form>
-        <script>
-            (function () {
-                const machineInput = document.getElementById('machine-id-input');
-                const fillButton = document.getElementById('fill-machine-id-btn');
-                const status = document.getElementById('machine-id-status');
-                const machineIdPattern = /^[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}$/;
-
-                function setStatus(message, isError) {
-                    status.textContent = message;
-                    status.style.color = isError ? 'var(--danger)' : 'var(--muted)';
-                }
-
-                async function fillFromClipboard() {
-                    if (!navigator.clipboard || !navigator.clipboard.readText) {
-                        setStatus('Clipboard read is not available in this browser. Paste is required in a supported browser.', true);
-                        return;
-                    }
-                    try {
-                        const raw = await navigator.clipboard.readText();
-                        const normalized = (raw || '').trim().toUpperCase();
-                        if (!machineIdPattern.test(normalized)) {
-                            setStatus('Clipboard does not contain a valid Machine ID (format: XXXX-XXXX-XXXX-XXXX).', true);
-                            return;
-                        }
-                        machineInput.value = normalized;
-                        setStatus('Machine ID auto-filled from clipboard.', false);
-                    } catch (error) {
-                        setStatus('Clipboard permission denied. Click the button again and allow clipboard access.', true);
-                    }
-                }
-
-                fillButton.addEventListener('click', fillFromClipboard);
-                // Best effort auto-fill on load if permission is already granted.
-                fillFromClipboard();
-            })();
-        </script>
     </div>
     <div class="card">
         <h2>Request machine license</h2>
@@ -98,10 +57,6 @@
                         <option value="{{ machine.id }}">{{ machine.label }} · {{ machine.machine_id }}</option>
                     {% endfor %}
                 </select>
-            </label>
-            <label>
-                <span>License note</span>
-                <textarea name="requested_note" rows="3" placeholder="Optional note for the admin"></textarea>
             </label>
             <button type="submit" class="button primary" {% if not machines or not granted_product_ids %}disabled{% endif %}>Request license</button>
         </form>
@@ -148,7 +103,6 @@
                 <tr>
                     <th>Product</th>
                     <th>Status</th>
-                    <th>Note</th>
                 </tr>
             </thead>
             <tbody>
@@ -156,10 +110,9 @@
                     <tr>
                         <td>{{ req.product.display_name }}</td>
                         <td>{{ req.status }}</td>
-                        <td>{{ req.admin_note or req.requested_note or '-' }}</td>
                     </tr>
                 {% else %}
-                    <tr><td colspan="3">No product access requests yet.</td></tr>
+                    <tr><td colspan="2">No product access requests yet.</td></tr>
                 {% endfor %}
             </tbody>
         </table>
@@ -175,7 +128,6 @@
                     <th>Product</th>
                     <th>Machine</th>
                     <th>Status</th>
-                    <th>Note</th>
                 </tr>
             </thead>
             <tbody>
@@ -184,10 +136,9 @@
                         <td>{{ req.product.display_name }}</td>
                         <td>{{ req.machine.label }}</td>
                         <td>{{ req.status }}</td>
-                        <td>{{ req.admin_note or req.requested_note or '-' }}</td>
                     </tr>
                 {% else %}
-                    <tr><td colspan="4">No requests yet.</td></tr>
+                    <tr><td colspan="3">No requests yet.</td></tr>
                 {% endfor %}
             </tbody>
         </table>

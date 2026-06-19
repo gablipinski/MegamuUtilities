@@ -7,14 +7,11 @@
             {% for req in pending_access_requests %}
                 <article class="subcard">
                     <h3>{{ req.product.display_name }} · {{ req.user.display_name }}</h3>
-                    <p>User note: {{ req.requested_note or '-' }}</p>
                     <div class="action-row">
                         <form method="post" action="/admin/access-requests/{{ req.id }}/approve" class="inline-form">
-                            <input type="text" name="admin_note" placeholder="Optional approval note">
                             <button type="submit" class="button primary">Approve access</button>
                         </form>
                         <form method="post" action="/admin/access-requests/{{ req.id }}/reject" class="inline-form">
-                            <input type="text" name="admin_note" placeholder="Reason" required>
                             <button type="submit" class="button danger">Reject</button>
                         </form>
                     </div>
@@ -32,15 +29,12 @@
                 <article class="subcard">
                     <h3>{{ req.product.display_name }} · {{ req.user.display_name }}</h3>
                     <p>Machine: {{ req.machine.label }} · {{ req.machine.machine_id }}</p>
-                    <p>User note: {{ req.requested_note or '-' }}</p>
                     <div class="action-row">
                         <form method="post" action="/admin/requests/{{ req.id }}/approve" class="inline-form">
                             <input type="date" name="expiry_date">
-                            <input type="text" name="admin_note" placeholder="Optional approval note">
                             <button type="submit" class="button primary">Approve</button>
                         </form>
                         <form method="post" action="/admin/requests/{{ req.id }}/reject" class="inline-form">
-                            <input type="text" name="admin_note" placeholder="Reason" required>
                             <button type="submit" class="button danger">Reject</button>
                         </form>
                     </div>
@@ -219,7 +213,6 @@
                         <td>{{ grant.created_at.strftime('%Y-%m-%d') }}</td>
                         <td>
                             <form method="post" action="/admin/access-grants/{{ grant.id }}/revoke" class="inline-form">
-                                <input type="text" name="admin_note" placeholder="Optional reason">
                                 <button type="submit" class="button danger">Revoke access</button>
                             </form>
                         </td>
@@ -300,7 +293,6 @@
                 <th>Product</th>
                 <th>Machine</th>
                 <th>Status</th>
-                <th>Admin note</th>
             </tr>
         </thead>
         <tbody>
@@ -310,10 +302,9 @@
                     <td>{{ req.product.display_name }}</td>
                     <td>{{ req.machine.machine_id }}</td>
                     <td>{{ req.status }}</td>
-                    <td>{{ req.admin_note or '-' }}</td>
                 </tr>
             {% else %}
-                <tr><td colspan="5">No requests yet.</td></tr>
+                <tr><td colspan="4">No requests yet.</td></tr>
             {% endfor %}
         </tbody>
     </table>

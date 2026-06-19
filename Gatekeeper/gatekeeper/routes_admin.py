@@ -128,7 +128,7 @@ def register_admin_routes(templates: Jinja2Templates) -> APIRouter:
     def reject_license_request(
         request_id: int,
         request: Request,
-        admin_note: str = Form(...),
+        admin_note: str = Form(''),
         db: Session = Depends(get_db),
     ):
         admin_user = require_admin(request, db)
@@ -184,7 +184,7 @@ def register_admin_routes(templates: Jinja2Templates) -> APIRouter:
     def reject_access_request(
         request_id: int,
         request: Request,
-        admin_note: str = Form(...),
+        admin_note: str = Form(''),
         db: Session = Depends(get_db),
     ):
         admin_user = require_admin(request, db)
