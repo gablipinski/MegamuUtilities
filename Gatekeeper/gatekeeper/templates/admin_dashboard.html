@@ -263,31 +263,32 @@
         </table>
     </div>
 
-    <div class="card">
-        <h2>Recent licenses</h2>
-        <table>
-            <thead>
+</section>
+
+<section class="card">
+    <h2>Recent licenses</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>User</th>
+                <th>Product</th>
+                <th>Machine</th>
+                <th>Issued</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for license_row in recent_licenses %}
                 <tr>
-                    <th>User</th>
-                    <th>Product</th>
-                    <th>Machine</th>
-                    <th>Issued</th>
+                    <td>{{ license_row.user.display_name }}</td>
+                    <td>{{ license_row.product.display_name }}</td>
+                    <td>{{ license_row.machine.machine_id }}</td>
+                    <td>{{ license_row.created_at.strftime('%Y-%m-%d') }}</td>
                 </tr>
-            </thead>
-            <tbody>
-                {% for license_row in recent_licenses %}
-                    <tr>
-                        <td>{{ license_row.user.display_name }}</td>
-                        <td>{{ license_row.product.display_name }}</td>
-                        <td>{{ license_row.machine.machine_id }}</td>
-                        <td>{{ license_row.created_at.strftime('%Y-%m-%d') }}</td>
-                    </tr>
-                {% else %}
-                    <tr><td colspan="4">No licenses issued yet.</td></tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
+            {% else %}
+                <tr><td colspan="4">No licenses issued yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
 </section>
 
 <section class="card">

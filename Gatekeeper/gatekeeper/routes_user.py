@@ -48,7 +48,10 @@ def register_user_routes(templates: Jinja2Templates) -> APIRouter:
         )
         issued_licenses = (
             db.query(IssuedLicense)
-            .filter(IssuedLicense.user_id == current_user.id)
+            .filter(
+                IssuedLicense.user_id == current_user.id,
+                IssuedLicense.product_id.in_(granted_product_ids) if granted_product_ids else False,
+            )
             .order_by(IssuedLicense.created_at.desc())
             .all()
         )
