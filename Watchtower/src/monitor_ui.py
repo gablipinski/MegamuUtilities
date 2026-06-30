@@ -125,6 +125,7 @@ class MonitorUI:
         self._snapshot_photo: ImageTk.PhotoImage | None = None
         self._last_trigger_snapshot: Image.Image | None = None
         self._last_trigger_mode: str = 'Trigger'
+        self._last_trigger_time_var = tk.StringVar(value='Last trigger: Never')
 
         self._build_ui()
         self._set_state_idle('Idle')
@@ -578,7 +579,7 @@ class MonitorUI:
 
         # Scrollable rows container
         rows_outer = tk.Frame(self._process_tower_panel, bg=self._colors['panel'])
-        rows_outer.pack(fill=tk.X)
+        rows_outer.pack(fill=tk.BOTH, expand=True)
 
         self._process_tower_canvas = tk.Canvas(
             rows_outer,
@@ -591,7 +592,7 @@ class MonitorUI:
         self._process_tower_canvas.configure(yscrollcommand=scrollbar.set)
 
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self._process_tower_canvas.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._process_tower_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         self._process_tower_rows_frame = tk.Frame(self._process_tower_canvas, bg=self._colors['panel'])
         self._process_tower_canvas_window = self._process_tower_canvas.create_window(
@@ -664,23 +665,21 @@ class MonitorUI:
         self.btn_last_snapshot.pack(fill=tk.X, pady=(0, 8))
         self.btn_last_snapshot.configure(state=tk.DISABLED)
 
-        self.log = tk.Text(
+        self.lbl_last_trigger = tk.Label(
             container,
-            height=10,
-            wrap=tk.WORD,
-            state=tk.DISABLED,
+            textvariable=self._last_trigger_time_var,
+            anchor=tk.W,
+            font=('Segoe UI Semibold', 10),
             bg=self._colors['input_bg'],
-            fg=self._colors['text'],
-            insertbackground=self._colors['text'],
+            fg=self._colors['accent'],
             relief=tk.FLAT,
-            bd=0,
             highlightthickness=1,
             highlightbackground=self._colors['border'],
             highlightcolor=self._colors['accent'],
             padx=10,
             pady=8,
         )
-        self.log.pack(fill=tk.BOTH, expand=True)
+        self.lbl_last_trigger.pack(side=tk.BOTTOM, fill=tk.X)
 
         self._refresh_mode_ui()
 
@@ -723,11 +722,11 @@ class MonitorUI:
 
     def _log(self, message: str):
         timestamp = datetime.now().strftime('%H:%M:%S')
-        line = f'[{timestamp}] {message}\n'
-        self.log.configure(state=tk.NORMAL)
-        self.log.insert(tk.END, line)
-        self.log.see(tk.END)
-        self.log.configure(state=tk.DISABLED)
+        print(f'[{timestamp}] {message}')
+
+    def _set_last_trigger_now(self) -> None:
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self._last_trigger_time_var.set(f'Last trigger: {timestamp}')
 
     @staticmethod
     def _normalize_route_step(step: object) -> dict[str, int | str] | None:
@@ -857,12 +856,11 @@ class MonitorUI:
             self.controls.pack_forget()
             self.btn_last_snapshot.pack_forget()
             self._process_tower_panel.pack(
-                fill=tk.X, pady=(10, 4),
+                fill=tk.BOTH, expand=True, pady=(10, 4),
                 before=self.state_row,
             )
             self.state_row.pack_forget()
             self.lbl_region.pack_forget()
-            self.log.configure(height=5)
             self.lbl_route.configure(text='')
             self.root.minsize(400, 420)
             self._log('Mode set to PROCESS TOWER.')
@@ -871,8 +869,7 @@ class MonitorUI:
             self.state_row.pack(fill=tk.X, pady=(6, 6))
             self.lbl_region.pack(fill=tk.X)
             self.controls.pack(fill=tk.X, pady=(10, 8), before=self.state_row)
-            self.btn_last_snapshot.pack(fill=tk.X, pady=(0, 8), before=self.log)
-            self.log.configure(height=10)
+            self.btn_last_snapshot.pack(fill=tk.X, pady=(0, 8), before=self.lbl_last_trigger)
             self.root.minsize(360, 320)
             self.btn_select_route.configure(state=tk.NORMAL)
             self._update_route_label()
@@ -906,11 +903,11 @@ class MonitorUI:
         for row in self._process_tower_rows:
             saved.append({
                 'name': row['name_var'].get(),
-                'threshold': row['threshold_var'].get() if row.get('threshold_var') else '10',
-                'key': row['key_var'].get() if row.get('key_var') else '',
-                'escape_order': row['escape_order_var'].get() if row.get('escape_order_var') else '0',
-                'escape_delay_min_ms': row['escape_delay_min_ms_var'].get() if row.get('escape_delay_min_ms_var') else '0',
-                'escape_delay_max_ms': row['escape_delay_max_ms_var'].get() if row.get('escape_delay_max_ms_var') else '1200',
+                'threshold': row['threshold_var'].get() if row.get('threshold_var') else '0',
+                'key': row['key_var'].get() if row.get('key_var') else 'alt+0',
+                'escape_order': row['escape_order_var'].get() if row.get('escape_order_var') else '1',
+                'escape_delay_min_ms': row['escape_delay_min_ms_var'].get() if row.get('escape_delay_min_ms_var') else '100',
+                'escape_delay_max_ms': row['escape_delay_max_ms_var'].get() if row.get('escape_delay_max_ms_var') else '300',
                 'is_slayer': row['is_slayer_var'].get() if row.get('is_slayer_var') else True,
                 'radar': row['radar_var'].get() if row.get('radar_var') else '',
                 'process_path': row.get('process_path'),
@@ -923,11 +920,11 @@ class MonitorUI:
         for i in range(count):
             s = saved[i] if i < len(saved) else {}
             name_var = tk.StringVar(value=s.get('name', ''))
-            threshold_var = tk.StringVar(value=s.get('threshold', '10'))
-            key_var = tk.StringVar(value=s.get('key', ''))
-            escape_order_var = tk.StringVar(value=s.get('escape_order', str(i)))
-            escape_delay_min_ms_var = tk.StringVar(value=s.get('escape_delay_min_ms', '0'))
-            escape_delay_max_ms_var = tk.StringVar(value=s.get('escape_delay_max_ms', '1200'))
+            threshold_var = tk.StringVar(value=s.get('threshold', '0'))
+            key_var = tk.StringVar(value=s.get('key', 'alt+0'))
+            escape_order_var = tk.StringVar(value=s.get('escape_order', '1'))
+            escape_delay_min_ms_var = tk.StringVar(value=s.get('escape_delay_min_ms', '100'))
+            escape_delay_max_ms_var = tk.StringVar(value=s.get('escape_delay_max_ms', '300'))
             is_slayer_var = tk.BooleanVar(value=s.get('is_slayer', True))
             radar_var = tk.StringVar(value=s.get('radar', ''))
             status_var = tk.StringVar(value='Not attached')
@@ -1032,6 +1029,7 @@ class MonitorUI:
             radar_combo = ttk.Combobox(radar_frame, textvariable=radar_var,
                                        state='readonly', width=16, style='Dark.TCombobox')
             radar_combo.pack(side=tk.LEFT, padx=(6, 10))
+            radar_combo.bind('<<ComboboxSelected>>', lambda _e: self._refresh_escape_order_combos())
             tk.Label(radar_frame, text='Trigger:', bg=self._colors['panel_alt'],
                      fg=self._colors['muted'], font=('Segoe UI', 9)).pack(side=tk.LEFT)
             tk.Label(radar_frame, textvariable=key_var, width=8, anchor=tk.W,
@@ -1065,18 +1063,15 @@ class MonitorUI:
                 fg=self._colors['muted'],
                 font=('Segoe UI', 9),
             ).pack(side=tk.LEFT)
-            tk.Entry(
+            escape_order_combo = ttk.Combobox(
                 escape_frame,
                 textvariable=escape_order_var,
+                state='readonly',
                 width=4,
-                bg=self._colors['input_bg'],
-                fg=self._colors['text'],
-                insertbackground=self._colors['text'],
-                relief=tk.FLAT,
-                highlightthickness=1,
-                highlightbackground=self._colors['border'],
-                highlightcolor=self._colors['accent'],
-            ).pack(side=tk.LEFT, padx=(6, 14))
+                style='Dark.TCombobox',
+            )
+            escape_order_combo.pack(side=tk.LEFT, padx=(6, 14))
+            escape_order_combo.bind('<<ComboboxSelected>>', lambda _e, idx=i: self._on_escape_order_selected(idx))
 
             tk.Label(
                 escape_frame,
@@ -1122,6 +1117,7 @@ class MonitorUI:
                 'threshold_var': threshold_var,
                 'key_var': key_var,
                 'escape_order_var': escape_order_var,
+                'escape_order_combo': escape_order_combo,
                 'escape_delay_min_ms_var': escape_delay_min_ms_var,
                 'escape_delay_max_ms_var': escape_delay_max_ms_var,
                 'is_slayer_var': is_slayer_var,
@@ -1141,6 +1137,8 @@ class MonitorUI:
                 'scan_stop': scan_stop,
                 'scan_thread': None,
             }
+            name_var.trace_add('write', lambda *_: self._refresh_radar_combos())
+            radar_var.trace_add('write', lambda *_: self._refresh_escape_order_combos())
             self._process_tower_rows.append(row_data)
 
         # Show correct bottom frame and populate radar combos
@@ -1171,6 +1169,76 @@ class MonitorUI:
                 combo['values'] = slayer_labels
                 if row['radar_var'].get() not in slayer_labels:
                     row['radar_var'].set(slayer_labels[0] if slayer_labels else '')
+        self._refresh_escape_order_combos()
+
+    def _refresh_escape_order_combos(self) -> None:
+        self._refresh_escape_order_combos_with_priority(None)
+
+    def _on_escape_order_selected(self, idx: int) -> None:
+        self._refresh_escape_order_combos_with_priority(idx)
+
+    def _refresh_escape_order_combos_with_priority(self, preferred_idx: int | None) -> None:
+        group_counts: dict[str, int] = {}
+        group_rows: dict[str, list[int]] = {}
+
+        def _row_group_label(row_idx: int) -> str:
+            row = self._process_tower_rows[row_idx]
+            if row['is_slayer_var'].get():
+                return self._slayer_label(row_idx)
+            return row['radar_var'].get().strip()
+
+        for i, row in enumerate(self._process_tower_rows):
+            if not row['is_slayer_var'].get():
+                continue
+            label = self._slayer_label(i)
+            if label:
+                group_counts[label] = 1
+                group_rows.setdefault(label, []).append(i)
+
+        for i, row in enumerate(self._process_tower_rows):
+            if row['is_slayer_var'].get():
+                continue
+            label = row['radar_var'].get().strip()
+            if label:
+                group_counts[label] = group_counts.get(label, 0) + 1
+                group_rows.setdefault(label, []).append(i)
+
+        for i, row in enumerate(self._process_tower_rows):
+            label = _row_group_label(i)
+
+            group_size = max(1, group_counts.get(label, 1))
+            values = [str(n) for n in range(1, group_size + 1)]
+
+            combo = row.get('escape_order_combo')
+            if combo is not None:
+                combo['values'] = values
+
+        for label, indices in group_rows.items():
+            group_size = max(1, group_counts.get(label, 1))
+            assignment_order = list(indices)
+            if preferred_idx is not None and preferred_idx in assignment_order:
+                assignment_order = [preferred_idx] + [idx for idx in assignment_order if idx != preferred_idx]
+
+            taken: set[int] = set()
+            assigned: dict[int, int] = {}
+            for idx in assignment_order:
+                raw = self._process_tower_rows[idx]['escape_order_var'].get().strip()
+                try:
+                    candidate = int(raw)
+                except ValueError:
+                    candidate = 0
+
+                if candidate < 1 or candidate > group_size or candidate in taken:
+                    for fallback in range(1, group_size + 1):
+                        if fallback not in taken:
+                            candidate = fallback
+                            break
+
+                taken.add(candidate)
+                assigned[idx] = candidate
+
+            for idx in indices:
+                self._process_tower_rows[idx]['escape_order_var'].set(str(assigned[idx]))
 
     def _on_slayer_toggle(self, idx: int) -> None:
         row = self._process_tower_rows[idx]
@@ -1610,6 +1678,28 @@ class MonitorUI:
             'Shift_L': 'shift', 'Shift_R': 'shift',
             'Win_L': 'win', 'Win_R': 'win',
         }
+        key_aliases = {
+            'Return': 'enter',
+            'Escape': 'esc',
+            'BackSpace': 'backspace',
+            'Tab': 'tab',
+            'space': 'space',
+            'Delete': 'delete',
+            'Insert': 'insert',
+            'Home': 'home',
+            'End': 'end',
+            'Prior': 'pageup',
+            'Next': 'pagedown',
+            'Up': 'up',
+            'Down': 'down',
+            'Left': 'left',
+            'Right': 'right',
+            'KP_Add': 'kp_add',
+            'KP_Subtract': 'kp_subtract',
+            'KP_Multiply': 'kp_multiply',
+            'KP_Divide': 'kp_divide',
+            'KP_Decimal': 'kp_decimal',
+        }
         modifiers: set[str] = set()
         main_key: list[str] = []
 
@@ -1626,11 +1716,13 @@ class MonitorUI:
             combo_var.set(_format())
 
         def _on_key(event: tk.Event):
-            ks = event.keysym
+            ks = str(event.keysym)
             if ks in modifier_map:
                 modifiers.add(modifier_map[ks])
             else:
-                mapped = ks.lower()
+                mapped = key_aliases.get(ks, ks.lower())
+                if mapped.startswith('kp_') and len(mapped) == 4 and mapped[-1].isdigit():
+                    mapped = f'num{mapped[-1]}'
                 if mapped not in ('??', ''):
                     main_key.clear()
                     main_key.append(mapped)
@@ -1870,6 +1962,26 @@ class MonitorUI:
     def _vk_for_token(token: str) -> int | None:
         """Map hotkey token to VK code."""
         t = token.strip().lower()
+        alias_map = {
+            'control': 'ctrl',
+            'return': 'enter',
+            'escape': 'esc',
+            'spacebar': 'space',
+            'prior': 'pageup',
+            'next': 'pagedown',
+            'pgup': 'pageup',
+            'pgdn': 'pagedown',
+            'ins': 'insert',
+            'del': 'delete',
+            'bksp': 'backspace',
+        }
+        t = alias_map.get(t, t)
+
+        if t.startswith('kp_') and len(t) == 4 and t[-1].isdigit():
+            t = f'num{t[-1]}'
+        if t.startswith('numpad') and len(t) == 7 and t[-1].isdigit():
+            t = f'num{t[-1]}'
+
         vk_map = {
             'ctrl': 0x11, 'control': 0x11,
             'alt': 0x12,
@@ -1884,6 +1996,9 @@ class MonitorUI:
             'home': 0x24, 'end': 0x23,
             'insert': 0x2D, 'delete': 0x2E,
             'backspace': 0x08,
+            'num0': 0x60, 'num1': 0x61, 'num2': 0x62, 'num3': 0x63, 'num4': 0x64,
+            'num5': 0x65, 'num6': 0x66, 'num7': 0x67, 'num8': 0x68, 'num9': 0x69,
+            'kp_add': 0x6B, 'kp_subtract': 0x6D, 'kp_multiply': 0x6A, 'kp_divide': 0x6F, 'kp_decimal': 0x6E,
             'f1': 0x70, 'f2': 0x71, 'f3': 0x72, 'f4': 0x73,
             'f5': 0x74, 'f6': 0x75, 'f7': 0x76, 'f8': 0x77,
             'f9': 0x78, 'f10': 0x79, 'f11': 0x7A, 'f12': 0x7B,
@@ -1901,11 +2016,24 @@ class MonitorUI:
         win32gui = importlib.import_module('win32gui')
         win32con = importlib.import_module('win32con')
 
+        try:
+            self._focus_process_window(pid)
+        except Exception:
+            pass
+        try:
+            self._prepare_process_window_for_input(pid)
+        except Exception:
+            pass
+
         hwnds = self._find_process_windows(pid)
         if not hwnds:
             return False
 
-        parts = [p.strip() for p in key_combo.split('+') if p.strip()]
+        primary_hwnd = self._find_primary_process_window(pid)
+        if primary_hwnd in hwnds:
+            hwnds = [primary_hwnd] + [h for h in hwnds if h != primary_hwnd]
+
+        parts = [p.strip().lower() for p in key_combo.split('+') if p.strip()]
         if not parts:
             return False
 
@@ -1923,6 +2051,12 @@ class MonitorUI:
             mod_tokens = mod_tokens[:-1]
         if not main_tokens:
             return False
+
+        dedup_mod_tokens = []
+        for token in mod_tokens:
+            if token not in dedup_mod_tokens:
+                dedup_mod_tokens.append(token)
+        mod_tokens = dedup_mod_tokens
 
         mod_vks = [self._vk_for_token(m) for m in mod_tokens]
         if any(v is None for v in mod_vks):
@@ -1945,32 +2079,47 @@ class MonitorUI:
         lparam_down = 0x00000001
         lparam_up = 0xC0000001
 
-        # Ensure ALT is released first, mirroring the user-provided pattern.
-        sent_any = False
+        def _send_message(hwnd: int, msg: int, vk: int, lparam: int, use_timeout: bool) -> None:
+            if use_timeout:
+                win32gui.SendMessageTimeout(
+                    hwnd,
+                    msg,
+                    vk,
+                    lparam,
+                    win32con.SMTO_ABORTIFHUNG,
+                    60,
+                )
+            else:
+                win32gui.PostMessage(hwnd, msg, vk, lparam)
 
-        for hwnd in hwnds:
-            try:
-                # Ensure ALT is released first, mirroring the user-provided pattern.
-                win32gui.PostMessage(hwnd, win32con.WM_SYSKEYUP, win32con.VK_MENU, lparam_up)
+        for use_timeout in (False, True):
+            sent_any = False
+            for hwnd in hwnds:
+                try:
+                    _send_message(hwnd, win32con.WM_SYSKEYUP, win32con.VK_MENU, lparam_up, use_timeout)
 
-                # Modifier down
-                for vk in mod_vks:
-                    win32gui.PostMessage(hwnd, down_msg, vk, lparam_down)
-                # Main key tap
-                win32gui.PostMessage(hwnd, down_msg, main_vk, lparam_down)
-                win32gui.PostMessage(hwnd, up_msg, main_vk, lparam_up)
-                # Modifier up (reverse order)
-                for vk in reversed(mod_vks):
-                    win32gui.PostMessage(hwnd, up_msg, vk, lparam_up)
+                    for vk in mod_vks:
+                        _send_message(hwnd, down_msg, vk, lparam_down, use_timeout)
 
-                # Extra release for ALT-style sequences, matching the provided code.
-                if has_alt:
-                    win32gui.PostMessage(hwnd, win32con.WM_SYSKEYUP, win32con.VK_MENU, lparam_up)
+                    _send_message(hwnd, down_msg, main_vk, lparam_down, use_timeout)
+                    _send_message(hwnd, up_msg, main_vk, lparam_up, use_timeout)
 
-                sent_any = True
-            except Exception:
-                continue
-        return sent_any
+                    for vk in reversed(mod_vks):
+                        _send_message(hwnd, up_msg, vk, lparam_up, use_timeout)
+
+                    if has_alt:
+                        _send_message(hwnd, win32con.WM_SYSKEYUP, win32con.VK_MENU, lparam_up, use_timeout)
+
+                    sent_any = True
+                    break
+                except Exception:
+                    continue
+
+            if sent_any:
+                return True
+            time.sleep(0.02)
+
+        return False
 
     def _send_tab_key_to_pid(self, pid: int) -> bool:
         """Bring target to foreground and send a single TAB key press."""
@@ -1985,18 +2134,38 @@ class MonitorUI:
         lparam_down = 0x00000001
         lparam_up = 0xC0000001
 
-        try:
-            # Try to foreground the window, but do not fail hard if Windows blocks it.
+        for use_timeout in (False, True):
             try:
-                self._focus_process_window(pid)
-            except Exception:
-                pass
+                try:
+                    self._focus_process_window(pid)
+                except Exception:
+                    pass
 
-            win32gui.PostMessage(hwnd, win32con.WM_KEYDOWN, tab_vk, lparam_down)
-            win32gui.PostMessage(hwnd, win32con.WM_KEYUP, tab_vk, lparam_up)
-            return True
-        except Exception:
-            return False
+                if use_timeout:
+                    win32gui.SendMessageTimeout(
+                        hwnd,
+                        win32con.WM_KEYDOWN,
+                        tab_vk,
+                        lparam_down,
+                        win32con.SMTO_ABORTIFHUNG,
+                        60,
+                    )
+                    win32gui.SendMessageTimeout(
+                        hwnd,
+                        win32con.WM_KEYUP,
+                        tab_vk,
+                        lparam_up,
+                        win32con.SMTO_ABORTIFHUNG,
+                        60,
+                    )
+                else:
+                    win32gui.PostMessage(hwnd, win32con.WM_KEYDOWN, tab_vk, lparam_down)
+                    win32gui.PostMessage(hwnd, win32con.WM_KEYUP, tab_vk, lparam_up)
+                return True
+            except Exception:
+                time.sleep(0.02)
+                continue
+        return False
 
     @staticmethod
     def _send_alt_number_sequence(hwnds: list[int], num: str) -> bool:
@@ -2009,27 +2178,39 @@ class MonitorUI:
             lparam_down = 0x00000001
             lparam_up = 0xC0000001
 
-            sent_any = False
-            for hwnd in hwnds:
-                # ensure ALT released first
-                win32gui.PostMessage(hwnd, win32con.WM_SYSKEYUP, win32con.VK_MENU, lparam_up)
+            def _send_message(hwnd: int, msg: int, key: int, lparam: int, use_timeout: bool) -> None:
+                if use_timeout:
+                    win32gui.SendMessageTimeout(
+                        hwnd,
+                        msg,
+                        key,
+                        lparam,
+                        win32con.SMTO_ABORTIFHUNG,
+                        60,
+                    )
+                else:
+                    win32gui.PostMessage(hwnd, msg, key, lparam)
 
-                # ALT DOWN
-                win32gui.PostMessage(hwnd, win32con.WM_SYSKEYDOWN, win32con.VK_MENU, lparam_down)
+            for use_timeout in (False, True):
+                sent_any = False
+                for hwnd in hwnds:
+                    try:
+                        _send_message(hwnd, win32con.WM_SYSKEYUP, win32con.VK_MENU, lparam_up, use_timeout)
+                        _send_message(hwnd, win32con.WM_SYSKEYDOWN, win32con.VK_MENU, lparam_down, use_timeout)
+                        _send_message(hwnd, win32con.WM_SYSKEYDOWN, vk, lparam_down, use_timeout)
+                        _send_message(hwnd, win32con.WM_SYSKEYUP, vk, lparam_up, use_timeout)
+                        _send_message(hwnd, win32con.WM_SYSKEYUP, win32con.VK_MENU, lparam_up, use_timeout)
+                        _send_message(hwnd, win32con.WM_SYSKEYUP, win32con.VK_MENU, lparam_up, use_timeout)
+                        sent_any = True
+                        break
+                    except Exception:
+                        continue
 
-                # NUM DOWN
-                win32gui.PostMessage(hwnd, win32con.WM_SYSKEYDOWN, vk, lparam_down)
+                if sent_any:
+                    return True
+                time.sleep(0.02)
 
-                # NUM UP
-                win32gui.PostMessage(hwnd, win32con.WM_SYSKEYUP, vk, lparam_up)
-
-                # ALT UP
-                win32gui.PostMessage(hwnd, win32con.WM_SYSKEYUP, win32con.VK_MENU, lparam_up)
-
-                # safety extra release
-                win32gui.PostMessage(hwnd, win32con.WM_SYSKEYUP, win32con.VK_MENU, lparam_up)
-                sent_any = True
-            return sent_any
+            return False
         except Exception:
             return False
 
@@ -2587,6 +2768,11 @@ class MonitorUI:
                 'Alt_R': 'alt',
                 'Win_L': 'win',
                 'Win_R': 'win',
+                'KP_Add': 'kp_add',
+                'KP_Subtract': 'kp_subtract',
+                'KP_Multiply': 'kp_multiply',
+                'KP_Divide': 'kp_divide',
+                'KP_Decimal': 'kp_decimal',
             }
 
             modifier_order = ['ctrl', 'alt', 'shift', 'win']
@@ -2646,6 +2832,9 @@ class MonitorUI:
 
                 if keysym in key_aliases:
                     return key_aliases[keysym]
+
+                if keysym.startswith('KP_') and len(keysym) == 4 and keysym[-1].isdigit():
+                    return f'num{keysym[-1]}'
 
                 if len(char) == 1 and char.isprintable() and char != ' ':
                     return char.lower()
@@ -3005,6 +3194,7 @@ class MonitorUI:
 
             if event == 'detected':
                 self._set_state_detected()
+                self._set_last_trigger_now()
                 self._log('Player detected. Escape route executed.')
             elif event == 'safe_zone':
                 self._notify_safe_zone()
@@ -3038,18 +3228,31 @@ class MonitorUI:
                 info = payload if isinstance(payload, dict) else {}
                 idx = info.get('idx')
                 value = info.get('value')
+                reason = str(info.get('reason', 'ok'))
                 if isinstance(idx, int) and 0 <= idx < len(self._process_tower_rows):
                     row = self._process_tower_rows[idx]
                     count_var = row.get('map_count_var')
                     if count_var is not None:
-                        shown = str(value) if value is not None else 'N/A'
+                        if value is not None:
+                            shown = str(value)
+                        elif reason == 'no-address':
+                            shown = 'N/A (no address)'
+                        elif reason == 'module-not-found':
+                            shown = 'N/A (module not found)'
+                        elif reason == 'read-fail':
+                            shown = 'N/A (read fail)'
+                        else:
+                            shown = 'N/A'
                         count_var.set(f'Map: {shown}')
             elif event == 'process_scan_auto_stop':
                 info = payload if isinstance(payload, dict) else {}
                 idx = info.get('idx')
                 if isinstance(idx, int) and 0 <= idx < len(self._process_tower_rows):
                     self._reset_process_tower_scan_row(idx, 'Attached  •  Triggered')
+                    self._set_last_trigger_now()
                     self._log(f'Character #{idx + 1}: scan auto-stopped after trigger.')
+            elif event == 'triggered':
+                self._set_last_trigger_now()
             elif event == 'log':
                 self._log(str(payload))
             elif event == 'stopped':

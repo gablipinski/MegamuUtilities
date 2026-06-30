@@ -66,3 +66,14 @@
 
 - Fixed minimap reload logic.
 
+## 1.1.6 (2026-06-30)
+
+- Added a label to display the last trigger time in the Monitor UI.
+- Improved layout of UI components for better responsiveness.
+- Replaced the text widget with a label for last trigger time updates.
+- Updated logging mechanism to print messages instead of using a text widget.
+- Enhanced escape order handling in the process tower, including new methods for managing escape order combos.
+- Introduced new functions for reading scan address entries and handling pointer chains with offsets.
+- Improved map pointer handling with fallback mechanisms and calibration for better accuracy.
+- Updated scan addresses for the MapOverlay to reflect changes in the game module and offsets.
+
