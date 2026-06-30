@@ -191,6 +191,7 @@ def register_user_routes(templates: Jinja2Templates) -> APIRouter:
         product_id: int = Form(...),
         machine_id_ref: int = Form(...),
         requested_note: str = Form(''),
+        replace_existing_license: bool = Form(False),
         db: Session = Depends(get_db),
     ):
         current_user = get_current_user(request, db)
@@ -229,6 +230,42 @@ def register_user_routes(templates: Jinja2Templates) -> APIRouter:
         if existing_pending is not None:
             push_flash(request, 'error', 'A pending request for this product and machine already exists.')
             return RedirectResponse('/app', status_code=303)
+
+        existing_licenses_for_product = (
+            db.query(IssuedLicense)
+            .filter(
+                IssuedLicense.user_id == current_user.id,
+                IssuedLicense.product_id == product.id,
+            )
+            .order_by(IssuedLicense.created_at.desc(), IssuedLicense.id.desc())
+            .all()
+        )
+
+        if existing_licenses_for_product and not replace_existing_license:
+            push_flash(
+                request,
+                'error',
+                f'You already have a {product.display_name} license. Confirm replacement to request a new one.',
+            )
+            return RedirectResponse('/app', status_code=303)
+
+        if existing_licenses_for_product:
+            replacement_note = 'Replaced by user request for a new license.'
+            for license_row in existing_licenses_for_product:
+                request_row = license_row.request
+                if request_row is not None:
+                    existing_note = (request_row.admin_note or '').strip()
+                    request_row.status = 'rejected'
+                    request_row.admin_note = f'{existing_note}\n{replacement_note}' if existing_note else replacement_note
+                    request_row.reviewed_at = datetime.utcnow()
+
+                license_file_path = Path(license_row.file_path)
+                db.delete(license_row)
+                if license_file_path.exists():
+                    try:
+                        license_file_path.unlink()
+                    except OSError:
+                        pass
 
         request_row = LicenseRequest(
             user_id=current_user.id,

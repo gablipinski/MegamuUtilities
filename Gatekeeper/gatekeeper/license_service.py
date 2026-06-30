@@ -135,6 +135,16 @@ def approve_request(
     product = request_row.product
     machine = request_row.machine
     user = request_row.user
+    previous_license = (
+        db.query(IssuedLicense)
+        .filter(
+            IssuedLicense.user_id == user.id,
+            IssuedLicense.product_id == product.id,
+            IssuedLicense.request_id != request_row.id,
+        )
+        .order_by(IssuedLicense.created_at.desc(), IssuedLicense.id.desc())
+        .first()
+    )
     machine_id = normalize_machine_id(machine.machine_id)
     issued_to = user.display_name or user.email
     if expiry_date is None and settings.default_license_days > 0:
@@ -146,6 +156,11 @@ def approve_request(
         issued_to=issued_to,
         expiry_date=expiry_date,
     )
+
+    previous_license_file_path: Path | None = None
+    if previous_license is not None:
+        previous_license_file_path = Path(previous_license.file_path)
+        db.delete(previous_license)
 
     license_row = IssuedLicense(
         request=request_row,
@@ -163,6 +178,14 @@ def approve_request(
     db.add(license_row)
     db.commit()
     db.refresh(license_row)
+
+    # When regenerated for the same machine/user/month, the path can be reused.
+    if previous_license_file_path is not None and previous_license_file_path != file_path and previous_license_file_path.exists():
+        try:
+            previous_license_file_path.unlink()
+        except OSError:
+            pass
+
     return license_row
 
 

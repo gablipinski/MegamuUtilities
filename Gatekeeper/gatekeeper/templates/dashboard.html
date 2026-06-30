@@ -39,13 +39,13 @@
     </div>
     <div class="card">
         <h2>Request machine license</h2>
-        <form method="post" action="/app/requests" class="stack-form">
+        <form method="post" action="/app/requests" class="stack-form" id="license-request-form">
             <label>
                 <span>Product</span>
-                <select name="product_id" required {% if not granted_product_ids %}disabled{% endif %}>
+                <select name="product_id" id="license-request-product" required {% if not granted_product_ids %}disabled{% endif %}>
                     {% for product in products %}
                         {% if product.id in granted_product_ids %}
-                            <option value="{{ product.id }}">{{ product.display_name }}</option>
+                            <option value="{{ product.id }}" data-has-existing-license="{{ '1' if product.id in approved_product_ids else '0' }}">{{ product.display_name }}</option>
                         {% endif %}
                     {% endfor %}
                 </select>
@@ -58,6 +58,7 @@
                     {% endfor %}
                 </select>
             </label>
+            <input type="hidden" name="replace_existing_license" id="replace-existing-license" value="false">
             <button type="submit" class="button primary" {% if not machines or not granted_product_ids %}disabled{% endif %}>Request license</button>
         </form>
         {% if not granted_product_ids %}
@@ -209,4 +210,42 @@
         </table>
     </div>
 </section>
+
+<script>
+(() => {
+    const form = document.getElementById('license-request-form');
+    if (!form) {
+        return;
+    }
+
+    const productSelect = document.getElementById('license-request-product');
+    const replaceInput = document.getElementById('replace-existing-license');
+    if (!productSelect || !replaceInput) {
+        return;
+    }
+
+    form.addEventListener('submit', (event) => {
+        replaceInput.value = 'false';
+        const selectedOption = productSelect.options[productSelect.selectedIndex];
+        if (!selectedOption) {
+            return;
+        }
+
+        const hasExistingLicense = selectedOption.dataset.hasExistingLicense === '1';
+        if (!hasExistingLicense) {
+            return;
+        }
+
+        const confirmed = window.confirm(
+            'You already have a license for this app. Requesting a new one will delete the older license. Continue?'
+        );
+        if (!confirmed) {
+            event.preventDefault();
+            return;
+        }
+
+        replaceInput.value = 'true';
+    });
+})();
+</script>
 {% endblock %}
