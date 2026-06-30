@@ -919,6 +919,9 @@ class MonitorUI:
         trigger_obj = payload.get("trigger_message")
         trigger_message = str(trigger_obj) if isinstance(trigger_obj, str) else None
 
+        trigger_sender_obj = payload.get("trigger_sender")
+        trigger_sender = str(trigger_sender_obj).strip() if isinstance(trigger_sender_obj, str) else None
+
         reply_name_obj = payload.get("default_reply_name")
         default_reply_name = str(reply_name_obj) if isinstance(reply_name_obj, str) else None
 
@@ -938,6 +941,7 @@ class MonitorUI:
                     account_name=account_name,
                     timeout_s=timeout_s,
                     trigger_message=trigger_message,
+                    trigger_sender=trigger_sender,
                     default_reply_name=default_reply_name,
                     won_prefix=won_prefix,
                     is_won_reply=is_won_reply,
@@ -969,6 +973,7 @@ class MonitorUI:
         account_name: str | None,
         timeout_s: float,
         trigger_message: str | None = None,
+        trigger_sender: str | None = None,
         default_reply_name: str | None = None,
         won_prefix: str | None = None,
         is_won_reply: bool = False,
@@ -1110,6 +1115,16 @@ class MonitorUI:
             trigger_preview.pack(fill=tk.X, pady=(4, 8))
             trigger_preview.insert("1.0", trigger_message)
             trigger_preview.configure(state=tk.DISABLED)
+
+        if trigger_sender:
+            tk.Label(
+                panel,
+                text=f"Trigger sender: {trigger_sender}",
+                bg=self._colors["panel"],
+                fg=self._colors["muted"],
+                font=("Segoe UI", 9),
+                anchor="w",
+            ).pack(fill=tk.X, pady=(0, 8))
 
         name_var: tk.StringVar | None = None
         send_preview_var: tk.StringVar | None = None

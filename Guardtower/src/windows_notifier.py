@@ -197,6 +197,7 @@ class WindowsNotifier:
         message: str,
         title: str = "Giveaway detected!",
         account: str | None = None,
+        trigger_sender: str | None = None,
         launch_url: str | None = None,
     ) -> bool:
         """Sends a Windows toast notification."""
@@ -206,8 +207,15 @@ class WindowsNotifier:
 
         body = self.config.message.format(
             channel=channel,
-            message=message[:50] + "..." if len(message) > 50 else message,
+            message=message[:160] + "..." if len(message) > 160 else message,
+            sender=trigger_sender or "",
+            trigger_sender=trigger_sender or "",
         )
+
+        if trigger_sender:
+            sender_lower = trigger_sender.lower()
+            if sender_lower not in body.lower():
+                body = f"{body} (Sender: {trigger_sender})"
 
         if launch_url:
             ok, err = self._service.send_action(

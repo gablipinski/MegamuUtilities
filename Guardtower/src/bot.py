@@ -133,6 +133,7 @@ class TwitchBot(commands.Cog):
         message_text: str,
         *,
         trigger_message: str | None = None,
+        trigger_sender: str | None = None,
         default_reply_name: str | None = None,
         won_prefix: str | None = None,
         is_won_reply: bool = False,
@@ -147,6 +148,7 @@ class TwitchBot(commands.Cog):
             "account_name": self.account_name,
             "timeout_s": self.SEND_CONFIRM_TIMEOUT_S,
             "trigger_message": trigger_message,
+            "trigger_sender": trigger_sender,
             "default_reply_name": default_reply_name,
             "won_prefix": won_prefix,
             "is_won_reply": is_won_reply,
@@ -580,6 +582,7 @@ class TwitchBot(commands.Cog):
                 f"You won on {channel_name}! Trigger sender: {sender}",
                 title="You won!",
                 account=self.account_name,
+                trigger_sender=sender,
                 launch_url=f"https://www.twitch.tv/{channel_name}",
             )
 
@@ -593,6 +596,7 @@ class TwitchBot(commands.Cog):
                 channel_name,
                 default_won_reply,
                 trigger_message=message_text,
+                trigger_sender=sender,
                 default_reply_name=self.account_nickname,
                 won_prefix=channel_config.won_prefix,
                 is_won_reply=True,
