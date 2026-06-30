@@ -567,7 +567,7 @@ class TwitchBot(commands.Cog):
 
         self.won_last_triggered[sender_key] = (now, channel_name)
         self.won_channel_last_reply[channel_name] = now
-        log_line(f"Won giveaway", "win", channel_name, account=self.account_name)
+        log_line(f"Won giveaway (trigger sender: {sender})", "win", channel_name, account=self.account_name)
         log_line(f"Message: {message_text}", "win", channel_name, account=self.account_name)
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -577,7 +577,7 @@ class TwitchBot(commands.Cog):
         if self.config.notification.enabled and self.send_confirmation_callback is None:
             self.notifier.send_notification(
                 channel_name,
-                f"You won on {channel_name}!",
+                f"You won on {channel_name}! Trigger sender: {sender}",
                 title="You won!",
                 account=self.account_name,
                 launch_url=f"https://www.twitch.tv/{channel_name}",

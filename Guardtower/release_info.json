@@ -1,8 +1,12 @@
 {
   "app_name": "Guardtower",
-  "version": "1.0.11",
+  "version": "1.1.0",
   "publisher": "Megamu Utilities",
   "patch_notes": [
-    "Implement notification center for managing confirmation notifications."
+    "Updated config.json with new account details and giveaway settings.",
+    "Enhanced logging in TwitchBot to include trigger sender information when a giveaway is won.",
+    "Adjusted notification messages to include trigger sender details.",
+    "Refactored MonitorUI to improve dialog handling and focus management.",
+    "Changed toast notification duration from long to short for better user experience."
   ]
 }

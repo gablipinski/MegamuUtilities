@@ -50,3 +50,11 @@
 
 - Implement notification center for managing confirmation notifications.
 
+## 1.1.0 (2026-06-30)
+
+- Updated config.json with new account details and giveaway settings.
+- Enhanced logging in TwitchBot to include trigger sender information when a giveaway is won.
+- Adjusted notification messages to include trigger sender details.
+- Refactored MonitorUI to improve dialog handling and focus management.
+- Changed toast notification duration from long to short for better user experience.
+

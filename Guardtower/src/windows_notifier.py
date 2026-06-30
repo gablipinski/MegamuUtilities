@@ -73,7 +73,7 @@ class DesktopNotificationService:
 
         inner = "".join(lines)
         xml_str = (
-            f'<toast duration="long"><visual>'
+            f'<toast duration="short"><visual>'
             f'<binding template="ToastGeneric">{inner}</binding>'
             f"</visual></toast>"
         )
@@ -139,7 +139,7 @@ $toast.ExpirationTime = [System.DateTimeOffset]::Now.AddSeconds({self.toast_time
 
             hint_line = f"<text>{escape(safe_hint)}</text>" if safe_hint else ""
             toast_xml = (
-                '<toast duration="long"><visual><binding template="ToastGeneric">'
+                '<toast duration="short"><visual><binding template="ToastGeneric">'
                 f"<text>{escape(safe_title)}</text>"
                 f"<text>{escape(safe_message)}</text>"
                 f"{hint_line}"

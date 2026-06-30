@@ -991,15 +991,12 @@ class MonitorUI:
         dialog.configure(bg=self._colors["bg"])
 
         self._active_confirmation_dialog = dialog
-        self._focus_confirmation_window(dialog)
-
-        dialog.transient(self.root)
-        dialog.grab_set()
         self._apply_app_icon(dialog)
-        dialog.attributes("-topmost", True)
-        self._force_window_front(dialog)
-        dialog.after(120, lambda: self._force_window_front(dialog))
-        dialog.after(420, lambda: self._force_window_front(dialog))
+        try:
+            dialog.lift()
+            dialog.focus_force()
+        except Exception:
+            pass
         self._send_confirmation_attention_notification(
             channel_name=channel_name,
             message_text=message_text,
@@ -1014,7 +1011,6 @@ class MonitorUI:
             if hidden["value"]:
                 try:
                     dialog.deiconify()
-                    dialog.grab_set()
                 except Exception:
                     pass
                 hidden["value"] = False
@@ -1193,10 +1189,6 @@ class MonitorUI:
         def _hide_dialog() -> None:
             if not bool(dialog.winfo_exists()):
                 return
-            try:
-                dialog.grab_release()
-            except Exception:
-                pass
             hidden["value"] = True
             dialog.withdraw()
             self._append_system_log(
@@ -1224,10 +1216,6 @@ class MonitorUI:
             self._active_confirmation_dialog = None
             self._set_confirmation_notification_status(notif_item_id, "approved" if value else "closed", reason)
             if dialog.winfo_exists():
-                try:
-                    dialog.grab_release()
-                except Exception:
-                    pass
                 dialog.destroy()
 
         def _tick() -> None:
