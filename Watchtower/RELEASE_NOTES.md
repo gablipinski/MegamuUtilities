@@ -81,3 +81,7 @@
 
 - Add ghost app functionality and improve map state handling in process tower.
 
+## 1.1.8 (2026-06-30)
+
+- Enhance ghost close functionality with countdown and status updates.
+

@@ -510,21 +510,68 @@ def _schedule_target_ghost_close(
     idx = int(target['idx'])
 
     def _worker() -> None:
+        for sec in range(int(delay_seconds), 0, -1):
+            ui._event_queue.put(
+                (
+                    'retry_status',
+                    {
+                        'idx': idx,
+                        'text': f'Ghost: closing app in {sec}s',
+                    },
+                )
+            )
+            time.sleep(1.0)
+
         ui._event_queue.put(
             (
                 'log',
                 f'Character #{idx + 1}: ghost close scheduled in {int(delay_seconds)}s for PID {pid}.',
             )
         )
-        time.sleep(delay_seconds)
+        ui._event_queue.put(
+            (
+                'retry_status',
+                {
+                    'idx': idx,
+                    'text': 'Ghost: closing app now...',
+                },
+            )
+        )
         try:
             ok = bool(ui._close_process_app(pid))
             if ok:
                 ui._event_queue.put(('log', f'Character #{idx + 1}: ghost close sent to PID {pid}.'))
+                ui._event_queue.put(
+                    (
+                        'retry_status',
+                        {
+                            'idx': idx,
+                            'text': 'Ghost: close request sent',
+                        },
+                    )
+                )
             else:
                 ui._event_queue.put(('log', f'Character #{idx + 1}: ghost close failed for PID {pid}.'))
+                ui._event_queue.put(
+                    (
+                        'retry_status',
+                        {
+                            'idx': idx,
+                            'text': 'Ghost: close failed',
+                        },
+                    )
+                )
         except Exception as exc:
             ui._event_queue.put(('log', f'Character #{idx + 1}: ghost close error for PID {pid}: {exc}'))
+            ui._event_queue.put(
+                (
+                    'retry_status',
+                    {
+                        'idx': idx,
+                        'text': f'Ghost: close error ({exc})',
+                    },
+                )
+            )
 
     threading.Thread(target=_worker, daemon=True).start()
 

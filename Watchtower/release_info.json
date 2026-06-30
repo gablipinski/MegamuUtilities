@@ -1,8 +1,8 @@
 {
   "app_name": "Watchtower",
-  "version": "1.1.7",
+  "version": "1.1.8",
   "publisher": "Megamu Utilities",
   "patch_notes": [
-    "Add ghost app functionality and improve map state handling in process tower."
+    "Enhance ghost close functionality with countdown and status updates."
   ]
 }
