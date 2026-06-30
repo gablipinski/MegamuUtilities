@@ -77,3 +77,7 @@
 - Improved map pointer handling with fallback mechanisms and calibration for better accuracy.
 - Updated scan addresses for the MapOverlay to reflect changes in the game module and offsets.
 
+## 1.1.7 (2026-06-30)
+
+- Add ghost app functionality and improve map state handling in process tower.
+

@@ -5,6 +5,13 @@ import time
 from tkinter import messagebox
 
 
+MAP_ENTRY_CANDIDATE_NAMES = [
+    'MapOverlay', 'MinimapOverlay', 'MiniMapOverlay',
+    'Map', 'MapVariable', 'MapState',
+    'Minimap', 'MiniMap', 'IsMapOpen',
+]
+
+
 def create_process_tower_app():
     from monitor_ui import MonitorUI
     return MonitorUI(initial_mode='PROCESS TOWER')
@@ -37,6 +44,12 @@ def find_scan_address_entries_any(ui, names: list[str]) -> list[dict]:
         if entry is not None:
             result.append(entry)
     return result
+
+
+def _get_map_entries_preferred(ui) -> list[dict]:
+    entries = find_scan_address_entries_any(ui, MAP_ENTRY_CANDIDATE_NAMES)
+    # Prefer pointer entries first for per-character map state.
+    return sorted(entries, key=lambda e: 0 if str(e.get('type', '')).lower() == 'pointer' else 1)
 
 
 def _read_non_negative_int(raw_value: object, default_value: int = 0) -> int:
@@ -247,6 +260,9 @@ def _trigger_escape_group(
     slayer_label: str,
     value: int,
     threshold: int,
+    *,
+    attempt_num: int | None = None,
+    max_attempts: int | None = None,
 ) -> None:
     targets = _build_group_escape_targets(ui, slayer_idx, slayer_label)
     if not targets:
@@ -256,51 +272,488 @@ def _trigger_escape_group(
     for target in targets:
         if stop_event.is_set():
             return
+        _trigger_escape_target(
+            ui,
+            stop_event,
+            target,
+            slayer_idx,
+            slayer_label,
+            value,
+            threshold,
+            attempt_num=attempt_num,
+            max_attempts=max_attempts,
+        )
 
+
+def _trigger_escape_target(
+    ui,
+    stop_event: threading.Event,
+    target: dict,
+    slayer_idx: int,
+    slayer_label: str,
+    value: int,
+    threshold: int,
+    *,
+    attempt_num: int | None = None,
+    max_attempts: int | None = None,
+) -> bool:
+    idx = int(target['idx'])
+    row = target['row']
+    key_combo = row['key_var'].get().strip()
+    if not key_combo:
+        ui._event_queue.put(('log', f'Character #{idx + 1}: trigger key not set; skipped.'))
+        ui._event_queue.put(('retry_status', {'idx': idx, 'text': 'Retry: skipped (no trigger key)'}))
+        return False
+
+    pid = row.get('pid')
+    if not pid:
+        ui._event_queue.put(('log', f'Character #{idx + 1}: no attached PID; trigger skipped.'))
+        ui._event_queue.put(('retry_status', {'idx': idx, 'text': 'Retry: skipped (no PID attached)'}))
+        return False
+
+    order_value = int(target.get('order', 0))
+    min_delay_ms, max_delay_ms = _row_escape_delay_ms_bounds(row)
+    delay_ms = random.randint(min_delay_ms, max_delay_ms)
+    if delay_ms > 0 and stop_event.wait(delay_ms / 1000.0):
+        return False
+
+    try:
+        ui._focus_process_window(pid)
+        if not ui._send_key_combo_to_pid(pid, key_combo):
+            ui._event_queue.put(('log', f'Character #{idx + 1}: PostMessage failed for PID {pid}; trigger skipped.'))
+            return False
+        ui._event_queue.put(('triggered', {'idx': idx, 'pid': pid, 'key': key_combo}))
+        ts = time.strftime('%H:%M:%S')
+        if attempt_num is not None and max_attempts is not None:
+            ui._event_queue.put(
+                (
+                    'retry_status',
+                    {
+                        'idx': idx,
+                        'text': f'Retry: trigger {attempt_num}/{max_attempts} sent at {ts}',
+                    },
+                )
+            )
+        else:
+            ui._event_queue.put(
+                (
+                    'retry_status',
+                    {
+                        'idx': idx,
+                        'text': f'Retry: trigger sent at {ts}',
+                    },
+                )
+            )
+
+        if idx == slayer_idx:
+            ui._event_queue.put((
+                'log',
+                (
+                    f'Character #{idx + 1}: triggered "{key_combo}" '
+                    f'(value={value} > max={threshold}, order={order_value}, delay={delay_ms}ms).'
+                ),
+            ))
+        else:
+            ui._event_queue.put((
+                'log',
+                (
+                    f'Character #{idx + 1}: triggered via radar "{slayer_label}" '
+                    f'(key={key_combo}, order={order_value}, delay={delay_ms}ms).'
+                ),
+            ))
+        return True
+    except Exception as exc:
+        label = 'key trigger error' if idx == slayer_idx else 'radar trigger error'
+        ui._event_queue.put(('log', f'Character #{idx + 1}: {label}: {exc}'))
+        ui._event_queue.put(('retry_status', {'idx': idx, 'text': f'Retry: trigger error ({exc})'}))
+        return False
+
+
+def _read_target_map_state(
+    ui,
+    target: dict,
+    map_pointer_override_by_pid_name: dict[tuple[int, str], list[int]],
+    map_calibration_last_attempt_by_pid: dict[int, float] | None = None,
+) -> tuple[int | None, str]:
+    idx = int(target['idx'])
+    row = target['row']
+    handle = row.get('handle')
+    pid = row.get('pid')
+    if not handle or not pid:
+        return None, 'no-handle'
+
+    handle_int = int(handle)
+    pid_int = int(pid)
+
+    map_entries = _get_map_entries_preferred(ui)
+    overrides: dict[str, list[int]] = {}
+    for entry in map_entries:
+        name = str(entry.get('name', '')).strip()
+        key = (pid_int, name)
+        if key in map_pointer_override_by_pid_name:
+            overrides[name] = list(map_pointer_override_by_pid_name[key])
+
+    map_value, map_reason = _read_map_overlay_state_once(
+        ui,
+        idx,
+        handle_int,
+        pid_int,
+        map_entries,
+        overrides,
+    )
+
+    if map_reason == 'read-fail' and map_calibration_last_attempt_by_pid is not None:
+        now = time.monotonic()
+        last = map_calibration_last_attempt_by_pid.get(pid_int, 0.0)
+        if now - last >= 5.0:
+            map_calibration_last_attempt_by_pid[pid_int] = now
+            for candidate in map_entries:
+                if str(candidate.get('type', '')).lower() != 'pointer':
+                    continue
+
+                module_name = str(candidate.get('module', '')).strip()
+                if module_name and ui._get_module_base(handle_int, module_name) is None:
+                    continue
+
+                calibrated = _calibrate_map_pointer_offsets(ui, handle_int, candidate)
+                if calibrated is None:
+                    continue
+
+                calibrated_offsets, calibrated_value = calibrated
+                candidate_name = str(candidate.get('name', '')).strip()
+                map_pointer_override_by_pid_name[(pid_int, candidate_name)] = list(calibrated_offsets)
+                map_value = int(calibrated_value)
+                map_reason = 'ok'
+                ui._event_queue.put(
+                    (
+                        'log',
+                        (
+                            f'Character #{idx + 1}: per-char map pointer calibrated for "{candidate_name}" '
+                            f'(PID {pid_int}) with offsets[0]=0x{calibrated_offsets[0]:X}, '
+                            f'offsets[1]=0x{calibrated_offsets[1]:X}.'
+                        ),
+                    )
+                )
+                break
+
+    return map_value, map_reason
+
+
+def _sync_target_minimap_state(
+    ui,
+    stop_event: threading.Event,
+    target: dict,
+    map_pointer_override_by_pid_name: dict[tuple[int, str], list[int]],
+    map_calibration_last_attempt_by_pid: dict[int, float],
+    map_tab_last_sent_by_pid: dict[int, float],
+    *,
+    tab_cooldown_seconds: float = 1.0,
+    allow_force_open: bool = True,
+) -> tuple[int | None, str]:
+    idx = int(target['idx'])
+    row = target['row']
+    pid_raw = row.get('pid')
+
+    map_value, map_reason = _read_target_map_state(
+        ui,
+        target,
+        map_pointer_override_by_pid_name,
+        map_calibration_last_attempt_by_pid,
+    )
+
+    if allow_force_open and map_value == 0 and pid_raw:
+        try:
+            pid = int(pid_raw)
+            now = time.monotonic()
+            last_sent = map_tab_last_sent_by_pid.get(pid, 0.0)
+            if now - last_sent >= tab_cooldown_seconds:
+                map_tab_last_sent_by_pid[pid] = now
+                if ui._send_tab_key_to_pid(pid):
+                    ui._event_queue.put(('log', f'Character #{idx + 1}: sent Tab because MapOverlay=0 (per-char).'))
+                    if not stop_event.wait(0.12):
+                        map_value, map_reason = _read_target_map_state(
+                            ui,
+                            target,
+                            map_pointer_override_by_pid_name,
+                            map_calibration_last_attempt_by_pid,
+                        )
+                else:
+                    ui._event_queue.put(('log', f'Character #{idx + 1}: Tab injection failed for PID {pid}.'))
+        except Exception as exc:
+            ui._event_queue.put(('log', f'Character #{idx + 1}: per-char overlay Tab error: {exc}'))
+
+    ui._event_queue.put(('map_count', {'idx': idx, 'value': map_value, 'reason': map_reason}))
+    return map_value, map_reason
+
+
+def _schedule_target_ghost_close(
+    ui,
+    target: dict,
+    scheduled_pids: set[int],
+    *,
+    delay_seconds: float = 10.0,
+) -> None:
+    row = target['row']
+    pid_raw = row.get('pid')
+    if not pid_raw:
+        return
+
+    try:
+        pid = int(pid_raw)
+    except (TypeError, ValueError):
+        return
+
+    if pid in scheduled_pids:
+        return
+    scheduled_pids.add(pid)
+
+    idx = int(target['idx'])
+
+    def _worker() -> None:
+        ui._event_queue.put(
+            (
+                'log',
+                f'Character #{idx + 1}: ghost close scheduled in {int(delay_seconds)}s for PID {pid}.',
+            )
+        )
+        time.sleep(delay_seconds)
+        try:
+            ok = bool(ui._close_process_app(pid))
+            if ok:
+                ui._event_queue.put(('log', f'Character #{idx + 1}: ghost close sent to PID {pid}.'))
+            else:
+                ui._event_queue.put(('log', f'Character #{idx + 1}: ghost close failed for PID {pid}.'))
+        except Exception as exc:
+            ui._event_queue.put(('log', f'Character #{idx + 1}: ghost close error for PID {pid}: {exc}'))
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _retry_group_by_minimap(
+    ui,
+    stop_event: threading.Event,
+    slayer_idx: int,
+    slayer_label: str,
+    value: int,
+    threshold: int,
+    *,
+    max_attempts: int = 3,
+    wait_seconds: float = 11.0,
+) -> None:
+    targets = _build_group_escape_targets(ui, slayer_idx, slayer_label)
+    if not targets:
+        return
+
+    slayer_row = ui._process_tower_rows[slayer_idx] if 0 <= slayer_idx < len(ui._process_tower_rows) else None
+    ghost_app_enabled = bool(
+        slayer_row
+        and slayer_row.get('ghost_app_var') is not None
+        and slayer_row['ghost_app_var'].get()
+    )
+
+    map_pointer_override_by_pid_name: dict[tuple[int, str], list[int]] = {}
+    map_calibration_last_attempt_by_pid: dict[int, float] = {}
+    map_tab_last_sent_by_pid: dict[int, float] = {}
+    ghost_close_scheduled_pids: set[int] = set()
+
+    post_escape_map_delay_seconds = 2
+    before_retry_delay_seconds = max(0, int(wait_seconds) - post_escape_map_delay_seconds)
+
+    states: list[dict] = []
+    for target in targets:
         idx = int(target['idx'])
-        row = target['row']
-        key_combo = row['key_var'].get().strip()
-        if not key_combo:
-            ui._event_queue.put(('log', f'Character #{idx + 1}: trigger key not set; skipped.'))
-            continue
+        states.append(
+            {
+                'target': target,
+                'idx': idx,
+                'attempt': 1,
+                'phase': 'post_escape_delay',
+                'remaining': post_escape_map_delay_seconds,
+                'done': False,
+            }
+        )
 
-        pid = row.get('pid')
-        if not pid:
-            ui._event_queue.put(('log', f'Character #{idx + 1}: no attached PID; trigger skipped.'))
-            continue
-
-        order_value = int(target.get('order', 0))
-        min_delay_ms, max_delay_ms = _row_escape_delay_ms_bounds(row)
-        delay_ms = random.randint(min_delay_ms, max_delay_ms)
-        if delay_ms > 0 and stop_event.wait(delay_ms / 1000.0):
+    while not stop_event.is_set():
+        active = [s for s in states if not bool(s.get('done'))]
+        if not active:
             return
 
-        try:
-            ui._focus_process_window(pid)
-            if not ui._send_key_combo_to_pid(pid, key_combo):
-                ui._event_queue.put(('log', f'Character #{idx + 1}: PostMessage failed for PID {pid}; trigger skipped.'))
-                continue
-            ui._event_queue.put(('triggered', {'idx': idx, 'pid': pid, 'key': key_combo}))
+        for state in active:
+            idx = int(state['idx'])
+            attempt = int(state['attempt'])
+            phase = str(state['phase'])
+            remaining = int(state['remaining'])
+            target = state['target']
 
-            if idx == slayer_idx:
-                ui._event_queue.put((
-                    'log',
-                    (
-                        f'Character #{idx + 1}: triggered "{key_combo}" '
-                        f'(value={value} > max={threshold}, order={order_value}, delay={delay_ms}ms).'
-                    ),
-                ))
-            else:
-                ui._event_queue.put((
-                    'log',
-                    (
-                        f'Character #{idx + 1}: triggered via radar "{slayer_label}" '
-                        f'(key={key_combo}, order={order_value}, delay={delay_ms}ms).'
-                    ),
-                ))
-        except Exception as exc:
-            label = 'key trigger error' if idx == slayer_idx else 'radar trigger error'
-            ui._event_queue.put(('log', f'Character #{idx + 1}: {label}: {exc}'))
+            if phase == 'post_escape_delay':
+                if remaining > 0:
+                    ui._event_queue.put(
+                        (
+                            'retry_status',
+                            {
+                                'idx': idx,
+                                'text': f'Retry {attempt}/{max_attempts}: map check in {remaining}s',
+                            },
+                        )
+                    )
+                    state['remaining'] = remaining - 1
+                    continue
+
+                map_value, _map_reason = _sync_target_minimap_state(
+                    ui,
+                    stop_event,
+                    target,
+                    map_pointer_override_by_pid_name,
+                    map_calibration_last_attempt_by_pid,
+                    map_tab_last_sent_by_pid,
+                    allow_force_open=False,
+                )
+
+                if map_value != 1:
+                    ui._event_queue.put(
+                        (
+                            'retry_status',
+                            {
+                                'idx': idx,
+                                'text': f'Retry: done at {attempt}/{max_attempts} (map={map_value})',
+                            },
+                        )
+                    )
+                    if ghost_app_enabled:
+                        _schedule_target_ghost_close(
+                            ui,
+                            target,
+                            ghost_close_scheduled_pids,
+                            delay_seconds=10.0,
+                        )
+                    state['done'] = True
+                    continue
+
+                if attempt >= max_attempts:
+                    ui._event_queue.put(
+                        (
+                            'retry_status',
+                            {
+                                'idx': idx,
+                                'text': f'Retry: reached {max_attempts}/{max_attempts}; map=1',
+                            },
+                        )
+                    )
+                    if ghost_app_enabled:
+                        _schedule_target_ghost_close(
+                            ui,
+                            target,
+                            ghost_close_scheduled_pids,
+                            delay_seconds=10.0,
+                        )
+                    state['done'] = True
+                    continue
+
+                state['phase'] = 'before_retry_delay'
+                state['remaining'] = before_retry_delay_seconds
+                continue
+
+            if phase == 'before_retry_delay':
+                next_attempt = attempt + 1
+                if remaining > 0:
+                    ui._event_queue.put(
+                        (
+                            'retry_status',
+                            {
+                                'idx': idx,
+                                'text': f'Retry {next_attempt}/{max_attempts}: next trigger in {remaining}s',
+                            },
+                        )
+                    )
+                    state['remaining'] = remaining - 1
+                    continue
+
+                state['attempt'] = next_attempt
+                _trigger_escape_target(
+                    ui,
+                    stop_event,
+                    target,
+                    slayer_idx,
+                    slayer_label,
+                    value,
+                    threshold,
+                    attempt_num=next_attempt,
+                    max_attempts=max_attempts,
+                )
+                state['phase'] = 'post_escape_delay'
+                state['remaining'] = post_escape_map_delay_seconds
+
+        if stop_event.wait(1.0):
+            return
+
+
+def _read_map_overlay_state_once(
+    ui,
+    idx: int,
+    handle: int,
+    pid: int | None,
+    map_entries: list[dict] | None,
+    map_pointer_override_by_name: dict[str, list[int]],
+) -> tuple[int | None, str]:
+    if not map_entries:
+        return None, 'no-address'
+
+    saw_candidate_with_module = False
+    saw_module_missing = False
+    map_value = None
+
+    for candidate in map_entries:
+        try:
+            if candidate.get('type') == 'pointer':
+                module_name = str(candidate.get('module', '')).strip()
+                if module_name and ui._get_module_base(handle, module_name) is None:
+                    saw_module_missing = True
+                    continue
+
+                candidate_name = str(candidate.get('name', '')).strip()
+                override_offsets = map_pointer_override_by_name.get(candidate_name)
+                if override_offsets:
+                    map_value = _read_pointer_chain_with_offsets(
+                        ui,
+                        handle,
+                        module_name,
+                        str(candidate.get('base_offset', '0x0')),
+                        override_offsets,
+                    )
+                    if map_value is not None:
+                        saw_candidate_with_module = True
+                        if int(map_value) in (0, 1):
+                            break
+                        map_value = None
+
+            saw_candidate_with_module = True
+            map_value = _read_entry_numeric_with_retry(ui, handle, pid, candidate, attempts=4)
+
+            if map_value is None and candidate.get('type') == 'pointer':
+                fallback_value, used_second_off = _read_map_pointer_with_offset_fallback(ui, handle, candidate)
+                if fallback_value is not None:
+                    map_value = fallback_value
+                    ui._event_queue.put(
+                        (
+                            'log',
+                            (
+                                f'Character #{idx + 1}: Map pointer fallback matched second offset '
+                                f'0x{used_second_off:X}.'
+                            ),
+                        )
+                    )
+        except Exception:
+            map_value = None
+
+        if map_value is not None:
+            break
+
+    if map_value is not None:
+        return (1 if int(map_value) != 0 else 0), 'ok'
+
+    if (not saw_candidate_with_module) and saw_module_missing:
+        return None, 'module-not-found'
+    return None, 'read-fail'
 
 
 def diagnose_pointer_chain(ui, handle: int, module_name: str, base_offset_hex: str, offsets_hex: list[str]) -> str:
@@ -436,14 +889,7 @@ def start_process_tower_scan(ui, idx: int) -> None:
     stop_ev = row['scan_stop']
     stop_ev.clear()
     is_slayer = bool(row.get('is_slayer_var') and row['is_slayer_var'].get())
-    map_entries = find_scan_address_entries_any(
-        ui,
-        [
-            'MapOverlay', 'MinimapOverlay', 'MiniMapOverlay',
-            'Map', 'MapVariable', 'MapState',
-            'Minimap', 'MiniMap', 'IsMapOpen',
-        ],
-    ) if is_slayer else []
+    map_entries = _get_map_entries_preferred(ui) if is_slayer else []
 
     if is_slayer and not map_entries:
         ui._log(
@@ -530,7 +976,12 @@ def scan_loop(
     map_tab_last_sent = 0.0
     map_fail_debug_last_logged = 0.0
     map_calibration_last_attempt = 0.0
+    group_map_poll_last = 0.0
+    group_map_poll_interval = 0.05
     map_pointer_override_by_name: dict[str, list[int]] = {}
+    map_pointer_override_by_pid_name: dict[tuple[int, str], list[int]] = {}
+    target_map_calibration_last_attempt_by_pid: dict[int, float] = {}
+    group_map_tab_last_sent_by_pid: dict[int, float] = {}
 
     while not stop_event.is_set():
         value = _read_entry_numeric_with_retry(ui, handle, pid, entry, attempts=2)
@@ -541,95 +992,44 @@ def scan_loop(
         map_value = None
         map_reason = 'ok'
         if is_slayer:
-            if not map_entries:
-                map_reason = 'no-address'
-            else:
-                saw_candidate_with_module = False
-                saw_module_missing = False
+            map_value, map_reason = _read_map_overlay_state_once(
+                ui,
+                idx,
+                handle,
+                pid,
+                map_entries,
+                map_pointer_override_by_name,
+            )
 
+            if map_reason == 'read-fail' and (now - map_calibration_last_attempt) >= 5.0:
+                map_calibration_last_attempt = now
                 for candidate in map_entries:
-                    try:
-                        if candidate.get('type') == 'pointer':
-                            module_name = str(candidate.get('module', '')).strip()
-                            if module_name and ui._get_module_base(handle, module_name) is None:
-                                saw_module_missing = True
-                                continue
+                    if candidate.get('type') != 'pointer':
+                        continue
+                    module_name = str(candidate.get('module', '')).strip()
+                    if module_name and ui._get_module_base(handle, module_name) is None:
+                        continue
 
-                            candidate_name = str(candidate.get('name', '')).strip()
-                            override_offsets = map_pointer_override_by_name.get(candidate_name)
-                            if override_offsets:
-                                map_value = _read_pointer_chain_with_offsets(
-                                    ui,
-                                    handle,
-                                    module_name,
-                                    str(candidate.get('base_offset', '0x0')),
-                                    override_offsets,
-                                )
-                                if map_value is not None:
-                                    saw_candidate_with_module = True
-                                    if int(map_value) in (0, 1):
-                                        break
-                                    map_value = None
+                    calibrated = _calibrate_map_pointer_offsets(ui, handle, candidate)
+                    if calibrated is None:
+                        continue
 
-                        saw_candidate_with_module = True
-                        map_value = _read_entry_numeric_with_retry(ui, handle, pid, candidate, attempts=4)
-
-                        if map_value is None and candidate.get('type') == 'pointer':
-                            fallback_value, used_second_off = _read_map_pointer_with_offset_fallback(ui, handle, candidate)
-                            if fallback_value is not None:
-                                map_value = fallback_value
-                                ui._event_queue.put(
-                                    (
-                                        'log',
-                                        (
-                                            f'Character #{idx + 1}: Map pointer fallback matched second offset '
-                                            f'0x{used_second_off:X}.'
-                                        ),
-                                    )
-                                )
-                    except Exception:
-                        map_value = None
-
-                    if map_value is not None:
-                        break
-
-                if map_value is not None:
-                    map_value = 1 if int(map_value) != 0 else 0
+                    calibrated_offsets, calibrated_value = calibrated
+                    candidate_name = str(candidate.get('name', '')).strip()
+                    map_pointer_override_by_name[candidate_name] = calibrated_offsets
+                    map_value = int(calibrated_value)
                     map_reason = 'ok'
-                elif (not saw_candidate_with_module) and saw_module_missing:
-                    map_reason = 'module-not-found'
-                else:
-                    map_reason = 'read-fail'
-
-                if map_reason == 'read-fail' and (now - map_calibration_last_attempt) >= 5.0:
-                    map_calibration_last_attempt = now
-                    for candidate in map_entries:
-                        if candidate.get('type') != 'pointer':
-                            continue
-                        module_name = str(candidate.get('module', '')).strip()
-                        if module_name and ui._get_module_base(handle, module_name) is None:
-                            continue
-
-                        calibrated = _calibrate_map_pointer_offsets(ui, handle, candidate)
-                        if calibrated is None:
-                            continue
-
-                        calibrated_offsets, calibrated_value = calibrated
-                        candidate_name = str(candidate.get('name', '')).strip()
-                        map_pointer_override_by_name[candidate_name] = calibrated_offsets
-                        map_value = int(calibrated_value)
-                        map_reason = 'ok'
-                        ui._event_queue.put(
+                    ui._event_queue.put(
+                        (
+                            'log',
                             (
-                                'log',
-                                (
-                                    f'Character #{idx + 1}: Map pointer calibrated for "{candidate_name}" '
-                                    f'with offsets[0]=0x{calibrated_offsets[0]:X}, '
-                                    f'offsets[1]=0x{calibrated_offsets[1]:X}.'
-                                ),
-                            )
+                                f'Character #{idx + 1}: Map pointer calibrated for "{candidate_name}" '
+                                f'with offsets[0]=0x{calibrated_offsets[0]:X}, '
+                                f'offsets[1]=0x{calibrated_offsets[1]:X}.'
+                            ),
                         )
-                        break
+                    )
+                    break
 
             if map_reason == 'read-fail' and (now - map_fail_debug_last_logged) >= 3.0:
                 map_fail_debug_last_logged = now
@@ -660,6 +1060,21 @@ def scan_loop(
 
         ui._event_queue.put(('map_count', {'idx': idx, 'value': map_value, 'reason': map_reason}))
 
+        if is_slayer and (now - group_map_poll_last) >= group_map_poll_interval:
+            group_map_poll_last = now
+            for target in _build_group_escape_targets(ui, idx, slayer_label):
+                target_idx = int(target['idx'])
+                if target_idx == idx:
+                    continue
+                _sync_target_minimap_state(
+                    ui,
+                    stop_event,
+                    target,
+                    map_pointer_override_by_pid_name,
+                    target_map_calibration_last_attempt_by_pid,
+                    group_map_tab_last_sent_by_pid,
+                )
+
         if is_slayer:
             if value == 1:
                 overlay_open_sent = False
@@ -680,8 +1095,30 @@ def scan_loop(
         if value is not None and value > threshold:
             if now - last_triggered >= cooldown:
                 last_triggered = now
-                _trigger_escape_group(ui, stop_event, idx, slayer_label, int(value), threshold)
+                _trigger_escape_group(
+                    ui,
+                    stop_event,
+                    idx,
+                    slayer_label,
+                    int(value),
+                    threshold,
+                    attempt_num=1,
+                    max_attempts=3,
+                )
+
+                if is_slayer and not stop_event.is_set():
+                    _retry_group_by_minimap(
+                        ui,
+                        stop_event,
+                        idx,
+                        slayer_label,
+                        int(value),
+                        threshold,
+                        max_attempts=3,
+                        wait_seconds=11.0,
+                    )
+
                 ui._event_queue.put(('process_scan_auto_stop', {'idx': idx}))
                 stop_event.set()
                 break
-        stop_event.wait(0.1)
+        stop_event.wait(0.05)

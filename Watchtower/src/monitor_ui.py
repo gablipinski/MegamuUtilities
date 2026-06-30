@@ -908,6 +908,7 @@ class MonitorUI:
                 'escape_order': row['escape_order_var'].get() if row.get('escape_order_var') else '1',
                 'escape_delay_min_ms': row['escape_delay_min_ms_var'].get() if row.get('escape_delay_min_ms_var') else '100',
                 'escape_delay_max_ms': row['escape_delay_max_ms_var'].get() if row.get('escape_delay_max_ms_var') else '300',
+                'ghost_app': row['ghost_app_var'].get() if row.get('ghost_app_var') else False,
                 'is_slayer': row['is_slayer_var'].get() if row.get('is_slayer_var') else True,
                 'radar': row['radar_var'].get() if row.get('radar_var') else '',
                 'process_path': row.get('process_path'),
@@ -925,11 +926,12 @@ class MonitorUI:
             escape_order_var = tk.StringVar(value=s.get('escape_order', '1'))
             escape_delay_min_ms_var = tk.StringVar(value=s.get('escape_delay_min_ms', '100'))
             escape_delay_max_ms_var = tk.StringVar(value=s.get('escape_delay_max_ms', '300'))
+            ghost_app_var = tk.BooleanVar(value=bool(s.get('ghost_app', False)))
             is_slayer_var = tk.BooleanVar(value=s.get('is_slayer', True))
             radar_var = tk.StringVar(value=s.get('radar', ''))
             status_var = tk.StringVar(value='Not attached')
             radar_count_var = tk.StringVar(value='Radar: N/A')
-            map_count_var = tk.StringVar(value='Map: N/A')
+            map_count_var = tk.StringVar(value='Map: 0')
             scan_stop = threading.Event()
 
             row_frame = tk.Frame(
@@ -982,16 +984,18 @@ class MonitorUI:
 
             count_frame = tk.Frame(top, bg=self._colors['panel_alt'])
             count_frame.pack(side=tk.RIGHT)
-            tk.Label(
+            radar_count_label = tk.Label(
                 count_frame, textvariable=radar_count_var, anchor=tk.W,
                 bg=self._colors['panel_alt'], fg=self._colors['accent'],
                 font=('Consolas', 9),
-            ).pack(anchor=tk.E)
-            tk.Label(
+            )
+            radar_count_label.pack(anchor=tk.E)
+            map_count_label = tk.Label(
                 count_frame, textvariable=map_count_var, anchor=tk.W,
                 bg=self._colors['panel_alt'], fg=self._colors['muted'],
                 font=('Consolas', 9),
-            ).pack(anchor=tk.E)
+            )
+            map_count_label.pack(anchor=tk.E)
 
             # ── Bottom line: dynamic (slayer vs radar) ────────────────────
             bot = tk.Frame(row_frame, bg=self._colors['panel_alt'])
@@ -1020,6 +1024,17 @@ class MonitorUI:
             btn_start = self._make_button(slayer_frame, text='Start', width=7, accent=True,
                                           command=lambda idx=i: self._on_process_tower_toggle_scan(idx))
             btn_start.pack(side=tk.LEFT)
+            tk.Checkbutton(
+                slayer_frame,
+                text='Ghost app',
+                variable=ghost_app_var,
+                bg=self._colors['panel_alt'],
+                fg=self._colors['text'],
+                selectcolor=self._colors['input_bg'],
+                activebackground=self._colors['panel_alt'],
+                activeforeground=self._colors['text'],
+                font=('Segoe UI', 9),
+            ).pack(side=tk.LEFT, padx=(8, 0))
 
             # --- Radar controls ---
             radar_frame = tk.Frame(bot, bg=self._colors['panel_alt'])
@@ -1045,12 +1060,37 @@ class MonitorUI:
                 row = self._process_tower_rows[idx]
                 sf = row['slayer_frame']
                 rf = row['radar_frame']
+                radar_label = row.get('radar_count_label')
+                map_label = row.get('map_count_label')
                 if row['is_slayer_var'].get():
                     rf.pack_forget()
                     sf.pack(fill=tk.X)
+                    if radar_label is not None and not radar_label.winfo_manager():
+                        radar_label.pack(anchor=tk.E)
+                    if map_label is not None and not map_label.winfo_manager():
+                        map_label.pack(anchor=tk.E)
+                    radar_var = row.get('radar_count_var')
+                    if radar_var is not None and not str(radar_var.get()).strip():
+                        radar_var.set('Radar: N/A')
+                    map_var = row.get('map_count_var')
+                    if map_var is not None and not str(map_var.get()).strip():
+                        map_var.set('Map: 0')
                 else:
                     sf.pack_forget()
                     rf.pack(fill=tk.X)
+                    if radar_label is not None and radar_label.winfo_manager():
+                        radar_label.pack_forget()
+                    if map_label is not None and map_label.winfo_manager():
+                        map_label.pack_forget()
+                    if map_label is not None and not map_label.winfo_manager():
+                        map_label.pack(anchor=tk.E)
+                    radar_var = row.get('radar_count_var')
+                    if radar_var is not None:
+                        radar_var.set('')
+                    map_var = row.get('map_count_var')
+                    if map_var is not None:
+                        if not str(map_var.get()).startswith('Map: '):
+                            map_var.set('Map: 0')
 
             # --- Shared escape controls (apply to slayer and radar rows) ---
             escape_frame = tk.Frame(row_frame, bg=self._colors['panel_alt'])
@@ -1112,6 +1152,16 @@ class MonitorUI:
                 highlightcolor=self._colors['accent'],
             ).pack(side=tk.LEFT, padx=(4, 0))
 
+            retry_status_var = tk.StringVar(value='Retry: idle')
+            tk.Label(
+                row_frame,
+                textvariable=retry_status_var,
+                anchor=tk.W,
+                bg=self._colors['panel_alt'],
+                fg=self._colors['muted'],
+                font=('Consolas', 8),
+            ).pack(fill=tk.X, padx=6, pady=(0, 6))
+
             row_data: dict = {
                 'name_var': name_var,
                 'threshold_var': threshold_var,
@@ -1120,6 +1170,8 @@ class MonitorUI:
                 'escape_order_combo': escape_order_combo,
                 'escape_delay_min_ms_var': escape_delay_min_ms_var,
                 'escape_delay_max_ms_var': escape_delay_max_ms_var,
+                'ghost_app_var': ghost_app_var,
+                'retry_status_var': retry_status_var,
                 'is_slayer_var': is_slayer_var,
                 'radar_var': radar_var,
                 'radar_combo': radar_combo,
@@ -1131,7 +1183,9 @@ class MonitorUI:
                 'handle': None,
                 'status_var': status_var,
                 'radar_count_var': radar_count_var,
+                'radar_count_label': radar_count_label,
                 'map_count_var': map_count_var,
+                'map_count_label': map_count_label,
                 'btn': btn_attach,
                 'btn_start': btn_start,
                 'scan_stop': scan_stop,
@@ -2166,6 +2220,34 @@ class MonitorUI:
                 time.sleep(0.02)
                 continue
         return False
+
+    def _close_process_app(self, pid: int) -> bool:
+        """Request graceful close for process windows belonging to PID."""
+        win32gui = importlib.import_module('win32gui')
+        win32con = importlib.import_module('win32con')
+
+        hwnds = self._find_process_windows(pid)
+        if not hwnds:
+            return False
+
+        sent_any = False
+        for hwnd in hwnds:
+            try:
+                win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+                sent_any = True
+            except Exception:
+                continue
+
+        if not sent_any:
+            return False
+
+        deadline = time.monotonic() + 1.6
+        while time.monotonic() < deadline:
+            if not self._find_process_windows(pid):
+                return True
+            time.sleep(0.08)
+
+        return True
 
     @staticmethod
     def _send_alt_number_sequence(hwnds: list[int], num: str) -> bool:
@@ -3235,15 +3317,18 @@ class MonitorUI:
                     if count_var is not None:
                         if value is not None:
                             shown = str(value)
-                        elif reason == 'no-address':
-                            shown = 'N/A (no address)'
-                        elif reason == 'module-not-found':
-                            shown = 'N/A (module not found)'
-                        elif reason == 'read-fail':
-                            shown = 'N/A (read fail)'
                         else:
-                            shown = 'N/A'
+                            shown = '0'
                         count_var.set(f'Map: {shown}')
+            elif event == 'retry_status':
+                info = payload if isinstance(payload, dict) else {}
+                idx = info.get('idx')
+                text = str(info.get('text', '')).strip()
+                if isinstance(idx, int) and 0 <= idx < len(self._process_tower_rows):
+                    row = self._process_tower_rows[idx]
+                    status_var = row.get('retry_status_var')
+                    if status_var is not None and text:
+                        status_var.set(text)
             elif event == 'process_scan_auto_stop':
                 info = payload if isinstance(payload, dict) else {}
                 idx = info.get('idx')
