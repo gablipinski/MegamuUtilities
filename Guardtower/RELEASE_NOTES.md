@@ -54,3 +54,7 @@
 
 - Add trigger sender support to TwitchBot and UI components.
 
+## 1.1.1 (2026-06-30)
+
+- Add trigger sender support to TwitchBot and UI components.
+
