@@ -258,61 +258,63 @@
 
 </section>
 
-<section class="card">
-    <h2>Recent licenses</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>User</th>
-                <th>Product</th>
-                <th>Machine</th>
-                <th>Issued</th>
-                <th>Action</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for license_row in recent_licenses %}
+<div class="stack-cards">
+    <section class="card">
+        <h2>Recent licenses</h2>
+        <table>
+            <thead>
                 <tr>
-                    <td>{{ license_row.user.display_name }}</td>
-                    <td>{{ license_row.product.display_name }}</td>
-                    <td>{{ license_row.machine.machine_id }}</td>
-                    <td>{{ license_row.created_at.strftime('%Y-%m-%d') }}</td>
-                    <td>
-                        <form method="post" action="/admin/licenses/{{ license_row.id }}/delete" class="inline-form" onsubmit="return confirm('Delete this license? This removes the issued license record and file.');">
-                            <button type="submit" class="button danger">Delete</button>
-                        </form>
-                    </td>
+                    <th>User</th>
+                    <th>Product</th>
+                    <th>Machine</th>
+                    <th>Issued</th>
+                    <th>Action</th>
                 </tr>
-            {% else %}
-                <tr><td colspan="5">No licenses issued yet.</td></tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</section>
+            </thead>
+            <tbody>
+                {% for license_row in recent_licenses %}
+                    <tr>
+                        <td>{{ license_row.user.display_name }}</td>
+                        <td>{{ license_row.product.display_name }}</td>
+                        <td>{{ license_row.machine.machine_id }}</td>
+                        <td>{{ license_row.created_at.strftime('%Y-%m-%d') }}</td>
+                        <td>
+                            <form method="post" action="/admin/licenses/{{ license_row.id }}/delete" class="inline-form" onsubmit="return confirm('Delete this license? This removes the issued license record and file.');">
+                                <button type="submit" class="button danger">Delete</button>
+                            </form>
+                        </td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="5">No licenses issued yet.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </section>
 
-<section class="card">
-    <h2>Recent requests</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>User</th>
-                <th>Product</th>
-                <th>Machine</th>
-                <th>Status</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for req in recent_requests %}
+    <section class="card">
+        <h2>Recent requests</h2>
+        <table>
+            <thead>
                 <tr>
-                    <td>{{ req.user.display_name }}</td>
-                    <td>{{ req.product.display_name }}</td>
-                    <td>{{ req.machine.machine_id }}</td>
-                    <td>{{ req.status }}</td>
+                    <th>User</th>
+                    <th>Product</th>
+                    <th>Machine</th>
+                    <th>Status</th>
                 </tr>
-            {% else %}
-                <tr><td colspan="4">No requests yet.</td></tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</section>
+            </thead>
+            <tbody>
+                {% for req in recent_requests %}
+                    <tr>
+                        <td>{{ req.user.display_name }}</td>
+                        <td>{{ req.product.display_name }}</td>
+                        <td>{{ req.machine.machine_id }}</td>
+                        <td>{{ req.status }}</td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="4">No requests yet.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </section>
+</div>
 {% endblock %}
