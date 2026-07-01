@@ -85,3 +85,7 @@
 
 - Enhance ghost close functionality with countdown and status updates.
 
+## 1.1.9 (2026-07-01)
+
+- Implement full screen snapshot capture in MonitorUI and integrate with event queue for PROCESS TOWER and SPOT TOWER modes.
+

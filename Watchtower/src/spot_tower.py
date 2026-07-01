@@ -1,5 +1,6 @@
 from action_controller import ActionController
 from player_monitor import PlayerMonitor
+import time
 
 
 def create_spot_tower_app():
@@ -42,9 +43,20 @@ async def run_spot_tower_monitor(ui) -> None:
         if triggered:
             return
         triggered = True
-        snapshot = ui._capture_scan_area_snapshot()
+        captured_at = time.time()
+        snapshot = ui._capture_full_screen_snapshot()
         if snapshot is not None:
-            ui._event_queue.put(('trigger_snapshot', {'image': snapshot, 'mode': 'SPOT TOWER'}))
+            ui._event_queue.put(
+                (
+                    'trigger_snapshot',
+                    {
+                        'image': snapshot,
+                        'mode': 'SPOT TOWER',
+                        'scope': 'full screen',
+                        'captured_at': captured_at,
+                    },
+                )
+            )
         ui._event_queue.put(('detected', detection))
         await action_controller.execute_escape_sequence('Player detected')
         ui._event_queue.put(('safe_zone', None))

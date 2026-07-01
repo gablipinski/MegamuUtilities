@@ -125,6 +125,8 @@ class MonitorUI:
         self._snapshot_photo: ImageTk.PhotoImage | None = None
         self._last_trigger_snapshot: Image.Image | None = None
         self._last_trigger_mode: str = 'Trigger'
+        self._last_trigger_snapshot_scope: str = 'full screen'
+        self._last_trigger_snapshot_timestamp: float | None = None
         self._last_trigger_time_var = tk.StringVar(value='Last trigger: Never')
 
         self._build_ui()
@@ -244,16 +246,34 @@ class MonitorUI:
         except Exception:
             return None
 
-    def _show_trigger_snapshot(self, image: Image.Image, mode_label: str) -> None:
-        max_width = 760
-        max_height = 460
+    def _capture_full_screen_snapshot(self) -> Image.Image | None:
+        try:
+            with mss.mss() as sct:
+                shot = sct.grab(sct.monitors[0])
+            return Image.frombytes('RGB', shot.size, shot.rgb)
+        except Exception:
+            return None
+
+    def _show_trigger_snapshot(
+        self,
+        image: Image.Image,
+        mode_label: str,
+        *,
+        captured_at: float | None = None,
+        scope_label: str = 'full screen',
+    ) -> None:
+        screen_w = max(800, int(self.root.winfo_screenwidth()))
+        screen_h = max(600, int(self.root.winfo_screenheight()))
+        # Keep margins for window frame and info row while maximizing useful preview area.
+        max_width = max(900, int(screen_w * 0.94))
+        max_height = max(600, int(screen_h * 0.82))
         view = image.copy()
         view.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
         photo = ImageTk.PhotoImage(view)
 
         if self._snapshot_window is None or not self._snapshot_window.winfo_exists():
             win = tk.Toplevel(self.root)
-            win.title('Trigger Snapshot')
+            win.title('Trigger Print Screen')
             win.configure(bg=self._colors['bg'])
             self._apply_app_icon(win)
             win.transient(self.root)
@@ -291,8 +311,11 @@ class MonitorUI:
 
         if self._snapshot_info_var is not None:
             shown_w, shown_h = view.size
+            when = ''
+            if captured_at is not None:
+                when = datetime.fromtimestamp(captured_at).strftime('%Y-%m-%d %H:%M:%S')
             self._snapshot_info_var.set(
-                f'{mode_label} trigger | Preview: {shown_w}x{shown_h} (scan area capture)'
+                f'{mode_label} trigger | Captured: {when or "unknown"} | Preview: {shown_w}x{shown_h} ({scope_label})'
             )
 
         if self._snapshot_window is not None:
@@ -302,9 +325,14 @@ class MonitorUI:
 
     def _open_last_trigger_snapshot(self) -> None:
         if self._last_trigger_snapshot is None:
-            messagebox.showinfo('No snapshot', 'No trigger snapshot is available yet.', parent=self.root)
+            messagebox.showinfo('No print screen', 'No trigger print screen is available yet.', parent=self.root)
             return
-        self._show_trigger_snapshot(self._last_trigger_snapshot, self._last_trigger_mode)
+        self._show_trigger_snapshot(
+            self._last_trigger_snapshot,
+            self._last_trigger_mode,
+            captured_at=self._last_trigger_snapshot_timestamp,
+            scope_label=self._last_trigger_snapshot_scope,
+        )
 
     # ── License check ─────────────────────────────────────────────────────────
 
@@ -658,7 +686,7 @@ class MonitorUI:
 
         self.btn_last_snapshot = self._make_button(
             container,
-            text='View Last Trigger Snapshot',
+            text='See Trigger Print',
             width=26,
             command=self._open_last_trigger_snapshot,
         )
@@ -727,6 +755,17 @@ class MonitorUI:
     def _set_last_trigger_now(self) -> None:
         timestamp = datetime.now().strftime('%H:%M:%S')
         self._last_trigger_time_var.set(f'Last trigger: {timestamp}')
+
+    def _set_last_trigger_timestamp(self, timestamp_epoch: float) -> None:
+        timestamp = datetime.fromtimestamp(timestamp_epoch).strftime('%H:%M:%S')
+        self._last_trigger_time_var.set(f'Last trigger: {timestamp}')
+
+    def _set_last_trigger_now_if_no_precise_snapshot(self, max_age_seconds: float = 2.0) -> None:
+        if self._last_trigger_snapshot_timestamp is None:
+            self._set_last_trigger_now()
+            return
+        if (time.time() - self._last_trigger_snapshot_timestamp) > max_age_seconds:
+            self._set_last_trigger_now()
 
     @staticmethod
     def _normalize_route_step(step: object) -> dict[str, int | str] | None:
@@ -854,7 +893,6 @@ class MonitorUI:
         mode = self._selected_mode()
         if mode == 'process-tower':
             self.controls.pack_forget()
-            self.btn_last_snapshot.pack_forget()
             self._process_tower_panel.pack(
                 fill=tk.BOTH, expand=True, pady=(10, 4),
                 before=self.state_row,
@@ -862,6 +900,7 @@ class MonitorUI:
             self.state_row.pack_forget()
             self.lbl_region.pack_forget()
             self.lbl_route.configure(text='')
+            self.btn_last_snapshot.pack(fill=tk.X, pady=(0, 8), before=self.lbl_last_trigger)
             self.root.minsize(400, 420)
             self._log('Mode set to PROCESS TOWER.')
         else:
@@ -3276,7 +3315,7 @@ class MonitorUI:
 
             if event == 'detected':
                 self._set_state_detected()
-                self._set_last_trigger_now()
+                self._set_last_trigger_now_if_no_precise_snapshot(max_age_seconds=2.0)
                 self._log('Player detected. Escape route executed.')
             elif event == 'safe_zone':
                 self._notify_safe_zone()
@@ -3288,14 +3327,23 @@ class MonitorUI:
                 info = payload if isinstance(payload, dict) else {}
                 image = info.get('image')
                 mode_label = str(info.get('mode', 'Trigger'))
+                scope_label = str(info.get('scope', 'full screen'))
+                captured_at_raw = info.get('captured_at')
+                captured_at: float | None = None
+                if isinstance(captured_at_raw, (int, float)):
+                    captured_at = float(captured_at_raw)
                 if isinstance(image, Image.Image):
                     self._last_trigger_snapshot = image.copy()
                     self._last_trigger_mode = mode_label
+                    self._last_trigger_snapshot_scope = scope_label
+                    self._last_trigger_snapshot_timestamp = captured_at
+                    if captured_at is not None:
+                        self._set_last_trigger_timestamp(captured_at)
                     self.btn_last_snapshot.configure(
                         state=tk.NORMAL,
-                        text=f'View Last Trigger Snapshot ({mode_label})',
+                        text=f'See Trigger Print ({mode_label})',
                     )
-                    self._log(f'{mode_label} snapshot captured. Use "View Last Trigger Snapshot" to open it.')
+                    self._log(f'{mode_label} print screen captured. Use "See Trigger Print" to open it.')
             elif event == 'radar_count':
                 info = payload if isinstance(payload, dict) else {}
                 idx = info.get('idx')
@@ -3334,10 +3382,10 @@ class MonitorUI:
                 idx = info.get('idx')
                 if isinstance(idx, int) and 0 <= idx < len(self._process_tower_rows):
                     self._reset_process_tower_scan_row(idx, 'Attached  •  Triggered')
-                    self._set_last_trigger_now()
+                    self._set_last_trigger_now_if_no_precise_snapshot(max_age_seconds=4.0)
                     self._log(f'Character #{idx + 1}: scan auto-stopped after trigger.')
             elif event == 'triggered':
-                self._set_last_trigger_now()
+                self._set_last_trigger_now_if_no_precise_snapshot(max_age_seconds=2.0)
             elif event == 'log':
                 self._log(str(payload))
             elif event == 'stopped':

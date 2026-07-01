@@ -1142,6 +1142,19 @@ def scan_loop(
         if value is not None and value > threshold:
             if now - last_triggered >= cooldown:
                 last_triggered = now
+                snapshot = ui._capture_full_screen_snapshot()
+                if snapshot is not None:
+                    ui._event_queue.put(
+                        (
+                            'trigger_snapshot',
+                            {
+                                'image': snapshot,
+                                'mode': 'PROCESS TOWER',
+                                'scope': 'full screen',
+                                'captured_at': time.time(),
+                            },
+                        )
+                    )
                 _trigger_escape_group(
                     ui,
                     stop_event,
