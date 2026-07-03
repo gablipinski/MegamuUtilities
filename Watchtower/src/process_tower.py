@@ -81,6 +81,16 @@ def _row_escape_delay_ms_bounds(row: dict) -> tuple[int, int]:
     return min_ms, max_ms
 
 
+def _row_ghost_close_delay_seconds_bounds(row: dict) -> tuple[int, int]:
+    min_var = row.get('ghost_close_delay_min_s_var')
+    max_var = row.get('ghost_close_delay_max_s_var')
+    min_seconds = _read_non_negative_int(min_var.get() if min_var is not None else 1, 1)
+    max_seconds = _read_non_negative_int(max_var.get() if max_var is not None else 5, 5)
+    if max_seconds < min_seconds:
+        min_seconds, max_seconds = max_seconds, min_seconds
+    return min_seconds, max_seconds
+
+
 def _build_group_escape_targets(ui, slayer_idx: int, slayer_label: str) -> list[dict]:
     targets: list[dict] = []
 
@@ -597,6 +607,9 @@ def _retry_group_by_minimap(
         and slayer_row.get('ghost_app_var') is not None
         and slayer_row['ghost_app_var'].get()
     )
+    ghost_close_delay_min_seconds, ghost_close_delay_max_seconds = _row_ghost_close_delay_seconds_bounds(
+        slayer_row if isinstance(slayer_row, dict) else {}
+    )
 
     map_pointer_override_by_pid_name: dict[tuple[int, str], list[int]] = {}
     map_calibration_last_attempt_by_pid: dict[int, float] = {}
@@ -671,7 +684,7 @@ def _retry_group_by_minimap(
                             ui,
                             target,
                             ghost_close_scheduled_pids,
-                            delay_seconds=10.0,
+                            delay_seconds=float(random.randint(ghost_close_delay_min_seconds, ghost_close_delay_max_seconds)),
                         )
                     state['done'] = True
                     continue
@@ -691,7 +704,7 @@ def _retry_group_by_minimap(
                             ui,
                             target,
                             ghost_close_scheduled_pids,
-                            delay_seconds=10.0,
+                            delay_seconds=float(random.randint(ghost_close_delay_min_seconds, ghost_close_delay_max_seconds)),
                         )
                     state['done'] = True
                     continue

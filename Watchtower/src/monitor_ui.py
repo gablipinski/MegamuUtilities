@@ -947,7 +947,9 @@ class MonitorUI:
                 'escape_order': row['escape_order_var'].get() if row.get('escape_order_var') else '1',
                 'escape_delay_min_ms': row['escape_delay_min_ms_var'].get() if row.get('escape_delay_min_ms_var') else '100',
                 'escape_delay_max_ms': row['escape_delay_max_ms_var'].get() if row.get('escape_delay_max_ms_var') else '300',
-                'ghost_app': row['ghost_app_var'].get() if row.get('ghost_app_var') else False,
+                'ghost_app': row['ghost_app_var'].get() if row.get('ghost_app_var') else True,
+                'ghost_close_delay_min_s': row['ghost_close_delay_min_s_var'].get() if row.get('ghost_close_delay_min_s_var') else '1',
+                'ghost_close_delay_max_s': row['ghost_close_delay_max_s_var'].get() if row.get('ghost_close_delay_max_s_var') else '5',
                 'is_slayer': row['is_slayer_var'].get() if row.get('is_slayer_var') else True,
                 'radar': row['radar_var'].get() if row.get('radar_var') else '',
                 'process_path': row.get('process_path'),
@@ -965,7 +967,9 @@ class MonitorUI:
             escape_order_var = tk.StringVar(value=s.get('escape_order', '1'))
             escape_delay_min_ms_var = tk.StringVar(value=s.get('escape_delay_min_ms', '100'))
             escape_delay_max_ms_var = tk.StringVar(value=s.get('escape_delay_max_ms', '300'))
-            ghost_app_var = tk.BooleanVar(value=bool(s.get('ghost_app', False)))
+            ghost_app_var = tk.BooleanVar(value=bool(s.get('ghost_app', True)))
+            ghost_close_delay_min_s_var = tk.StringVar(value=s.get('ghost_close_delay_min_s', '1'))
+            ghost_close_delay_max_s_var = tk.StringVar(value=s.get('ghost_close_delay_max_s', '5'))
             is_slayer_var = tk.BooleanVar(value=s.get('is_slayer', True))
             radar_var = tk.StringVar(value=s.get('radar', ''))
             status_var = tk.StringVar(value='Not attached')
@@ -1189,6 +1193,45 @@ class MonitorUI:
                 highlightthickness=1,
                 highlightbackground=self._colors['border'],
                 highlightcolor=self._colors['accent'],
+            ).pack(side=tk.LEFT, padx=(4, 14))
+
+            tk.Label(
+                escape_frame,
+                text='Ghost close s:',
+                bg=self._colors['panel_alt'],
+                fg=self._colors['muted'],
+                font=('Segoe UI', 9),
+            ).pack(side=tk.LEFT)
+            tk.Entry(
+                escape_frame,
+                textvariable=ghost_close_delay_min_s_var,
+                width=4,
+                bg=self._colors['input_bg'],
+                fg=self._colors['text'],
+                insertbackground=self._colors['text'],
+                relief=tk.FLAT,
+                highlightthickness=1,
+                highlightbackground=self._colors['border'],
+                highlightcolor=self._colors['accent'],
+            ).pack(side=tk.LEFT, padx=(6, 4))
+            tk.Label(
+                escape_frame,
+                text='to',
+                bg=self._colors['panel_alt'],
+                fg=self._colors['muted'],
+                font=('Segoe UI', 9),
+            ).pack(side=tk.LEFT)
+            tk.Entry(
+                escape_frame,
+                textvariable=ghost_close_delay_max_s_var,
+                width=4,
+                bg=self._colors['input_bg'],
+                fg=self._colors['text'],
+                insertbackground=self._colors['text'],
+                relief=tk.FLAT,
+                highlightthickness=1,
+                highlightbackground=self._colors['border'],
+                highlightcolor=self._colors['accent'],
             ).pack(side=tk.LEFT, padx=(4, 0))
 
             retry_status_var = tk.StringVar(value='Retry: idle')
@@ -1210,6 +1253,8 @@ class MonitorUI:
                 'escape_delay_min_ms_var': escape_delay_min_ms_var,
                 'escape_delay_max_ms_var': escape_delay_max_ms_var,
                 'ghost_app_var': ghost_app_var,
+                'ghost_close_delay_min_s_var': ghost_close_delay_min_s_var,
+                'ghost_close_delay_max_s_var': ghost_close_delay_max_s_var,
                 'retry_status_var': retry_status_var,
                 'is_slayer_var': is_slayer_var,
                 'radar_var': radar_var,

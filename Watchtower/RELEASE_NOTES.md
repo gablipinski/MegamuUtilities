@@ -89,3 +89,7 @@
 
 - Implement full screen snapshot capture in MonitorUI and integrate with event queue for PROCESS TOWER and SPOT TOWER modes.
 
+## 1.1.10 (2026-07-03)
+
+- Add ghost close delay configuration in MonitorUI and process tower.
+
