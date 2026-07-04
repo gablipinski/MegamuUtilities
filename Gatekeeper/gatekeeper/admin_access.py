@@ -6,6 +6,7 @@ from .config import settings
 
 
 LOOPBACK_IPS = {'127.0.0.1', '::1'}
+DOCKER_GATEWAY_IPS = {'172.17.0.1', '172.18.0.1', '172.19.0.1', 'host.docker.internal'}
 
 
 def get_mac_from_arp_cache(client_ip: str) -> str | None:
@@ -36,14 +37,21 @@ def can_admin_login_from_request(request: Request) -> tuple[bool, str]:
         return False, 'Admin login is blocked: no allowed MAC addresses are configured.'
 
     client_ip = (request.client.host if request.client else '') or ''
+    
+    # Allow loopback traffic (from localhost)
     if client_ip in LOOPBACK_IPS:
-        # Loopback traffic is from the host machine running Gatekeeper.
         return True, ''
 
+    # Allow Docker gateway traffic (host machine running Docker)
+    if client_ip in DOCKER_GATEWAY_IPS:
+        return True, ''
+
+    # Resolve client MAC from ARP cache
     client_mac = get_mac_from_arp_cache(client_ip)
     if not client_mac:
         return False, 'Admin login blocked: could not resolve this client MAC address yet.'
 
+    # Check against allowed MACs list
     if client_mac not in settings.admin_allowed_macs:
         return False, f'Admin login blocked for MAC {client_mac}.'
 

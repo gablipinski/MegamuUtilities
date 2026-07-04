@@ -6,16 +6,8 @@ services:
     container_name: gatekeeper
     ports:
       - "8000:8000"
-    environment:
-      GATEKEEPER_HOST: 0.0.0.0
-      GATEKEEPER_PORT: 8000
-      GATEKEEPER_WORKSPACE_ROOT: /workspace
-      GATEKEEPER_SECRET_KEY: change-me-before-production
-      GATEKEEPER_BOOTSTRAP_ADMIN_EMAIL: admin
-      GATEKEEPER_BOOTSTRAP_ADMIN_PASSWORD: admin
-      GATEKEEPER_ENFORCE_ADMIN_MAC: "1"
-      GATEKEEPER_ADMIN_ALLOWED_MACS: "E6:62:92:ED:7C:12"
-      GATEKEEPER_DEFAULT_LICENSE_DAYS: 30
+    env_file:
+      - .env
     volumes:
       - gatekeeper_data:/app/data
       - ../Guardtower:/workspace/Guardtower:ro
@@ -25,4 +17,3 @@ services:
 
 volumes:
   gatekeeper_data:
- 
