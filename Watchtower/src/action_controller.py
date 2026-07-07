@@ -26,6 +26,15 @@ class ActionController:
         'kp_decimal': 'decimal',
     }
 
+    _MODIFIER_KEYS = {
+        'ctrl',
+        'alt',
+        'shift',
+        'win',
+        'winleft',
+        'winright',
+    }
+
     def __init__(
         self,
         click_points: list[tuple[int, int]] | None = None,
@@ -67,6 +76,51 @@ class ActionController:
         if not keys:
             return True
         return token in set(keys)
+
+    @classmethod
+    def _release_modifiers(cls) -> None:
+        # Defensive cleanup in case previous attempts left a modifier held down.
+        for mod in ('ctrl', 'alt', 'shift', 'winleft', 'winright'):
+            try:
+                pyautogui.keyUp(mod)
+            except Exception:
+                continue
+
+    @classmethod
+    def _send_key_combo_primary(cls, combo_parts: list[str], *, interval: float = 0.03) -> None:
+        if len(combo_parts) > 1:
+            pyautogui.hotkey(*combo_parts, interval=interval)
+            return
+        pyautogui.press(combo_parts[0])
+
+    @classmethod
+    def _send_key_combo_manual(cls, combo_parts: list[str], *, hold_seconds: float = 0.03) -> None:
+        if len(combo_parts) == 1:
+            key = combo_parts[0]
+            pyautogui.keyDown(key)
+            time.sleep(max(0.0, hold_seconds))
+            pyautogui.keyUp(key)
+            return
+
+        modifiers = combo_parts[:-1]
+        main_key = combo_parts[-1]
+
+        down_modifiers: list[str] = []
+        try:
+            for token in modifiers:
+                pyautogui.keyDown(token)
+                down_modifiers.append(token)
+                time.sleep(0.01)
+
+            pyautogui.keyDown(main_key)
+            time.sleep(max(0.0, hold_seconds))
+            pyautogui.keyUp(main_key)
+        finally:
+            for token in reversed(down_modifiers):
+                try:
+                    pyautogui.keyUp(token)
+                except Exception:
+                    continue
 
     async def execute_escape_sequence(self, reason: str):
         now = time.monotonic()
@@ -111,19 +165,24 @@ class ActionController:
                         continue
 
                     sent = False
-                    for attempt in range(3):
+                    for attempt in range(4):
                         try:
-                            if len(combo_parts) > 1:
-                                pyautogui.hotkey(*combo_parts, interval=0.03)
+                            self._release_modifiers()
+                            if attempt in (0, 2):
+                                interval = 0.03 if attempt == 0 else 0.06
+                                self._send_key_combo_primary(combo_parts, interval=interval)
                             else:
-                                pyautogui.press(combo_parts[0])
+                                hold = 0.03 if attempt == 1 else 0.05
+                                self._send_key_combo_manual(combo_parts, hold_seconds=hold)
                             sent = True
                             break
                         except Exception as exc:
-                            if attempt == 2:
+                            if attempt == 3:
                                 print(f'    [WARN] Step {index} key send failed after retries: {exc}')
                             else:
-                                time.sleep(0.04)
+                                time.sleep(0.06)
+
+                    self._release_modifiers()
 
                     if sent:
                         print(f"    [OK] Key {index}: {'+'.join(combo_parts)}")

@@ -16,6 +16,7 @@ from tkinter import messagebox, simpledialog, ttk
 from typing import TYPE_CHECKING
 
 import mss
+import pyautogui
 from PIL import Image, ImageTk
 
 from area_selector import select_area_and_snapshot_with_parent, select_area_with_parent, select_points_with_parent
@@ -103,6 +104,7 @@ class MonitorUI:
         self._setup_windows_notifier()
 
         self._event_queue: queue.Queue[tuple[str, object | None]] = queue.Queue()
+        self._input_injection_lock = threading.RLock()
         self._monitor_thread: threading.Thread | None = None
         self._monitor_loop: asyncio.AbstractEventLoop | None = None
         self._player_monitor: object | None = None
@@ -688,7 +690,8 @@ class MonitorUI:
             container,
             text='See Trigger Print',
             width=26,
-            command=self._open_last_trigger_snapshot,
+                command=self._open_last_trigger_snapshot,
+                accent=True,
         )
         self.btn_last_snapshot.pack(fill=tk.X, pady=(0, 8))
         self.btn_last_snapshot.configure(state=tk.DISABLED)
@@ -1062,6 +1065,7 @@ class MonitorUI:
                      highlightthickness=1, highlightbackground=self._colors['border'],
                      padx=4).pack(side=tk.LEFT, padx=(4, 4))
             self._make_button(slayer_frame, text='Set Key', width=7,
+                              accent=True,
                               command=lambda idx=i: self._on_process_tower_set_key(idx),
                               ).pack(side=tk.LEFT, padx=(0, 8))
             btn_start = self._make_button(slayer_frame, text='Start', width=7, accent=True,
@@ -1096,6 +1100,7 @@ class MonitorUI:
                      highlightthickness=1, highlightbackground=self._colors['border'],
                      padx=4).pack(side=tk.LEFT, padx=(4, 4))
             self._make_button(radar_frame, text='Set Key', width=7,
+                              accent=True,
                               command=lambda idx=i: self._on_process_tower_set_key(idx),
                               ).pack(side=tk.LEFT)
 
@@ -1233,6 +1238,14 @@ class MonitorUI:
                 highlightbackground=self._colors['border'],
                 highlightcolor=self._colors['accent'],
             ).pack(side=tk.LEFT, padx=(4, 0))
+
+            self._make_button(
+                escape_frame,
+                text='Test Trigger',
+                width=11,
+                accent=True,
+                command=lambda idx=i: self._on_process_tower_test_trigger(idx),
+            ).pack(side=tk.RIGHT, padx=(10, 0))
 
             retry_status_var = tk.StringVar(value='Retry: idle')
             tk.Label(
@@ -1797,6 +1810,59 @@ class MonitorUI:
         if key:
             self._process_tower_rows[idx]['key_var'].set(key)
 
+    def _on_process_tower_test_trigger(self, idx: int) -> None:
+        if idx < 0 or idx >= len(self._process_tower_rows):
+            return
+
+        row = self._process_tower_rows[idx]
+        key_combo = str(row.get('key_var').get()).strip() if row.get('key_var') is not None else ''
+        pid = row.get('pid')
+
+        if not key_combo:
+            messagebox.showwarning('Missing key', f'Character #{idx + 1} has no trigger key set.', parent=self.root)
+            return
+        if not pid:
+            messagebox.showwarning('Not attached', f'Character #{idx + 1} is not attached to a process.', parent=self.root)
+            return
+
+        retry_var = row.get('retry_status_var')
+        if retry_var is not None:
+            retry_var.set('Retry: test trigger running...')
+
+        self._log(f'Character #{idx + 1}: manual trigger test started (PID {pid}, key={key_combo}).')
+
+        sent = False
+        for attempt in range(1, 4):
+            try:
+                self._focus_process_window(int(pid))
+            except Exception:
+                pass
+
+            if self._send_key_combo_to_pid(int(pid), key_combo):
+                sent = True
+                self._log(f'Character #{idx + 1}: manual trigger test sent on attempt {attempt}/3.')
+                break
+            time.sleep(0.04)
+
+        if retry_var is not None:
+            retry_var.set('Retry: manual test sent' if sent else 'Retry: manual test failed')
+
+        if sent:
+            messagebox.showinfo(
+                'Trigger test',
+                f'Character #{idx + 1}: trigger command sent ({key_combo}).',
+                parent=self.root,
+            )
+        else:
+            messagebox.showwarning(
+                'Trigger test failed',
+                (
+                    f'Character #{idx + 1}: failed to send trigger after 3 attempts.\n'
+                    'Try running both game and app with the same privilege level.'
+                ),
+                parent=self.root,
+            )
+
     def _capture_hotkey_for_scan(self, parent: tk.Misc) -> str | None:
         """Show a simple key capture dialog. Returns combo like 'alt+2' or None."""
         result: dict = {'key': None}
@@ -2149,8 +2215,166 @@ class MonitorUI:
                 return ord(ch)
         return None
 
+    @staticmethod
+    def _normalize_pyautogui_key_token(token: str) -> str:
+        t = token.strip().lower()
+        alias_map = {
+            'control': 'ctrl',
+            'return': 'enter',
+            'escape': 'esc',
+            'spacebar': 'space',
+            'prior': 'pageup',
+            'next': 'pagedown',
+            'pgup': 'pageup',
+            'pgdn': 'pagedown',
+            'ins': 'insert',
+            'del': 'delete',
+            'bksp': 'backspace',
+            'win': 'winleft',
+        }
+        t = alias_map.get(t, t)
+        if t.startswith('kp_') and len(t) == 4 and t[-1].isdigit():
+            return f'num{t[-1]}'
+        if t.startswith('numpad') and len(t) == 7 and t[-1].isdigit():
+            return f'num{t[-1]}'
+        return t
+
+    @staticmethod
+    def _release_pyautogui_modifiers() -> None:
+        for key in ('ctrl', 'alt', 'shift', 'winleft', 'winright'):
+            try:
+                pyautogui.keyUp(key)
+            except Exception:
+                continue
+
+    @staticmethod
+    def _release_common_modifiers_keybd_event() -> None:
+        win32api = importlib.import_module('win32api')
+        win32con = importlib.import_module('win32con')
+        for vk in (win32con.VK_SHIFT, win32con.VK_CONTROL, win32con.VK_MENU, win32con.VK_LWIN, win32con.VK_RWIN):
+            try:
+                win32api.keybd_event(vk, 0, win32con.KEYEVENTF_KEYUP, 0)
+            except Exception:
+                continue
+
+    @staticmethod
+    def _send_key_sequence_via_keybd_event(mod_vks: list[int], main_vk: int) -> bool:
+        """Foreground hardware-style key fallback for clients that ignore window messages."""
+        win32api = importlib.import_module('win32api')
+        win32con = importlib.import_module('win32con')
+
+        down_mods: list[int] = []
+        try:
+            MonitorUI._release_common_modifiers_keybd_event()
+
+            for vk in mod_vks:
+                win32api.keybd_event(vk, 0, 0, 0)
+                down_mods.append(vk)
+                time.sleep(0.006)
+
+            win32api.keybd_event(main_vk, 0, 0, 0)
+            time.sleep(0.012)
+            win32api.keybd_event(main_vk, 0, win32con.KEYEVENTF_KEYUP, 0)
+            return True
+        except Exception:
+            return False
+        finally:
+            for vk in reversed(down_mods):
+                try:
+                    win32api.keybd_event(vk, 0, win32con.KEYEVENTF_KEYUP, 0)
+                except Exception:
+                    continue
+            MonitorUI._release_common_modifiers_keybd_event()
+
+    def _send_key_combo_foreground(self, pid: int, key_combo: str) -> bool:
+        parts = [self._normalize_pyautogui_key_token(p) for p in key_combo.split('+') if p.strip()]
+        if not parts or any(not p for p in parts):
+            return False
+
+        try:
+            if not self._focus_process_window(pid):
+                return False
+        except Exception:
+            return False
+
+        time.sleep(0.035)
+
+        keys = getattr(pyautogui, 'KEYBOARD_KEYS', None)
+        if keys and any(part not in set(keys) for part in parts):
+            return False
+
+        for attempt in range(2):
+            try:
+                self._release_pyautogui_modifiers()
+                if len(parts) == 1:
+                    pyautogui.keyDown(parts[0])
+                    time.sleep(0.03 + (0.02 * attempt))
+                    pyautogui.keyUp(parts[0])
+                else:
+                    mods = parts[:-1]
+                    main_key = parts[-1]
+                    pressed_mods: list[str] = []
+                    try:
+                        for mod in mods:
+                            pyautogui.keyDown(mod)
+                            pressed_mods.append(mod)
+                            time.sleep(0.01)
+                        pyautogui.keyDown(main_key)
+                        time.sleep(0.03 + (0.02 * attempt))
+                        pyautogui.keyUp(main_key)
+                    finally:
+                        for mod in reversed(pressed_mods):
+                            try:
+                                pyautogui.keyUp(mod)
+                            except Exception:
+                                continue
+                self._release_pyautogui_modifiers()
+                return True
+            except Exception:
+                time.sleep(0.03)
+
+        # Secondary foreground fallback using Win32 keybd_event.
+        mod_tokens = []
+        main_tokens = []
+        for token in parts:
+            if token in {'ctrl', 'alt', 'shift', 'winleft', 'winright'}:
+                mod_tokens.append(token)
+            else:
+                main_tokens.append(token)
+
+        if not main_tokens:
+            main_tokens = [mod_tokens[-1]] if mod_tokens else []
+            mod_tokens = mod_tokens[:-1]
+
+        mod_vks: list[int] = []
+        for token in mod_tokens:
+            vk = self._vk_for_token(token)
+            if vk is None:
+                mod_vks = []
+                break
+            mod_vks.append(vk)
+
+        main_vk = self._vk_for_token(main_tokens[-1]) if main_tokens else None
+        if main_vk is not None:
+            for _ in range(2):
+                try:
+                    self._focus_process_window(pid)
+                except Exception:
+                    pass
+                if self._send_key_sequence_via_keybd_event(mod_vks, main_vk):
+                    return True
+                time.sleep(0.02)
+
+        self._release_pyautogui_modifiers()
+        return False
+
     def _send_key_combo_to_pid(self, pid: int, key_combo: str) -> bool:
         """Send combo to process window via PostMessage using pywin32."""
+        with self._input_injection_lock:
+            return self._send_key_combo_to_pid_locked(pid, key_combo)
+
+    def _send_key_combo_to_pid_locked(self, pid: int, key_combo: str) -> bool:
+        """Inner implementation for serialized key combo send."""
         win32gui = importlib.import_module('win32gui')
         win32con = importlib.import_module('win32con')
 
@@ -2208,7 +2432,8 @@ class MonitorUI:
         if len(mod_tokens) == 1 and mod_tokens[0] == 'alt' and len(main_tokens) == 1:
             digit = main_tokens[0]
             if len(digit) == 1 and digit.isdigit():
-                return self._send_alt_number_sequence(hwnds, digit)
+                if self._send_alt_number_sequence(hwnds, digit):
+                    return True
 
         has_alt = any(m in {'alt'} for m in mod_tokens)
         down_msg = win32con.WM_SYSKEYDOWN if has_alt else win32con.WM_KEYDOWN
@@ -2257,10 +2482,15 @@ class MonitorUI:
                 return True
             time.sleep(0.02)
 
-        return False
+        return self._send_key_combo_foreground(pid, key_combo)
 
     def _send_tab_key_to_pid(self, pid: int) -> bool:
         """Bring target to foreground and send a single TAB key press."""
+        with self._input_injection_lock:
+            return self._send_tab_key_to_pid_locked(pid)
+
+    def _send_tab_key_to_pid_locked(self, pid: int) -> bool:
+        """Inner implementation for serialized TAB send."""
         win32gui = importlib.import_module('win32gui')
         win32con = importlib.import_module('win32con')
 
@@ -2272,38 +2502,45 @@ class MonitorUI:
         lparam_down = 0x00000001
         lparam_up = 0xC0000001
 
-        for use_timeout in (False, True):
-            try:
+        for attempt in range(3):
+            for use_timeout in (False, True):
                 try:
-                    self._focus_process_window(pid)
-                except Exception:
-                    pass
+                    try:
+                        self._focus_process_window(pid)
+                    except Exception:
+                        pass
 
-                if use_timeout:
-                    win32gui.SendMessageTimeout(
-                        hwnd,
-                        win32con.WM_KEYDOWN,
-                        tab_vk,
-                        lparam_down,
-                        win32con.SMTO_ABORTIFHUNG,
-                        60,
-                    )
-                    win32gui.SendMessageTimeout(
-                        hwnd,
-                        win32con.WM_KEYUP,
-                        tab_vk,
-                        lparam_up,
-                        win32con.SMTO_ABORTIFHUNG,
-                        60,
-                    )
-                else:
-                    win32gui.PostMessage(hwnd, win32con.WM_KEYDOWN, tab_vk, lparam_down)
-                    win32gui.PostMessage(hwnd, win32con.WM_KEYUP, tab_vk, lparam_up)
-                return True
-            except Exception:
-                time.sleep(0.02)
-                continue
-        return False
+                    try:
+                        self._prepare_process_window_for_input(pid)
+                    except Exception:
+                        pass
+
+                    if use_timeout:
+                        win32gui.SendMessageTimeout(
+                            hwnd,
+                            win32con.WM_KEYDOWN,
+                            tab_vk,
+                            lparam_down,
+                            win32con.SMTO_ABORTIFHUNG,
+                            60,
+                        )
+                        win32gui.SendMessageTimeout(
+                            hwnd,
+                            win32con.WM_KEYUP,
+                            tab_vk,
+                            lparam_up,
+                            win32con.SMTO_ABORTIFHUNG,
+                            60,
+                        )
+                    else:
+                        win32gui.PostMessage(hwnd, win32con.WM_KEYDOWN, tab_vk, lparam_down)
+                        win32gui.PostMessage(hwnd, win32con.WM_KEYUP, tab_vk, lparam_up)
+                    return True
+                except Exception:
+                    continue
+
+            time.sleep(0.05)
+        return self._send_key_combo_foreground(pid, 'tab')
 
     def _close_process_app(self, pid: int) -> bool:
         """Request graceful close for process windows belonging to PID."""

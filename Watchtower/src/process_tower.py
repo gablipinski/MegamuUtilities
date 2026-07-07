@@ -1,6 +1,7 @@
 import random
 import threading
 import time
+import importlib
 
 from tkinter import messagebox
 
@@ -118,6 +119,80 @@ def _build_group_escape_targets(ui, slayer_idx: int, slayer_label: str) -> list[
 
     targets.sort(key=lambda t: (int(t.get('order', 0)), int(t['idx'])))
     return targets
+
+
+def _focus_and_stabilize_target(
+    ui,
+    stop_event: threading.Event,
+    idx: int,
+    pid: int,
+    *,
+    attempts: int = 3,
+) -> bool:
+    """Try to focus target PID and briefly verify foreground ownership."""
+    try:
+        win32gui = importlib.import_module('win32gui')
+        win32process = importlib.import_module('win32process')
+    except Exception:
+        # If win32 modules are unavailable here, keep legacy behavior.
+        for _ in range(max(1, attempts)):
+            try:
+                if ui._focus_process_window(pid):
+                    if stop_event.wait(random.uniform(0.03, 0.05)):
+                        return False
+                    return True
+            except Exception:
+                pass
+            if stop_event.wait(0.03):
+                return False
+        return False
+
+    for focus_attempt in range(1, max(1, attempts) + 1):
+        focused = False
+        try:
+            focused = bool(ui._focus_process_window(pid))
+        except Exception:
+            focused = False
+
+        if not focused:
+            ui._event_queue.put(
+                (
+                    'log',
+                    f'Character #{idx + 1}: focus attempt {focus_attempt}/{attempts} failed for PID {pid}.',
+                )
+            )
+            if stop_event.wait(0.03):
+                return False
+            continue
+
+        # Verify foreground process for a short window to avoid race conditions.
+        deadline = time.monotonic() + 0.25
+        while time.monotonic() < deadline:
+            if stop_event.is_set():
+                return False
+            try:
+                fg_hwnd = win32gui.GetForegroundWindow()
+                if fg_hwnd:
+                    _, fg_pid = win32process.GetWindowThreadProcessId(fg_hwnd)
+                    if int(fg_pid) == int(pid):
+                        if stop_event.wait(random.uniform(0.04, 0.07)):
+                            return False
+                        return True
+            except Exception:
+                break
+            if stop_event.wait(0.01):
+                return False
+
+        ui._event_queue.put(
+            (
+                'log',
+                f'Character #{idx + 1}: focus verification timeout for PID {pid} (attempt {focus_attempt}/{attempts}).',
+            )
+        )
+        if stop_event.wait(0.03):
+            return False
+
+    return False
 
 
 def _read_entry_numeric(ui, handle: int, pid: int | None, entry: dict) -> int | None:
@@ -279,20 +354,291 @@ def _trigger_escape_group(
         ui._event_queue.put(('log', f'Character #{slayer_idx + 1}: no escape targets available.'))
         return
 
+    ui._event_queue.put(('log', f'Escape FSM started for {len(targets)} target(s).'))
+
+    state_by_target: list[dict] = []
     for target in targets:
-        if stop_event.is_set():
+        idx = int(target['idx'])
+        row = target['row']
+        key_combo = row['key_var'].get().strip()
+        pid = row.get('pid')
+        if not key_combo or not pid:
+            continue
+
+        state_by_target.append(
+            {
+                'target': target,
+                'idx': idx,
+                'pid': int(pid),
+                'key_combo': key_combo,
+                'map_pointer_override_by_pid_name': {},
+                'map_calibration_last_attempt_by_pid': {},
+                'map_tab_last_sent_by_pid': {},
+            }
+        )
+
+    if not state_by_target:
+        ui._event_queue.put(('log', 'Escape FSM aborted: no valid PID/key targets.'))
+        return
+
+    unresolved = _run_escape_fsm_pass(
+        ui,
+        stop_event,
+        state_by_target,
+        max_attempts_per_target=5,
+        pass_index=1,
+    )
+
+    if unresolved and not stop_event.is_set():
+        ui._event_queue.put(
+            ('log', f'Escape FSM pass 1 unresolved targets={len(unresolved)}; waiting 10s before one retry pass.')
+        )
+        if stop_event.wait(10.0):
             return
-        _trigger_escape_target(
+
+        unresolved = _run_escape_fsm_pass(
+            ui,
+            stop_event,
+            unresolved,
+            max_attempts_per_target=5,
+            pass_index=2,
+        )
+
+    if unresolved:
+        ui._event_queue.put(('log', f'Escape FSM finished with {len(unresolved)} unresolved target(s).'))
+    else:
+        ui._event_queue.put(('log', 'Escape FSM finished: all targets map=0.'))
+
+
+def _run_escape_fsm_pass(
+    ui,
+    stop_event: threading.Event,
+    states: list[dict],
+    *,
+    max_attempts_per_target: int,
+    pass_index: int,
+) -> list[dict]:
+    if not states:
+        return []
+
+    # Step 1: initial trigger for each character in order.
+    for idx_state, state in enumerate(states):
+        if stop_event.is_set():
+            return states
+
+        sent = _send_target_trigger_once(
+            ui,
+            stop_event,
+            int(state['idx']),
+            int(state['pid']),
+            str(state['key_combo']),
+        )
+        state['attempts_sent'] = 1 if sent else 0
+
+        if not sent:
+            ui._event_queue.put(
+                (
+                    'log',
+                    (
+                        f'Character #{int(state["idx"]) + 1}: pass {pass_index} initial trigger failed '
+                        f'for PID {int(state["pid"])}.'
+                    ),
+                )
+            )
+
+        if idx_state < (len(states) - 1):
+            if stop_event.wait(random.uniform(0.06, 0.12)):
+                return states
+
+    # Step 2: each target owns its own FSM (check map, retry until max attempts).
+    unresolved: list[dict] = []
+    for state in states:
+        if stop_event.is_set():
+            unresolved.append(state)
+            continue
+
+        target = state['target']
+        idx = int(state['idx'])
+        attempts_sent = int(state.get('attempts_sent', 0))
+
+        while not stop_event.is_set():
+            map_value, map_reason = _sync_target_minimap_state(
+                ui,
+                stop_event,
+                target,
+                state['map_pointer_override_by_pid_name'],
+                state['map_calibration_last_attempt_by_pid'],
+                state['map_tab_last_sent_by_pid'],
+                allow_force_open=False,
+            )
+
+            if map_value == 0:
+                if attempts_sent > 1:
+                    ui._event_queue.put(
+                        (
+                            'log',
+                            (
+                                f'Character #{idx + 1}: pass {pass_index} map=0 after '
+                                f'{attempts_sent} trigger attempt(s).'
+                            ),
+                        )
+                    )
+                break
+
+            if attempts_sent >= max_attempts_per_target:
+                ui._event_queue.put(
+                    (
+                        'log',
+                        (
+                            f'Character #{idx + 1}: pass {pass_index} still map={map_value} '
+                            f'after {attempts_sent}/{max_attempts_per_target} trigger attempt(s).'
+                        ),
+                    )
+                )
+                unresolved.append(state)
+                break
+
+            sent = _send_target_trigger_once(
+                ui,
+                stop_event,
+                idx,
+                int(state['pid']),
+                str(state['key_combo']),
+            )
+            attempts_sent += 1
+            state['attempts_sent'] = attempts_sent
+
+            if not sent:
+                ui._event_queue.put(
+                    (
+                        'log',
+                        (
+                            f'Character #{idx + 1}: pass {pass_index} trigger send failed '
+                            f'on attempt {attempts_sent}/{max_attempts_per_target}.'
+                        ),
+                    )
+                )
+
+            # Poll cadence requested: 10ms to 100ms.
+            if stop_event.wait(random.uniform(0.01, 0.1)):
+                unresolved.append(state)
+                break
+
+    return unresolved
+
+
+def _send_target_trigger_once(
+    ui,
+    stop_event: threading.Event,
+    idx: int,
+    pid: int,
+    key_combo: str,
+) -> bool:
+    for send_attempt in range(1, 4):
+        send_ok = ui._send_key_combo_to_pid(pid, key_combo)
+
+        if send_ok:
+            if send_attempt > 1:
+                ui._event_queue.put(
+                    (
+                        'log',
+                        f'Character #{idx + 1}: trigger sent on retry {send_attempt}/3 for PID {pid}.',
+                    )
+                )
+            return True
+
+        if stop_event.wait(0.05):
+            return False
+    return False
+
+
+def _run_escape_minimap_close_loop(
+    ui,
+    stop_event: threading.Event,
+    target: dict,
+) -> None:
+    idx = int(target['idx'])
+    row = target['row']
+    key_combo = row['key_var'].get().strip()
+    pid = row.get('pid')
+    if not key_combo or not pid:
+        return
+
+    map_pointer_override_by_pid_name: dict[tuple[int, str], list[int]] = {}
+    map_calibration_last_attempt_by_pid: dict[int, float] = {}
+    map_tab_last_sent_by_pid: dict[int, float] = {}
+
+    total_escape_attempts = random.randint(2, 6)
+    attempts_sent = 1
+    resend_count = 0
+    while not stop_event.is_set():
+        map_value, map_reason = _sync_target_minimap_state(
             ui,
             stop_event,
             target,
-            slayer_idx,
-            slayer_label,
-            value,
-            threshold,
-            attempt_num=attempt_num,
-            max_attempts=max_attempts,
+            map_pointer_override_by_pid_name,
+            map_calibration_last_attempt_by_pid,
+            map_tab_last_sent_by_pid,
+            allow_force_open=False,
         )
+
+        if map_value == 0:
+            if resend_count > 0:
+                ui._event_queue.put(
+                    (
+                        'log',
+                        (
+                            f'Character #{idx + 1}: minimap closed after {resend_count} '
+                            f'resend(s) at 20ms cadence.'
+                        ),
+                    )
+                )
+            break
+
+        if map_reason in {'no-handle', 'no-address', 'module-not-found'}:
+            ui._event_queue.put(
+                (
+                    'log',
+                    f'Character #{idx + 1}: minimap verify unavailable ({map_reason}); skipping close loop.',
+                )
+            )
+            break
+
+        if attempts_sent >= total_escape_attempts:
+            ui._event_queue.put(
+                (
+                    'log',
+                    (
+                        f'Character #{idx + 1}: minimap still open after '
+                        f'{attempts_sent}/{total_escape_attempts} escape attempt(s); stopping retries.'
+                    ),
+                )
+            )
+            break
+
+        resend_count += 1
+        if not _send_target_trigger_once(ui, stop_event, idx, int(pid), key_combo):
+            ui._event_queue.put(
+                (
+                    'log',
+                    f'Character #{idx + 1}: resend failed during minimap-close loop for PID {pid}.',
+                )
+            )
+        attempts_sent += 1
+
+        if resend_count % 25 == 0:
+            ui._event_queue.put(
+                (
+                    'log',
+                    (
+                        f'Character #{idx + 1}: minimap still open after {resend_count} resend(s); '
+                        'continuing 20ms retries.'
+                    ),
+                )
+            )
+
+        if stop_event.wait(random.uniform(0.018, 0.035)):
+            break
 
 
 def _trigger_escape_target(
@@ -306,6 +652,8 @@ def _trigger_escape_target(
     *,
     attempt_num: int | None = None,
     max_attempts: int | None = None,
+    apply_row_delay: bool = True,
+    run_followup_loop: bool = False,
 ) -> bool:
     idx = int(target['idx'])
     row = target['row']
@@ -322,16 +670,24 @@ def _trigger_escape_target(
         return False
 
     order_value = int(target.get('order', 0))
-    min_delay_ms, max_delay_ms = _row_escape_delay_ms_bounds(row)
-    delay_ms = random.randint(min_delay_ms, max_delay_ms)
-    if delay_ms > 0 and stop_event.wait(delay_ms / 1000.0):
-        return False
+    delay_ms = 0
+    if apply_row_delay:
+        min_delay_ms, max_delay_ms = _row_escape_delay_ms_bounds(row)
+        delay_ms = random.randint(min_delay_ms, max_delay_ms)
+        if delay_ms > 0 and stop_event.wait(delay_ms / 1000.0):
+            return False
 
     try:
-        ui._focus_process_window(pid)
-        if not ui._send_key_combo_to_pid(pid, key_combo):
-            ui._event_queue.put(('log', f'Character #{idx + 1}: PostMessage failed for PID {pid}; trigger skipped.'))
+        send_ok = _send_target_trigger_once(ui, stop_event, idx, int(pid), key_combo)
+        if not send_ok:
+            ui._event_queue.put(
+                (
+                    'log',
+                    f'Character #{idx + 1}: key injection failed after 3 attempts for PID {pid}; trigger skipped.',
+                )
+            )
             return False
+
         ui._event_queue.put(('triggered', {'idx': idx, 'pid': pid, 'key': key_combo}))
         ts = time.strftime('%H:%M:%S')
         if attempt_num is not None and max_attempts is not None:
@@ -354,6 +710,9 @@ def _trigger_escape_target(
                     },
                 )
             )
+
+        if run_followup_loop:
+            _run_escape_minimap_close_loop(ui, stop_event, target)
 
         if idx == slayer_idx:
             ui._event_queue.put((
@@ -480,13 +839,58 @@ def _sync_target_minimap_state(
                 map_tab_last_sent_by_pid[pid] = now
                 if ui._send_tab_key_to_pid(pid):
                     ui._event_queue.put(('log', f'Character #{idx + 1}: sent Tab because MapOverlay=0 (per-char).'))
-                    if not stop_event.wait(0.12):
+
+                    reopen_retry_count = 0
+                    while not stop_event.is_set():
                         map_value, map_reason = _read_target_map_state(
                             ui,
                             target,
                             map_pointer_override_by_pid_name,
                             map_calibration_last_attempt_by_pid,
                         )
+
+                        if map_value == 1:
+                            if reopen_retry_count > 0:
+                                ui._event_queue.put(
+                                    (
+                                        'log',
+                                        (
+                                            f'Character #{idx + 1}: minimap reopened after '
+                                            f'{reopen_retry_count} Tab resend(s) at 20ms cadence.'
+                                        ),
+                                    )
+                                )
+                            break
+
+                        if map_reason in {'no-handle', 'no-address', 'module-not-found'}:
+                            ui._event_queue.put(
+                                (
+                                    'log',
+                                    (
+                                        f'Character #{idx + 1}: minimap reopen verify unavailable '
+                                        f'({map_reason}); skipping reopen loop.'
+                                    ),
+                                )
+                            )
+                            break
+
+                        reopen_retry_count += 1
+                        if not ui._send_tab_key_to_pid(pid):
+                            ui._event_queue.put(('log', f'Character #{idx + 1}: Tab resend failed for PID {pid}.'))
+
+                        if reopen_retry_count % 25 == 0:
+                            ui._event_queue.put(
+                                (
+                                    'log',
+                                    (
+                                        f'Character #{idx + 1}: minimap still closed after '
+                                        f'{reopen_retry_count} Tab resend(s); continuing 20ms retries.'
+                                    ),
+                                )
+                            )
+
+                        if stop_event.wait(random.uniform(0.018, 0.035)):
+                            break
                 else:
                     ui._event_queue.put(('log', f'Character #{idx + 1}: Tab injection failed for PID {pid}.'))
         except Exception as exc:
