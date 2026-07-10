@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+MacroStep = dict[str, int | str | bool]
+
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / 'configs' / 'config.json'
 
 
@@ -11,14 +13,16 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / 'configs' / 'conf
 class MacroConfig:
     name: str
     hotkey: str
-    steps: list[dict[str, int | str]]
+    active: bool
+    repeat_while_held: bool
+    steps: list[MacroStep]
 
 
-def _sanitize_steps(raw_steps: object) -> list[dict[str, int | str]]:
+def _sanitize_steps(raw_steps: object) -> list[MacroStep]:
     if not isinstance(raw_steps, list):
         return []
 
-    steps: list[dict[str, int | str]] = []
+    steps: list[MacroStep] = []
     for item in raw_steps:
         if not isinstance(item, dict):
             continue
@@ -38,13 +42,23 @@ def _sanitize_steps(raw_steps: object) -> list[dict[str, int | str]]:
         elif step_type == 'key':
             key_name = str(item.get('key', '')).strip()
             if key_name:
-                steps.append({'type': 'key', 'key': key_name})
+                action = str(item.get('action', 'tap')).strip().lower()
+                if action not in {'tap', 'press', 'release'}:
+                    action = 'tap'
+                steps.append({'type': 'key', 'key': key_name, 'action': action})
         elif step_type == 'delay':
             try:
                 ms = max(0, int(item.get('ms', 0)))
             except Exception:
                 continue
-            steps.append({'type': 'delay', 'ms': ms})
+            step: MacroStep = {'type': 'delay', 'ms': ms}
+            try:
+                jitter_value = max(0, int(item.get('jitter_pct', 0)))
+            except Exception:
+                jitter_value = 0
+            if jitter_value:
+                step['jitter_pct'] = jitter_value
+            steps.append(step)
         elif step_type == 'return_cursor':
             steps.append({'type': 'return_cursor'})
 
@@ -70,11 +84,13 @@ def load_macros(config_path: Path | None = None) -> list[MacroConfig]:
 
         name = str(raw.get('name', '')).strip()
         hotkey = str(raw.get('hotkey', '')).strip()
+        active = bool(raw.get('active', True))
+        repeat_while_held = bool(raw.get('repeat_while_held', False))
         steps = _sanitize_steps(raw.get('steps', []))
         if not name or not hotkey or not steps:
             continue
 
-        macros.append(MacroConfig(name=name, hotkey=hotkey, steps=steps))
+        macros.append(MacroConfig(name=name, hotkey=hotkey, active=active, repeat_while_held=repeat_while_held, steps=steps))
 
     return macros
 
@@ -88,6 +104,8 @@ def save_macros(macros: list[MacroConfig], config_path: Path | None = None) -> N
             {
                 'name': macro.name,
                 'hotkey': macro.hotkey,
+                'active': macro.active,
+                'repeat_while_held': macro.repeat_while_held,
                 'steps': macro.steps,
             }
             for macro in macros

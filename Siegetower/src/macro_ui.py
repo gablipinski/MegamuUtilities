@@ -4,7 +4,9 @@ import queue
 import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
-from tkinter import messagebox, simpledialog
+from tkinter import messagebox
+
+from pynput import keyboard, mouse
 
 from app_version import APP_NAME, APP_VERSION
 from config import DEFAULT_CONFIG_PATH, MacroConfig, load_macros, save_macros
@@ -15,7 +17,9 @@ from macro_engine import MacroEngine, get_cursor_position
 class WorkingMacro:
     name: str
     hotkey: str
-    steps: list[dict[str, int | str]]
+    active: bool
+    steps: list[dict[str, int | str | bool]]
+    repeat_while_held: bool
 
 
 class MacroUI:
@@ -43,6 +47,7 @@ class MacroUI:
         self._event_queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self._engine = MacroEngine(self._queue_log)
         self._macros: list[WorkingMacro] = []
+        self._selected_macro_idx: int | None = None
 
         self.root.title(f'{APP_NAME} v{APP_VERSION}')
         self.root.geometry('900x620')
@@ -117,6 +122,148 @@ class MacroUI:
             highlightbackground=self._colors['border'],
             highlightcolor=self._colors['accent'],
         )
+
+    def _normalize_key_name(self, value: str) -> str:
+        key = value.strip().lower().replace(' ', '')
+        aliases = {
+            'control': 'ctrl',
+            'ctrl_l': 'ctrl',
+            'ctrl_r': 'ctrl',
+            'control_l': 'ctrl',
+            'control_r': 'ctrl',
+            'shift_l': 'shift',
+            'shift_r': 'shift',
+            'alt_l': 'alt',
+            'alt_r': 'alt',
+            'cmd': 'win',
+            'cmd_l': 'win',
+            'cmd_r': 'win',
+            'esc': 'esc',
+            'escape': 'esc',
+            'return': 'enter',
+            'space': 'space',
+            'page_up': 'pageup',
+            'page_down': 'pagedown',
+            'caps_lock': 'capslock',
+        }
+        return aliases.get(key, key)
+
+    def _key_event_name(self, key: keyboard.Key | keyboard.KeyCode) -> str:
+        if isinstance(key, keyboard.KeyCode):
+            char = key.char
+            if char:
+                return self._normalize_key_name(char)
+            vk = key.vk
+            if vk is None:
+                return ''
+            if 48 <= vk <= 57:
+                return chr(vk)
+            if 65 <= vk <= 90:
+                return chr(vk).lower()
+            if 112 <= vk <= 123:
+                return f'f{vk - 111}'
+            return self._normalize_key_name(str(vk))
+
+        name = str(key).split('.')[-1]
+        return self._normalize_key_name(name)
+
+    def _mouse_button_name(self, button: mouse.Button) -> str:
+        raw_name = getattr(button, 'name', '') or str(button).split('.')[-1]
+        button_name = raw_name.strip().lower()
+        aliases = {
+            'back': 'x1',
+            'forward': 'x2',
+            'button4': 'x1',
+            'button5': 'x2',
+            'xbutton1': 'x1',
+            'xbutton2': 'x2',
+            'mouse4': 'x1',
+            'mouse5': 'x2',
+        }
+        button_name = aliases.get(button_name, button_name)
+        if button_name.startswith('button') and button_name[6:].isdigit():
+            if button_name.endswith('4'):
+                return 'x1'
+            if button_name.endswith('5'):
+                return 'x2'
+        if button_name in {'left', 'right', 'middle', 'x1', 'x2'}:
+            return button_name
+        return ''
+
+    def _place_window_at_parent_origin(self, window: tk.Toplevel, parent: tk.Misc) -> None:
+        window.update_idletasks()
+        parent.update_idletasks()
+        window.geometry(f'+{parent.winfo_rootx()}+{parent.winfo_rooty()}')
+
+    def _create_popup(self, parent: tk.Misc, *, title: str, geometry: str, resizable: bool = False) -> tk.Toplevel:
+        popup = tk.Toplevel(parent)
+        popup.title(title)
+        popup.geometry(geometry)
+        popup.configure(bg=self._colors['panel'])
+        popup.transient(parent)
+        popup.grab_set()
+        popup.resizable(resizable, resizable)
+        self._place_window_at_parent_origin(popup, parent)
+        return popup
+
+    def _ask_integer_popup(
+        self,
+        parent: tk.Misc,
+        *,
+        title: str,
+        prompt: str,
+        initial: int,
+        min_value: int,
+        max_value: int | None = None,
+    ) -> int | None:
+        popup = self._create_popup(parent, title=title, geometry='420x170', resizable=False)
+
+        body = tk.Frame(popup, bg=self._colors['panel'], padx=12, pady=12)
+        body.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(body, text=prompt, bg=self._colors['panel'], fg=self._colors['text'], anchor='w').pack(fill=tk.X)
+        entry = tk.Entry(
+            body,
+            bg=self._colors['input_bg'],
+            fg=self._colors['text'],
+            insertbackground=self._colors['text'],
+            relief=tk.FLAT,
+        )
+        entry.pack(fill=tk.X, pady=(8, 0))
+        entry.insert(0, str(initial))
+        entry.select_range(0, tk.END)
+        entry.focus_set()
+
+        status_var = tk.StringVar(value='')
+        tk.Label(body, textvariable=status_var, bg=self._colors['panel'], fg=self._colors['warning'], anchor='w').pack(fill=tk.X, pady=(6, 0))
+
+        result: dict[str, int | None] = {'value': None}
+
+        def _save() -> None:
+            raw = entry.get().strip()
+            try:
+                value = int(raw)
+            except ValueError:
+                status_var.set('Value must be a whole number.')
+                return
+            if value < min_value:
+                status_var.set(f'Value must be >= {min_value}.')
+                return
+            if max_value is not None and value > max_value:
+                status_var.set(f'Value must be <= {max_value}.')
+                return
+            result['value'] = value
+            popup.destroy()
+
+        actions = tk.Frame(body, bg=self._colors['panel'])
+        actions.pack(fill=tk.X, pady=(10, 0))
+        self._make_button(actions, text='OK', width=10, command=_save, accent=True).pack(side=tk.RIGHT)
+        self._make_button(actions, text='Cancel', width=10, command=popup.destroy).pack(side=tk.RIGHT, padx=(0, 8))
+
+        entry.bind('<Return>', lambda _e: _save())
+        popup.protocol('WM_DELETE_WINDOW', popup.destroy)
+        popup.wait_window()
+        return result['value']
 
     def _build_ui(self) -> None:
         container = tk.Frame(
@@ -196,18 +343,28 @@ class MacroUI:
         left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         tk.Label(left, text='Configured macros', bg=self._colors['panel'], fg=self._colors['muted'], anchor='w').pack(fill=tk.X)
-        self.lst_macros = tk.Listbox(
-            left,
+        macro_shell = tk.Frame(left, bg=self._colors['panel'])
+        macro_shell.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+
+        self.macro_canvas = tk.Canvas(
+            macro_shell,
             bg=self._colors['input_bg'],
-            fg=self._colors['text'],
-            selectbackground=self._colors['accent'],
-            selectforeground='#ffffff',
             relief=tk.FLAT,
+            bd=0,
             highlightthickness=1,
             highlightbackground=self._colors['border'],
             highlightcolor=self._colors['accent'],
         )
-        self.lst_macros.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+        self.macro_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        macro_scroll = tk.Scrollbar(macro_shell, orient=tk.VERTICAL, command=self.macro_canvas.yview)
+        macro_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.macro_canvas.configure(yscrollcommand=macro_scroll.set)
+
+        self.macro_rows = tk.Frame(self.macro_canvas, bg=self._colors['input_bg'])
+        self._macro_rows_window = self.macro_canvas.create_window((0, 0), window=self.macro_rows, anchor='nw')
+        self.macro_rows.bind('<Configure>', lambda _e: self.macro_canvas.configure(scrollregion=self.macro_canvas.bbox('all')))
+        self.macro_canvas.bind('<Configure>', lambda e: self.macro_canvas.itemconfigure(self._macro_rows_window, width=e.width))
 
         right = tk.Frame(center, bg=self._colors['panel'])
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0))
@@ -238,6 +395,7 @@ class MacroUI:
         footer.pack(fill=tk.X, pady=(10, 0))
 
         self._make_button(footer, text='Trigger Selected', width=16, command=self._trigger_selected_macro, success=True).pack(side=tk.LEFT)
+        self._make_button(footer, text='Toggle Selected Active', width=20, command=self._toggle_selected_macro_active).pack(side=tk.LEFT, padx=(8, 0))
 
     def _set_hotkey_state(self, running: bool) -> None:
         if running:
@@ -278,26 +436,87 @@ class MacroUI:
         self.root.after(120, self._drain_events)
 
     def _refresh_macro_list(self) -> None:
-        self.lst_macros.delete(0, tk.END)
-        for idx, macro in enumerate(self._macros, start=1):
-            self.lst_macros.insert(tk.END, f'{idx}. {macro.name} [{macro.hotkey}] - {len(macro.steps)} step(s)')
+        for child in self.macro_rows.winfo_children():
+            child.destroy()
+
+        if self._selected_macro_idx is not None:
+            if self._selected_macro_idx < 0 or self._selected_macro_idx >= len(self._macros):
+                self._selected_macro_idx = None
+
+        for idx, macro in enumerate(self._macros):
+            selected = self._selected_macro_idx == idx
+            row_bg = self._colors['accent'] if selected else self._colors['input_bg']
+            text_fg = '#ffffff' if selected else self._colors['text']
+            suffix = ' (hold)' if macro.repeat_while_held else ''
+            row = tk.Frame(self.macro_rows, bg=row_bg)
+            row.pack(fill=tk.X)
+
+            active_var = tk.BooleanVar(value=macro.active)
+            checkbox = tk.Checkbutton(
+                row,
+                variable=active_var,
+                command=lambda i=idx, v=active_var: self._set_macro_active(i, bool(v.get())),
+                bg=row_bg,
+                fg=text_fg,
+                activebackground=row_bg,
+                activeforeground=text_fg,
+                selectcolor=self._colors['panel_alt'],
+                highlightthickness=0,
+                bd=0,
+                padx=6,
+                pady=2,
+            )
+            checkbox.pack(side=tk.LEFT)
+
+            text = f'{idx + 1}. {macro.name} [{macro.hotkey}] - {len(macro.steps)} step(s){suffix}'
+            label = tk.Label(row, text=text, bg=row_bg, fg=text_fg, anchor='w')
+            label.pack(side=tk.LEFT, fill=tk.X, expand=True, pady=2)
+
+            row.bind('<Button-1>', lambda _e, i=idx: self._select_macro_idx(i))
+            label.bind('<Button-1>', lambda _e, i=idx: self._select_macro_idx(i))
 
     def _load_macros(self) -> None:
         loaded = load_macros()
-        self._macros = [WorkingMacro(name=item.name, hotkey=item.hotkey, steps=[dict(s) for s in item.steps]) for item in loaded]
-        self._engine.set_macros([
-            {'name': macro.name, 'hotkey': macro.hotkey, 'steps': macro.steps}
-            for macro in self._macros
-        ])
+        self._macros = [
+            WorkingMacro(
+                name=item.name,
+                hotkey=item.hotkey,
+                active=item.active,
+                steps=[dict(s) for s in item.steps],
+                repeat_while_held=item.repeat_while_held,
+            )
+            for item in loaded
+        ]
+        if self._selected_macro_idx is not None and self._selected_macro_idx >= len(self._macros):
+            self._selected_macro_idx = None
+        self._apply_macros_to_engine()
         self._refresh_macro_list()
         self._append_log(f'Loaded {len(self._macros)} macro(s) from config.', 'notification')
 
     def _save_macros(self) -> None:
         save_macros([
-            MacroConfig(name=macro.name, hotkey=macro.hotkey, steps=macro.steps)
+            MacroConfig(
+                name=macro.name,
+                hotkey=macro.hotkey,
+                active=macro.active,
+                repeat_while_held=macro.repeat_while_held,
+                steps=macro.steps,
+            )
             for macro in self._macros
         ])
         self._append_log(f'Saved {len(self._macros)} macro(s) to config.', 'notification')
+
+    def _apply_macros_to_engine(self) -> None:
+        self._engine.set_macros([
+            {
+                'name': macro.name,
+                'hotkey': macro.hotkey,
+                'repeat_while_held': macro.repeat_while_held,
+                'steps': macro.steps,
+            }
+            for macro in self._macros
+            if macro.active
+        ])
 
     def _toggle_hotkeys(self) -> None:
         if self._engine.running:
@@ -315,14 +534,58 @@ class MacroUI:
             self._append_log(f'Failed to start hotkeys: {exc}', 'ignore')
 
     def _trigger_selected_macro(self) -> None:
-        selected = self.lst_macros.curselection()
-        if not selected:
+        idx = self._selected_macro_idx
+        if idx is None or idx < 0 or idx >= len(self._macros):
             return
-        macro = self._macros[int(selected[0])]
+        macro = self._macros[idx]
         if not self._engine.trigger_macro(macro.name):
             self._append_log('Could not trigger selected macro.', 'ignore')
 
-    def _describe_step(self, index: int, step: dict[str, int | str]) -> str:
+    def _select_macro_idx(self, idx: int) -> None:
+        if idx < 0 or idx >= len(self._macros):
+            return
+        self._selected_macro_idx = idx
+        self._refresh_macro_list()
+
+    def _set_macro_active(self, idx: int, active: bool) -> None:
+        if idx < 0 or idx >= len(self._macros):
+            return
+
+        self._selected_macro_idx = idx
+        macro = self._macros[idx]
+        macro.active = active
+
+        disabled = 0
+        if macro.active:
+            target_hotkey = macro.hotkey.strip().casefold()
+            if target_hotkey:
+                for pos, other in enumerate(self._macros):
+                    if pos == idx:
+                        continue
+                    if other.active and other.hotkey.strip().casefold() == target_hotkey:
+                        other.active = False
+                        disabled += 1
+
+        self._save_macros()
+        self._apply_macros_to_engine()
+        self._refresh_macro_list()
+
+        state_text = 'active' if macro.active else 'inactive'
+        if disabled:
+            self._append_log(
+                f"Macro '{macro.name}' is now {state_text}. Disabled {disabled} other macro(s) sharing [{macro.hotkey}].",
+                'notification',
+            )
+            return
+        self._append_log(f"Macro '{macro.name}' is now {state_text}.", 'notification')
+
+    def _toggle_selected_macro_active(self) -> None:
+        idx = self._selected_macro_idx
+        if idx is None or idx < 0 or idx >= len(self._macros):
+            return
+        self._set_macro_active(idx, not self._macros[idx].active)
+
+    def _describe_step(self, index: int, step: dict[str, int | str | bool]) -> str:
         step_type = str(step.get('type', '')).lower()
         if step_type == 'click':
             button = str(step.get('button', 'left')).strip().lower()
@@ -335,22 +598,51 @@ class MacroUI:
             label = 'Right Click' if button == 'right' else 'Click'
             return f'{index}. {label} ({int(step.get("x", 0))}, {int(step.get("y", 0))})'
         if step_type == 'key':
-            return f'{index}. Key {str(step.get("key", "")).strip() or "<empty>"}'
+            action = str(step.get('action', 'tap')).strip().lower()
+            key_name = str(step.get('key', '')).strip() or '<empty>'
+            if action == 'press':
+                return f'{index}. Key Down {key_name}'
+            if action == 'release':
+                return f'{index}. Key Up {key_name}'
+            return f'{index}. Key Tap {key_name}'
         if step_type == 'delay':
-            return f'{index}. Delay {max(0, int(step.get("ms", 0)))}ms'
+            ms = max(0, int(step.get('ms', 0)))
+            jitter_pct = max(0, int(step.get('jitter_pct', 0)))
+            if jitter_pct:
+                return f'{index}. Delay {ms}ms +/-{jitter_pct}%'
+            return f'{index}. Delay {ms}ms'
         if step_type == 'return_cursor':
             return f'{index}. Return Cursor'
         return f'{index}. Unknown'
 
     def _open_macro_editor(self) -> None:
-        working = [WorkingMacro(name=m.name, hotkey=m.hotkey, steps=[dict(s) for s in m.steps]) for m in self._macros]
+        working = [
+            WorkingMacro(
+                name=m.name,
+                hotkey=m.hotkey,
+                active=m.active,
+                steps=[dict(s) for s in m.steps],
+                repeat_while_held=m.repeat_while_held,
+            )
+            for m in self._macros
+        ]
 
-        dialog = tk.Toplevel(self.root)
-        dialog.title('Macro Editor')
-        dialog.geometry('760x520')
-        dialog.configure(bg=self._colors['panel'])
-        dialog.transient(self.root)
-        dialog.grab_set()
+        def _enforce_hotkey_exclusive(items: list[WorkingMacro], active_index: int) -> None:
+            if active_index < 0 or active_index >= len(items):
+                return
+            owner = items[active_index]
+            if not owner.active:
+                return
+            hotkey = owner.hotkey.strip().casefold()
+            if not hotkey:
+                return
+            for idx, macro in enumerate(items):
+                if idx == active_index:
+                    continue
+                if macro.hotkey.strip().casefold() == hotkey:
+                    macro.active = False
+
+        dialog = self._create_popup(self.root, title='Macro Editor', geometry='760x520', resizable=True)
 
         frame = tk.Frame(dialog, bg=self._colors['panel'], padx=12, pady=12)
         frame.pack(fill=tk.BOTH, expand=True)
@@ -386,7 +678,8 @@ class MacroUI:
         def _refresh_editor_list() -> None:
             lst.delete(0, tk.END)
             for idx, macro in enumerate(working, start=1):
-                lst.insert(tk.END, f'{idx}. {macro.name} [{macro.hotkey}] - {len(macro.steps)} step(s)')
+                active_prefix = '[x]' if macro.active else '[ ]'
+                lst.insert(tk.END, f'{idx}. {active_prefix} {macro.name} [{macro.hotkey}] - {len(macro.steps)} step(s)')
 
         def _selected_idx() -> int | None:
             sel = lst.curselection()
@@ -398,15 +691,12 @@ class MacroUI:
             macro = WorkingMacro(
                 name=initial.name if initial else '',
                 hotkey=initial.hotkey if initial else '',
+                active=initial.active if initial else True,
                 steps=[dict(s) for s in (initial.steps if initial else [])],
+                repeat_while_held=initial.repeat_while_held if initial else False,
             )
 
-            editor = tk.Toplevel(dialog)
-            editor.title('Edit Macro' if initial else 'Add Macro')
-            editor.geometry('620x470')
-            editor.configure(bg=self._colors['panel'])
-            editor.transient(dialog)
-            editor.grab_set()
+            editor = self._create_popup(dialog, title='Edit Macro' if initial else 'Add Macro', geometry='620x470', resizable=True)
 
             body = tk.Frame(editor, bg=self._colors['panel'], padx=12, pady=12)
             body.pack(fill=tk.BOTH, expand=True)
@@ -425,6 +715,283 @@ class MacroUI:
             ent_hotkey.pack(side=tk.LEFT, fill=tk.X, expand=True)
             ent_hotkey.insert(0, macro.hotkey)
 
+            def _capture_binding_dialog(*, title: str, prompt: str, initial_value: str = '', allow_mouse: bool = False) -> str | None:
+                capture = self._create_popup(editor, title=title, geometry='420x210', resizable=False)
+
+                tk.Label(
+                    capture,
+                    text=prompt,
+                    bg=self._colors['panel'],
+                    fg=self._colors['text'],
+                    wraplength=300,
+                ).pack(fill=tk.X, padx=12, pady=(14, 10))
+
+                status_var = tk.StringVar(value='Waiting for key press...' if not allow_mouse else 'Waiting for key press or side mouse button...')
+                tk.Label(
+                    capture,
+                    textvariable=status_var,
+                    bg=self._colors['panel'],
+                    fg=self._colors['muted'],
+                ).pack(fill=tk.X, padx=12)
+
+                listener_holder: dict[str, keyboard.Listener | None] = {'listener': None}
+                mouse_listener_holder: dict[str, mouse.Listener | None] = {'listener': None}
+                pressed_keys: set[str] = set()
+                captured_binding: dict[str, str | None] = {'value': initial_value.strip() or None}
+                save_state: dict[str, tk.Button | None] = {'button': None}
+
+                def _safe_capture_ui(callback) -> None:
+                    try:
+                        if capture.winfo_exists():
+                            callback()
+                    except Exception:
+                        pass
+
+                if captured_binding['value']:
+                    status_var.set(f"Captured: {captured_binding['value']}")
+
+                def _finish(binding: str | None) -> None:
+                    listener = listener_holder.get('listener')
+                    listener_holder['listener'] = None
+                    if listener is not None:
+                        try:
+                            listener.stop()
+                        except Exception:
+                            pass
+                    mouse_listener = mouse_listener_holder.get('listener')
+                    mouse_listener_holder['listener'] = None
+                    if mouse_listener is not None:
+                        try:
+                            mouse_listener.stop()
+                        except Exception:
+                            pass
+                    if binding:
+                        ent_hotkey.delete(0, tk.END)
+                        ent_hotkey.insert(0, binding)
+                        status_var.set(f'Captured: {binding}')
+                    if save_state['button'] is not None:
+                        try:
+                            if save_state['button'].winfo_exists():
+                                save_state['button'].configure(state=tk.NORMAL)
+                        except Exception:
+                            pass
+
+                def _format_binding() -> str:
+                    modifiers = [name for name in ('ctrl', 'shift', 'alt', 'win') if name in pressed_keys]
+                    others = [name for name in pressed_keys if name not in {'ctrl', 'shift', 'alt', 'win'}]
+                    ordered = modifiers + sorted(others)
+                    return '+'.join(ordered)
+
+                def _on_press(key: keyboard.Key | keyboard.KeyCode) -> bool:
+                    key_name = self._key_event_name(key)
+                    if not key_name:
+                        return True
+
+                    pressed_keys.add(key_name)
+                    binding = _format_binding()
+                    captured_binding['value'] = binding
+                    if binding:
+                        capture.after(0, lambda b=binding: _safe_capture_ui(lambda: status_var.set(f'Captured: {b}')))
+                        capture.after(0, lambda: _safe_capture_ui(lambda: save_state['button'].configure(state=tk.NORMAL) if save_state['button'] is not None else None))
+                    return True
+
+                def _on_release(key: keyboard.Key | keyboard.KeyCode) -> bool:
+                    key_name = self._key_event_name(key)
+                    if not key_name:
+                        return True
+
+                    pressed_keys.discard(key_name)
+                    return True
+
+                listener = keyboard.Listener(on_press=_on_press, on_release=_on_release)
+                listener_holder['listener'] = listener
+                listener.start()
+
+                if allow_mouse:
+                    def _on_mouse_click(_x: int, _y: int, button: mouse.Button, pressed: bool) -> bool:
+                        if not pressed:
+                            return True
+
+                        button_name = self._mouse_button_name(button)
+                        if button_name not in {'x1', 'x2'}:
+                            if button_name:
+                                capture.after(0, lambda b=button_name: _safe_capture_ui(lambda: status_var.set(f'Use side buttons only (captured {b}, ignored).')))
+                            return True
+
+                        binding = f'mouse:{button_name}'
+                        captured_binding['value'] = binding
+                        capture.after(0, lambda b=binding: _safe_capture_ui(lambda: status_var.set(f'Captured: {b}')))
+                        capture.after(0, lambda: _safe_capture_ui(lambda: save_state['button'].configure(state=tk.NORMAL) if save_state['button'] is not None else None))
+                        return True
+
+                    mouse_listener = mouse.Listener(on_click=_on_mouse_click)
+                    mouse_listener_holder['listener'] = mouse_listener
+                    mouse_listener.start()
+
+                def _save() -> None:
+                    binding = captured_binding['value'] or ent_hotkey.get().strip()
+                    if not binding:
+                        status_var.set('Press a key or combo before saving.')
+                        return
+                    _finish(binding)
+                    capture.destroy()
+
+                def _cancel() -> None:
+                    _finish(None)
+                    capture.destroy()
+
+                actions = tk.Frame(capture, bg=self._colors['panel'])
+                actions.pack(fill=tk.X, padx=12, pady=(10, 12))
+                save_button = self._make_button(actions, text='Save', width=10, command=_save, accent=True)
+                save_button.configure(state=tk.NORMAL if captured_binding['value'] else tk.DISABLED)
+                save_button.pack(side=tk.RIGHT)
+                save_state['button'] = save_button
+                self._make_button(actions, text='Cancel', width=10, command=_cancel).pack(side=tk.RIGHT, padx=(0, 8))
+
+                capture.protocol('WM_DELETE_WINDOW', _cancel)
+                capture.wait_window()
+                return captured_binding['value']
+
+            def _capture_hotkey() -> None:
+                binding = _capture_binding_dialog(
+                    title='Capture Hotkey',
+                    prompt='Press a hotkey combo or use a side mouse button (x1/x2).',
+                    initial_value=macro.hotkey,
+                    allow_mouse=True,
+                )
+                if binding:
+                    ent_hotkey.delete(0, tk.END)
+                    ent_hotkey.insert(0, binding)
+
+            def _capture_key_step_dialog(*, title: str, initial_step: dict[str, int | str | bool] | None = None) -> dict[str, int | str | bool] | None:
+                capture = self._create_popup(editor, title=title, geometry='420x260', resizable=False)
+
+                tk.Label(
+                    capture,
+                    text='Press the key or combo for this step.',
+                    bg=self._colors['panel'],
+                    fg=self._colors['text'],
+                    wraplength=330,
+                ).pack(fill=tk.X, padx=12, pady=(14, 10))
+
+                status_var = tk.StringVar(value='Waiting for key press...')
+                tk.Label(
+                    capture,
+                    textvariable=status_var,
+                    bg=self._colors['panel'],
+                    fg=self._colors['muted'],
+                ).pack(fill=tk.X, padx=12)
+
+                action_var = tk.StringVar(value=str(initial_step.get('action', 'tap')).strip().lower() if initial_step else 'tap')
+                action_row = tk.Frame(capture, bg=self._colors['panel'])
+                action_row.pack(fill=tk.X, padx=12, pady=(10, 0))
+                tk.Label(action_row, text='Action', bg=self._colors['panel'], fg=self._colors['muted'], width=10, anchor='w').pack(side=tk.LEFT)
+                for label, value in (('Tap', 'tap'), ('Press', 'press'), ('Release', 'release')):
+                    tk.Radiobutton(
+                        action_row,
+                        text=label,
+                        value=value,
+                        variable=action_var,
+                        bg=self._colors['panel'],
+                        fg=self._colors['text'],
+                        selectcolor=self._colors['panel_alt'],
+                        activebackground=self._colors['panel'],
+                        activeforeground=self._colors['text'],
+                        highlightthickness=0,
+                    ).pack(side=tk.LEFT, padx=(0, 8))
+
+                listener_holder: dict[str, keyboard.Listener | None] = {'listener': None}
+                pressed_keys: set[str] = set()
+                captured_binding: dict[str, str | None] = {'value': str(initial_step.get('key', '')).strip() if initial_step else None}
+                save_state: dict[str, tk.Button | None] = {'button': None}
+
+                def _safe_capture_ui(callback) -> None:
+                    try:
+                        if capture.winfo_exists():
+                            callback()
+                    except Exception:
+                        pass
+
+                if captured_binding['value']:
+                    status_var.set(f"Captured: {captured_binding['value']}")
+
+                def _finish(binding: str | None) -> None:
+                    listener = listener_holder.get('listener')
+                    listener_holder['listener'] = None
+                    if listener is not None:
+                        try:
+                            listener.stop()
+                        except Exception:
+                            pass
+                    if binding:
+                        captured_binding['value'] = binding
+                        status_var.set(f'Captured: {binding}')
+                    if save_state['button'] is not None:
+                        try:
+                            if save_state['button'].winfo_exists():
+                                save_state['button'].configure(state=tk.NORMAL)
+                        except Exception:
+                            pass
+
+                def _format_binding() -> str:
+                    modifiers = [name for name in ('ctrl', 'shift', 'alt', 'win') if name in pressed_keys]
+                    others = [name for name in pressed_keys if name not in {'ctrl', 'shift', 'alt', 'win'}]
+                    ordered = modifiers + sorted(others)
+                    return '+'.join(ordered)
+
+                def _on_press(key: keyboard.Key | keyboard.KeyCode) -> bool:
+                    key_name = self._key_event_name(key)
+                    if not key_name:
+                        return True
+
+                    pressed_keys.add(key_name)
+                    binding = _format_binding()
+                    if binding:
+                        captured_binding['value'] = binding
+                        capture.after(0, lambda b=binding: _safe_capture_ui(lambda: status_var.set(f'Captured: {b}')))
+                        capture.after(0, lambda: _safe_capture_ui(lambda: save_state['button'].configure(state=tk.NORMAL) if save_state['button'] is not None else None))
+                    return True
+
+                def _on_release(key: keyboard.Key | keyboard.KeyCode) -> bool:
+                    key_name = self._key_event_name(key)
+                    if not key_name:
+                        return True
+                    pressed_keys.discard(key_name)
+                    return True
+
+                listener = keyboard.Listener(on_press=_on_press, on_release=_on_release)
+                listener_holder['listener'] = listener
+                listener.start()
+
+                result: dict[str, int | str | bool] = {}
+
+                def _save() -> None:
+                    binding = captured_binding['value'] or ''
+                    if not binding:
+                        status_var.set('Press a key or combo before saving.')
+                        return
+                    result.update({'type': 'key', 'key': binding, 'action': str(action_var.get()).strip().lower() or 'tap'})
+                    capture.destroy()
+
+                def _cancel() -> None:
+                    _finish(None)
+                    capture.destroy()
+
+                actions = tk.Frame(capture, bg=self._colors['panel'])
+                actions.pack(fill=tk.X, padx=12, pady=(12, 12))
+                save_button = self._make_button(actions, text='Save', width=10, command=_save, accent=True)
+                save_button.configure(state=tk.NORMAL if captured_binding['value'] else tk.DISABLED)
+                save_button.pack(side=tk.RIGHT)
+                save_state['button'] = save_button
+                self._make_button(actions, text='Cancel', width=10, command=_cancel).pack(side=tk.RIGHT, padx=(0, 8))
+
+                capture.protocol('WM_DELETE_WINDOW', _cancel)
+                capture.wait_window()
+
+                return result if result.get('type') == 'key' else None
+
+            self._make_button(row_hotkey, text='Capture Hotkey', width=14, command=_capture_hotkey).pack(side=tk.LEFT, padx=(8, 0))
+
             tk.Label(
                 body,
                 text='Examples: ctrl+1, ctrl+shift+k, alt+f9',
@@ -432,6 +999,19 @@ class MacroUI:
                 fg=self._colors['muted'],
                 anchor='w',
             ).pack(fill=tk.X, pady=(2, 8))
+
+            repeat_var = tk.BooleanVar(value=macro.repeat_while_held)
+            tk.Checkbutton(
+                body,
+                text='Repeat while held',
+                variable=repeat_var,
+                bg=self._colors['panel'],
+                fg=self._colors['text'],
+                selectcolor=self._colors['panel_alt'],
+                activebackground=self._colors['panel'],
+                activeforeground=self._colors['text'],
+                highlightthickness=0,
+            ).pack(anchor='w', pady=(0, 8))
 
             steps = tk.Listbox(
                 body,
@@ -460,129 +1040,105 @@ class MacroUI:
             def _open_click_step_dialog(
                 *,
                 title: str,
-                initial_step: dict[str, int | str] | None = None,
-            ) -> dict[str, int | str] | None:
-                resolved_button = 'left'
-                initial_x = int(initial_step.get('x', 0)) if initial_step else None
-                initial_y = int(initial_step.get('y', 0)) if initial_step else None
-                initial_at_origin = bool(initial_step.get('at_origin', False)) if initial_step else False
-                if initial_step:
-                    existing_button = str(initial_step.get('button', resolved_button)).strip().lower()
-                    if existing_button in {'left', 'right'}:
-                        resolved_button = existing_button
-
-                picker = tk.Toplevel(editor)
-                picker.title(title)
-                picker.geometry('400x250')
-                picker.configure(bg=self._colors['panel'])
-                picker.transient(editor)
-                picker.grab_set()
+                initial_step: dict[str, int | str | bool] | None = None,
+            ) -> dict[str, int | str | bool] | None:
+                picker = self._create_popup(editor, title=title, geometry='420x260', resizable=False)
 
                 body_picker = tk.Frame(picker, bg=self._colors['panel'], padx=12, pady=12)
                 body_picker.pack(fill=tk.BOTH, expand=True)
 
                 tk.Label(
                     body_picker,
-                    text='Press F2 to capture current mouse location.',
+                    text='Click anywhere to capture the step.',
                     bg=self._colors['panel'],
                     fg=self._colors['text'],
                     anchor='w',
                 ).pack(fill=tk.X)
 
-                row_button = tk.Frame(body_picker, bg=self._colors['panel'])
-                row_button.pack(fill=tk.X, pady=(8, 0))
-                right_click_var = tk.BooleanVar(value=(resolved_button == 'right'))
-                tk.Checkbutton(
-                    row_button,
-                    text='Right click',
-                    variable=right_click_var,
+                status_var = tk.StringVar(value='Waiting for mouse click...')
+                tk.Label(
+                    body_picker,
+                    textvariable=status_var,
                     bg=self._colors['panel'],
-                    fg=self._colors['text'],
-                    selectcolor=self._colors['panel_alt'],
-                    activebackground=self._colors['panel'],
-                    activeforeground=self._colors['text'],
-                    highlightthickness=0,
-                ).pack(side=tk.LEFT)
+                    fg=self._colors['muted'],
+                    anchor='w',
+                ).pack(fill=tk.X, pady=(8, 0))
 
                 result: dict[str, int | str | bool] = {
                     'type': 'click',
                     'x': 0,
                     'y': 0,
-                    'button': resolved_button,
-                    'at_origin': initial_at_origin,
+                    'button': 'left',
+                    'at_origin': False,
                 }
 
-                use_origin_var = tk.BooleanVar(value=initial_at_origin)
-                row_origin = tk.Frame(body_picker, bg=self._colors['panel'])
-                row_origin.pack(fill=tk.X, pady=(8, 0))
-                tk.Checkbutton(
-                    row_origin,
-                    text='Use original position (trigger position)',
-                    variable=use_origin_var,
-                    bg=self._colors['panel'],
-                    fg=self._colors['text'],
-                    selectcolor=self._colors['panel_alt'],
-                    activebackground=self._colors['panel'],
-                    activeforeground=self._colors['text'],
-                    highlightthickness=0,
-                ).pack(side=tk.LEFT)
+                listener_holder: dict[str, mouse.Listener | None] = {'listener': None}
+                captured_value: dict[str, int | str | bool | None] = {'value': None}
+                save_state: dict[str, tk.Button | None] = {'button': None}
 
-                row_x = tk.Frame(body_picker, bg=self._colors['panel'])
-                row_x.pack(fill=tk.X, pady=(10, 0))
-                tk.Label(row_x, text='X', width=6, anchor='w', bg=self._colors['panel'], fg=self._colors['muted']).pack(side=tk.LEFT)
-                ent_x = tk.Entry(row_x, bg=self._colors['input_bg'], fg=self._colors['text'], insertbackground=self._colors['text'], relief=tk.FLAT)
-                ent_x.pack(side=tk.LEFT, fill=tk.X, expand=True)
+                def _safe_picker_ui(callback) -> None:
+                    try:
+                        if picker.winfo_exists():
+                            callback()
+                    except Exception:
+                        pass
 
-                row_y = tk.Frame(body_picker, bg=self._colors['panel'])
-                row_y.pack(fill=tk.X, pady=(6, 0))
-                tk.Label(row_y, text='Y', width=6, anchor='w', bg=self._colors['panel'], fg=self._colors['muted']).pack(side=tk.LEFT)
-                ent_y = tk.Entry(row_y, bg=self._colors['input_bg'], fg=self._colors['text'], insertbackground=self._colors['text'], relief=tk.FLAT)
-                ent_y.pack(side=tk.LEFT, fill=tk.X, expand=True)
+                def _finish(value: dict[str, int | str | bool] | None) -> None:
+                    listener = listener_holder.get('listener')
+                    listener_holder['listener'] = None
+                    if listener is not None:
+                        try:
+                            listener.stop()
+                        except Exception:
+                            pass
+                    if value is not None:
+                        captured_value['value'] = value
+                        result.update(value)
+                        status_var.set(f"Captured: {value['button']} ({value['x']}, {value['y']})")
+                    if save_state['button'] is not None:
+                        try:
+                            if save_state['button'].winfo_exists():
+                                save_state['button'].configure(state=tk.NORMAL)
+                        except Exception:
+                            pass
 
-                if initial_x is not None:
-                    ent_x.insert(0, str(initial_x))
-                if initial_y is not None:
-                    ent_y.insert(0, str(initial_y))
+                def _on_click(x: int, y: int, button: mouse.Button, pressed: bool) -> bool:
+                    if not pressed:
+                        return True
 
-                def _capture_cursor(_event: tk.Event | None = None) -> str | None:
-                    pos = get_cursor_position()
-                    if pos is None:
-                        messagebox.showerror('Unavailable', 'Could not read cursor position.', parent=picker)
-                        return None
-                    ent_x.delete(0, tk.END)
-                    ent_x.insert(0, str(int(pos[0])))
-                    ent_y.delete(0, tk.END)
-                    ent_y.insert(0, str(int(pos[1])))
-                    return 'break'
+                    button_name = self._mouse_button_name(button)
+                    if button_name not in {'left', 'right'}:
+                        capture_text = button_name or 'unknown'
+                        picker.after(0, lambda t=capture_text: _safe_picker_ui(lambda: status_var.set(f'Unsupported button: {t}')))
+                        return True
+
+                    picker.after(0, lambda xx=int(x), yy=int(y), bn=button_name: _safe_picker_ui(lambda: _finish({'type': 'click', 'x': xx, 'y': yy, 'button': bn, 'at_origin': False})))
+                    return False
+
+                listener = mouse.Listener(on_click=_on_click)
+                listener_holder['listener'] = listener
+                listener.start()
 
                 def _save_click() -> None:
-                    if use_origin_var.get():
-                        x = int(initial_x or 0)
-                        y = int(initial_y or 0)
-                    else:
-                        try:
-                            x = int(ent_x.get().strip())
-                            y = int(ent_y.get().strip())
-                        except ValueError:
-                            messagebox.showerror('Invalid click', 'X and Y must be whole numbers.', parent=picker)
-                            return
-                    result['x'] = x
-                    result['y'] = y
-                    result['button'] = 'right' if right_click_var.get() else 'left'
-                    result['at_origin'] = use_origin_var.get()
+                    if captured_value['value'] is None:
+                        status_var.set('Click somewhere to capture the step first.')
+                        return
                     picker.saved = True
+                    picker.destroy()
+
+                def _cancel_click() -> None:
+                    _finish(None)
                     picker.destroy()
 
                 actions_picker = tk.Frame(body_picker, bg=self._colors['panel'])
                 actions_picker.pack(fill=tk.X, pady=(12, 0))
-                self._make_button(actions_picker, text='Capture (F2)', width=12, command=_capture_cursor, accent=True).pack(side=tk.LEFT)
-                self._make_button(actions_picker, text='Save', width=10, command=_save_click).pack(side=tk.RIGHT)
-                self._make_button(actions_picker, text='Cancel', width=10, command=picker.destroy).pack(side=tk.RIGHT, padx=(0, 6))
+                save_button = self._make_button(actions_picker, text='Save', width=10, command=_save_click, accent=True)
+                save_button.configure(state=tk.DISABLED)
+                save_button.pack(side=tk.RIGHT)
+                save_state['button'] = save_button
+                self._make_button(actions_picker, text='Cancel', width=10, command=_cancel_click).pack(side=tk.RIGHT, padx=(0, 6))
 
-                picker.bind('<F2>', _capture_cursor)
-                ent_x.bind('<F2>', _capture_cursor)
-                ent_y.bind('<F2>', _capture_cursor)
-                ent_x.focus_set()
+                picker.protocol('WM_DELETE_WINDOW', _cancel_click)
                 picker.wait_window()
 
                 if getattr(picker, 'saved', False):
@@ -597,21 +1153,36 @@ class MacroUI:
                 _refresh_steps()
 
             def _add_key() -> None:
-                key_name = simpledialog.askstring('Key step', 'Key or combo (example: enter, f1, ctrl+v):', parent=editor)
-                if key_name is None:
+                key_step = _capture_key_step_dialog(title='Capture Key Step')
+                if key_step is None:
                     return
-                key_name = key_name.strip()
-                if not key_name:
-                    messagebox.showerror('Invalid key', 'Key cannot be empty.', parent=editor)
-                    return
-                macro.steps.append({'type': 'key', 'key': key_name})
+                macro.steps.append(key_step)
                 _refresh_steps()
 
             def _add_delay() -> None:
-                ms = simpledialog.askinteger('Delay step', 'Delay in milliseconds:', minvalue=0, parent=editor)
+                ms = self._ask_integer_popup(
+                    editor,
+                    title='Delay Step',
+                    prompt='Delay in milliseconds:',
+                    initial=0,
+                    min_value=0,
+                )
                 if ms is None:
                     return
-                macro.steps.append({'type': 'delay', 'ms': int(ms)})
+                jitter_pct = self._ask_integer_popup(
+                    editor,
+                    title='Delay Jitter',
+                    prompt='Optional jitter percentage (0 to disable):',
+                    initial=0,
+                    min_value=0,
+                    max_value=100,
+                )
+                if jitter_pct is None:
+                    return
+                delay_step: dict[str, int | str | bool] = {'type': 'delay', 'ms': int(ms)}
+                if jitter_pct:
+                    delay_step['jitter_pct'] = int(jitter_pct)
+                macro.steps.append(delay_step)
                 _refresh_steps()
 
             def _add_return_cursor() -> None:
@@ -646,32 +1217,36 @@ class MacroUI:
                         return
                     macro.steps[idx] = click_step
                 elif step_type == 'key':
-                    current_key = str(step.get('key', '')).strip()
-                    key_name = simpledialog.askstring(
-                        'Edit key step',
-                        'Key or combo (example: enter, f1, ctrl+v):',
-                        initialvalue=current_key,
-                        parent=editor,
-                    )
-                    if key_name is None:
+                    key_step = _capture_key_step_dialog(title='Edit Key Step', initial_step=step)
+                    if key_step is None:
                         return
-                    key_name = key_name.strip()
-                    if not key_name:
-                        messagebox.showerror('Invalid key', 'Key cannot be empty.', parent=editor)
-                        return
-                    macro.steps[idx] = {'type': 'key', 'key': key_name}
+                    macro.steps[idx] = key_step
                 elif step_type == 'delay':
                     current_ms = max(0, int(step.get('ms', 0)))
-                    ms = simpledialog.askinteger(
-                        'Edit delay step',
-                        'Delay in milliseconds:',
-                        minvalue=0,
-                        initialvalue=current_ms,
-                        parent=editor,
+                    ms = self._ask_integer_popup(
+                        editor,
+                        title='Edit Delay Step',
+                        prompt='Delay in milliseconds:',
+                        initial=current_ms,
+                        min_value=0,
                     )
                     if ms is None:
                         return
-                    macro.steps[idx] = {'type': 'delay', 'ms': int(ms)}
+                    current_jitter = max(0, int(step.get('jitter_pct', 0)))
+                    jitter_pct = self._ask_integer_popup(
+                        editor,
+                        title='Edit Delay Jitter',
+                        prompt='Optional jitter percentage (0 to disable):',
+                        initial=current_jitter,
+                        min_value=0,
+                        max_value=100,
+                    )
+                    if jitter_pct is None:
+                        return
+                    updated_step: dict[str, int | str | bool] = {'type': 'delay', 'ms': int(ms)}
+                    if jitter_pct:
+                        updated_step['jitter_pct'] = int(jitter_pct)
+                    macro.steps[idx] = updated_step
                 elif step_type == 'return_cursor':
                     macro.steps[idx] = {'type': 'return_cursor'}
                 else:
@@ -715,6 +1290,7 @@ class MacroUI:
             def _save_macro() -> None:
                 macro.name = ent_name.get().strip()
                 macro.hotkey = ent_hotkey.get().strip()
+                macro.repeat_while_held = bool(repeat_var.get())
                 if not macro.name or not macro.hotkey:
                     messagebox.showerror('Invalid macro', 'Name and hotkey are required.', parent=editor)
                     return
@@ -743,6 +1319,8 @@ class MacroUI:
                 messagebox.showerror('Duplicate name', 'Macro name already exists.', parent=dialog)
                 return
             working.append(created)
+            if created.active:
+                _enforce_hotkey_exclusive(working, len(working) - 1)
             _refresh_editor_list()
 
         def _edit_selected() -> None:
@@ -759,6 +1337,8 @@ class MacroUI:
                     messagebox.showerror('Duplicate name', 'Macro name already exists.', parent=dialog)
                     return
             working[idx] = edited
+            if edited.active:
+                _enforce_hotkey_exclusive(working, idx)
             _refresh_editor_list()
             lst.selection_set(idx)
 
@@ -791,7 +1371,9 @@ class MacroUI:
             duplicated = WorkingMacro(
                 name=new_name,
                 hotkey=source.hotkey,
+                active=source.active,
                 steps=[dict(step) for step in source.steps],
+                repeat_while_held=source.repeat_while_held,
             )
 
             working.insert(idx + 1, duplicated)
@@ -811,14 +1393,30 @@ class MacroUI:
             _refresh_editor_list()
             lst.selection_set(new_idx)
 
+        def _toggle_selected_active() -> None:
+            idx = _selected_idx()
+            if idx is None:
+                return
+            working[idx].active = not working[idx].active
+            if working[idx].active:
+                _enforce_hotkey_exclusive(working, idx)
+            _refresh_editor_list()
+            lst.selection_set(idx)
+
         controls = tk.Frame(frame, bg=self._colors['panel'])
         controls.pack(fill=tk.X, pady=(8, 0))
-        self._make_button(controls, text='Add', width=12, command=_add_macro).pack(side=tk.LEFT)
-        self._make_button(controls, text='Edit', width=12, command=_edit_selected).pack(side=tk.LEFT, padx=(6, 0))
-        self._make_button(controls, text='Duplicate', width=12, command=_duplicate_selected).pack(side=tk.LEFT, padx=(6, 0))
-        self._make_button(controls, text='Remove', width=12, command=_remove_selected).pack(side=tk.LEFT, padx=(6, 0))
-        self._make_button(controls, text='Move Up', width=12, command=lambda: _move_selected(-1)).pack(side=tk.LEFT, padx=(6, 0))
-        self._make_button(controls, text='Move Down', width=12, command=lambda: _move_selected(1)).pack(side=tk.LEFT, padx=(6, 0))
+        controls_top = tk.Frame(controls, bg=self._colors['panel'])
+        controls_top.pack(fill=tk.X)
+        self._make_button(controls_top, text='Add', width=12, command=_add_macro).pack(side=tk.LEFT)
+        self._make_button(controls_top, text='Edit', width=12, command=_edit_selected).pack(side=tk.LEFT, padx=(6, 0))
+        self._make_button(controls_top, text='Duplicate', width=12, command=_duplicate_selected).pack(side=tk.LEFT, padx=(6, 0))
+        self._make_button(controls_top, text='Remove', width=12, command=_remove_selected).pack(side=tk.LEFT, padx=(6, 0))
+
+        controls_bottom = tk.Frame(controls, bg=self._colors['panel'])
+        controls_bottom.pack(fill=tk.X, pady=(6, 0))
+        self._make_button(controls_bottom, text='Toggle Active', width=14, command=_toggle_selected_active, accent=True).pack(side=tk.LEFT)
+        self._make_button(controls_bottom, text='Move Up', width=12, command=lambda: _move_selected(-1)).pack(side=tk.LEFT, padx=(6, 0))
+        self._make_button(controls_bottom, text='Move Down', width=12, command=lambda: _move_selected(1)).pack(side=tk.LEFT, padx=(6, 0))
 
         lst.bind('<Double-Button-1>', _edit_selected_event)
 
@@ -827,10 +1425,26 @@ class MacroUI:
 
         def _save_all() -> None:
             self._macros = working
+            # Enforce one active macro per hotkey; first active keeps ownership.
+            seen_hotkeys: set[str] = set()
+            for macro in self._macros:
+                if not macro.active:
+                    continue
+                key = macro.hotkey.strip().casefold()
+                if key in seen_hotkeys:
+                    macro.active = False
+                else:
+                    seen_hotkeys.add(key)
             self._save_macros()
             self._engine.set_macros([
-                {'name': item.name, 'hotkey': item.hotkey, 'steps': item.steps}
+                {
+                    'name': item.name,
+                    'hotkey': item.hotkey,
+                    'repeat_while_held': item.repeat_while_held,
+                    'steps': item.steps,
+                }
                 for item in self._macros
+                if item.active
             ])
             self._refresh_macro_list()
             dialog.destroy()

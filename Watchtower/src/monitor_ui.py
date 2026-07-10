@@ -136,6 +136,7 @@ class MonitorUI:
         self.root.after(120, self._drain_events)
         self.root.protocol('WM_DELETE_WINDOW', self._on_close)
         self.root.bind('<Configure>', self._on_window_configure)
+        self.root.bind('<Button-1>', self._on_root_click_unfocus, add='+')
         self.root.deiconify()
 
     def _setup_theme(self) -> None:
@@ -748,6 +749,17 @@ class MonitorUI:
         width = self.root.winfo_width()
         self._relayout_controls(compact=width < 540)
 
+    def _on_root_click_unfocus(self, event: tk.Event) -> None:
+        widget = event.widget
+        if widget is None:
+            return
+
+        widget_name = widget.winfo_class()
+        if widget_name in {'Entry', 'Text', 'TEntry', 'TCombobox', 'Listbox', 'Spinbox'}:
+            return
+
+        self.root.focus_set()
+
     def run(self):
         self.root.mainloop()
 
@@ -947,7 +959,7 @@ class MonitorUI:
                 'name': row['name_var'].get(),
                 'threshold': row['threshold_var'].get() if row.get('threshold_var') else '0',
                 'key': row['key_var'].get() if row.get('key_var') else 'alt+0',
-                'escape_order': row['escape_order_var'].get() if row.get('escape_order_var') else '1',
+                'escape_enabled': row['escape_enabled_var'].get() if row.get('escape_enabled_var') else True,
                 'escape_delay_min_ms': row['escape_delay_min_ms_var'].get() if row.get('escape_delay_min_ms_var') else '100',
                 'escape_delay_max_ms': row['escape_delay_max_ms_var'].get() if row.get('escape_delay_max_ms_var') else '300',
                 'ghost_app': row['ghost_app_var'].get() if row.get('ghost_app_var') else True,
@@ -967,9 +979,9 @@ class MonitorUI:
             name_var = tk.StringVar(value=s.get('name', ''))
             threshold_var = tk.StringVar(value=s.get('threshold', '0'))
             key_var = tk.StringVar(value=s.get('key', 'alt+0'))
-            escape_order_var = tk.StringVar(value=s.get('escape_order', '1'))
-            escape_delay_min_ms_var = tk.StringVar(value=s.get('escape_delay_min_ms', '100'))
-            escape_delay_max_ms_var = tk.StringVar(value=s.get('escape_delay_max_ms', '300'))
+            escape_enabled_var = tk.BooleanVar(value=bool(s.get('escape_enabled', True)))
+            escape_delay_min_ms_var = tk.StringVar(value=s.get('escape_delay_min_ms', '500'))
+            escape_delay_max_ms_var = tk.StringVar(value=s.get('escape_delay_max_ms', '1000'))
             ghost_app_var = tk.BooleanVar(value=bool(s.get('ghost_app', True)))
             ghost_close_delay_min_s_var = tk.StringVar(value=s.get('ghost_close_delay_min_s', '1'))
             ghost_close_delay_max_s_var = tk.StringVar(value=s.get('ghost_close_delay_max_s', '5'))
@@ -1019,6 +1031,18 @@ class MonitorUI:
                 activeforeground=self._colors['text'],
                 font=('Segoe UI', 9),
                 command=lambda idx=i: self._on_slayer_toggle(idx),
+            ).pack(side=tk.LEFT, padx=(0, 6))
+
+            tk.Checkbutton(
+                top,
+                text='Escape',
+                variable=escape_enabled_var,
+                bg=self._colors['panel_alt'],
+                fg=self._colors['text'],
+                selectcolor=self._colors['input_bg'],
+                activebackground=self._colors['panel_alt'],
+                activeforeground=self._colors['text'],
+                font=('Segoe UI', 9),
             ).pack(side=tk.LEFT, padx=(0, 6))
 
 
@@ -1091,7 +1115,6 @@ class MonitorUI:
             radar_combo = ttk.Combobox(radar_frame, textvariable=radar_var,
                                        state='readonly', width=16, style='Dark.TCombobox')
             radar_combo.pack(side=tk.LEFT, padx=(6, 10))
-            radar_combo.bind('<<ComboboxSelected>>', lambda _e: self._refresh_escape_order_combos())
             tk.Label(radar_frame, text='Trigger:', bg=self._colors['panel_alt'],
                      fg=self._colors['muted'], font=('Segoe UI', 9)).pack(side=tk.LEFT)
             tk.Label(radar_frame, textvariable=key_var, width=8, anchor=tk.W,
@@ -1143,23 +1166,6 @@ class MonitorUI:
             # --- Shared escape controls (apply to slayer and radar rows) ---
             escape_frame = tk.Frame(row_frame, bg=self._colors['panel_alt'])
             escape_frame.pack(fill=tk.X, padx=6, pady=(0, 6))
-
-            tk.Label(
-                escape_frame,
-                text='Escape order:',
-                bg=self._colors['panel_alt'],
-                fg=self._colors['muted'],
-                font=('Segoe UI', 9),
-            ).pack(side=tk.LEFT)
-            escape_order_combo = ttk.Combobox(
-                escape_frame,
-                textvariable=escape_order_var,
-                state='readonly',
-                width=4,
-                style='Dark.TCombobox',
-            )
-            escape_order_combo.pack(side=tk.LEFT, padx=(6, 14))
-            escape_order_combo.bind('<<ComboboxSelected>>', lambda _e, idx=i: self._on_escape_order_selected(idx))
 
             tk.Label(
                 escape_frame,
@@ -1261,8 +1267,7 @@ class MonitorUI:
                 'name_var': name_var,
                 'threshold_var': threshold_var,
                 'key_var': key_var,
-                'escape_order_var': escape_order_var,
-                'escape_order_combo': escape_order_combo,
+                'escape_enabled_var': escape_enabled_var,
                 'escape_delay_min_ms_var': escape_delay_min_ms_var,
                 'escape_delay_max_ms_var': escape_delay_max_ms_var,
                 'ghost_app_var': ghost_app_var,
@@ -1289,7 +1294,6 @@ class MonitorUI:
                 'scan_thread': None,
             }
             name_var.trace_add('write', lambda *_: self._refresh_radar_combos())
-            radar_var.trace_add('write', lambda *_: self._refresh_escape_order_combos())
             self._process_tower_rows.append(row_data)
 
         # Show correct bottom frame and populate radar combos
@@ -1320,76 +1324,6 @@ class MonitorUI:
                 combo['values'] = slayer_labels
                 if row['radar_var'].get() not in slayer_labels:
                     row['radar_var'].set(slayer_labels[0] if slayer_labels else '')
-        self._refresh_escape_order_combos()
-
-    def _refresh_escape_order_combos(self) -> None:
-        self._refresh_escape_order_combos_with_priority(None)
-
-    def _on_escape_order_selected(self, idx: int) -> None:
-        self._refresh_escape_order_combos_with_priority(idx)
-
-    def _refresh_escape_order_combos_with_priority(self, preferred_idx: int | None) -> None:
-        group_counts: dict[str, int] = {}
-        group_rows: dict[str, list[int]] = {}
-
-        def _row_group_label(row_idx: int) -> str:
-            row = self._process_tower_rows[row_idx]
-            if row['is_slayer_var'].get():
-                return self._slayer_label(row_idx)
-            return row['radar_var'].get().strip()
-
-        for i, row in enumerate(self._process_tower_rows):
-            if not row['is_slayer_var'].get():
-                continue
-            label = self._slayer_label(i)
-            if label:
-                group_counts[label] = 1
-                group_rows.setdefault(label, []).append(i)
-
-        for i, row in enumerate(self._process_tower_rows):
-            if row['is_slayer_var'].get():
-                continue
-            label = row['radar_var'].get().strip()
-            if label:
-                group_counts[label] = group_counts.get(label, 0) + 1
-                group_rows.setdefault(label, []).append(i)
-
-        for i, row in enumerate(self._process_tower_rows):
-            label = _row_group_label(i)
-
-            group_size = max(1, group_counts.get(label, 1))
-            values = [str(n) for n in range(1, group_size + 1)]
-
-            combo = row.get('escape_order_combo')
-            if combo is not None:
-                combo['values'] = values
-
-        for label, indices in group_rows.items():
-            group_size = max(1, group_counts.get(label, 1))
-            assignment_order = list(indices)
-            if preferred_idx is not None and preferred_idx in assignment_order:
-                assignment_order = [preferred_idx] + [idx for idx in assignment_order if idx != preferred_idx]
-
-            taken: set[int] = set()
-            assigned: dict[int, int] = {}
-            for idx in assignment_order:
-                raw = self._process_tower_rows[idx]['escape_order_var'].get().strip()
-                try:
-                    candidate = int(raw)
-                except ValueError:
-                    candidate = 0
-
-                if candidate < 1 or candidate > group_size or candidate in taken:
-                    for fallback in range(1, group_size + 1):
-                        if fallback not in taken:
-                            candidate = fallback
-                            break
-
-                taken.add(candidate)
-                assigned[idx] = candidate
-
-            for idx in indices:
-                self._process_tower_rows[idx]['escape_order_var'].set(str(assigned[idx]))
 
     def _on_slayer_toggle(self, idx: int) -> None:
         row = self._process_tower_rows[idx]
@@ -2368,12 +2302,104 @@ class MonitorUI:
         self._release_pyautogui_modifiers()
         return False
 
-    def _send_key_combo_to_pid(self, pid: int, key_combo: str) -> bool:
+    def _send_key_combo_to_pid(self, pid: int, key_combo: str, *, prime_click: bool = True) -> bool:
         """Send combo to process window via PostMessage using pywin32."""
         with self._input_injection_lock:
-            return self._send_key_combo_to_pid_locked(pid, key_combo)
+            return self._send_key_combo_to_pid_locked(pid, key_combo, prime_click=prime_click)
 
-    def _send_key_combo_to_pid_locked(self, pid: int, key_combo: str) -> bool:
+    @staticmethod
+    def _prime_process_window_click(
+        hwnds: list[int],
+        *,
+        click_count_range: tuple[int, int] = (5, 10),
+    ) -> bool:
+        """Send randomized left-click burst near the client center to prime in-game focus/state."""
+        try:
+            win32gui = importlib.import_module('win32gui')
+            win32con = importlib.import_module('win32con')
+        except Exception:
+            return False
+
+        for use_timeout in (False, True):
+            for hwnd in hwnds:
+                try:
+                    left, top, right, bottom = win32gui.GetClientRect(hwnd)
+                    width = int(right - left)
+                    height = int(bottom - top)
+                    if width <= 0 or height <= 0:
+                        continue
+
+                    center_x = max(1, width // 2)
+                    center_y = max(1, height // 2)
+
+                    min_clicks, max_clicks = click_count_range
+                    click_count = random.randint(max(1, min_clicks), max(1, max_clicks))
+                    sent_any = False
+
+                    for _ in range(click_count):
+                        # Use a centered ellipse region so clicks stay human-like but safe.
+                        radius_x = max(22, int(width * 0.18))
+                        radius_y = max(22, int(height * 0.18))
+                        offset_x = 0
+                        offset_y = 0
+                        for _ in range(12):
+                            cand_x = random.randint(-radius_x, radius_x)
+                            cand_y = random.randint(-radius_y, radius_y)
+                            nx = (cand_x * cand_x) / float(radius_x * radius_x)
+                            ny = (cand_y * cand_y) / float(radius_y * radius_y)
+                            if (nx + ny) <= 1.0 and (abs(cand_x) + abs(cand_y)) >= 4:
+                                offset_x = cand_x
+                                offset_y = cand_y
+                                break
+
+                        click_x = min(max(1, center_x + offset_x), max(1, width - 2))
+                        click_y = min(max(1, center_y + offset_y), max(1, height - 2))
+                        lparam = (click_y << 16) | (click_x & 0xFFFF)
+
+                        if use_timeout:
+                            win32gui.SendMessageTimeout(
+                                hwnd,
+                                win32con.WM_MOUSEMOVE,
+                                0,
+                                lparam,
+                                win32con.SMTO_ABORTIFHUNG,
+                                60,
+                            )
+                            win32gui.SendMessageTimeout(
+                                hwnd,
+                                win32con.WM_LBUTTONDOWN,
+                                win32con.MK_LBUTTON,
+                                lparam,
+                                win32con.SMTO_ABORTIFHUNG,
+                                60,
+                            )
+                            time.sleep(random.uniform(0.008, 0.03))
+                            win32gui.SendMessageTimeout(
+                                hwnd,
+                                win32con.WM_LBUTTONUP,
+                                0,
+                                lparam,
+                                win32con.SMTO_ABORTIFHUNG,
+                                60,
+                            )
+                        else:
+                            win32gui.PostMessage(hwnd, win32con.WM_MOUSEMOVE, 0, lparam)
+                            win32gui.PostMessage(hwnd, win32con.WM_LBUTTONDOWN, win32con.MK_LBUTTON, lparam)
+                            time.sleep(random.uniform(0.008, 0.03))
+                            win32gui.PostMessage(hwnd, win32con.WM_LBUTTONUP, 0, lparam)
+
+                        sent_any = True
+                        time.sleep(random.uniform(0.01, 0.045))
+
+                    if sent_any:
+                        return True
+                except Exception:
+                    continue
+            time.sleep(0.01)
+
+        return False
+
+    def _send_key_combo_to_pid_locked(self, pid: int, key_combo: str, *, prime_click: bool = True) -> bool:
         """Inner implementation for serialized key combo send."""
         win32gui = importlib.import_module('win32gui')
         win32con = importlib.import_module('win32con')
@@ -2394,6 +2420,11 @@ class MonitorUI:
         primary_hwnd = self._find_primary_process_window(pid)
         if primary_hwnd in hwnds:
             hwnds = [primary_hwnd] + [h for h in hwnds if h != primary_hwnd]
+
+        if prime_click:
+            # Prime input context before the hotkey to reduce game-side dropped actions.
+            self._prime_process_window_click(hwnds)
+            time.sleep(0.02)
 
         parts = [p.strip().lower() for p in key_combo.split('+') if p.strip()]
         if not parts:

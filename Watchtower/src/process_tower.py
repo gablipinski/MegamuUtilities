@@ -63,20 +63,11 @@ def _read_non_negative_int(raw_value: object, default_value: int = 0) -> int:
         return default_value
 
 
-def _row_escape_order(row: dict) -> int:
-    order_var = row.get('escape_order_var')
-    if order_var is None:
-        return 0
-    raw = _read_non_negative_int(order_var.get(), 1)
-    # UI uses 1..N for readability; internal ordering remains 0-based.
-    return max(0, raw - 1)
-
-
 def _row_escape_delay_ms_bounds(row: dict) -> tuple[int, int]:
     min_var = row.get('escape_delay_min_ms_var')
     max_var = row.get('escape_delay_max_ms_var')
-    min_ms = _read_non_negative_int(min_var.get() if min_var is not None else 100, 100)
-    max_ms = _read_non_negative_int(max_var.get() if max_var is not None else 300, 300)
+    min_ms = _read_non_negative_int(min_var.get() if min_var is not None else 500, 500)
+    max_ms = _read_non_negative_int(max_var.get() if max_var is not None else 1000, 1000)
     if max_ms < min_ms:
         min_ms, max_ms = max_ms, min_ms
     return min_ms, max_ms
@@ -97,7 +88,8 @@ def _build_group_escape_targets(ui, slayer_idx: int, slayer_label: str) -> list[
 
     if 0 <= slayer_idx < len(ui._process_tower_rows):
         slayer_row = ui._process_tower_rows[slayer_idx]
-        targets.append({'idx': slayer_idx, 'row': slayer_row, 'reason': 'slayer'})
+        if not slayer_row.get('escape_enabled_var') or slayer_row['escape_enabled_var'].get():
+            targets.append({'idx': slayer_idx, 'row': slayer_row, 'reason': 'slayer'})
 
     if not slayer_label:
         return targets
@@ -108,16 +100,12 @@ def _build_group_escape_targets(ui, slayer_idx: int, slayer_label: str) -> list[
         is_slayer = bool(sub_row.get('is_slayer_var') and sub_row['is_slayer_var'].get())
         if is_slayer:
             continue
+        if sub_row.get('escape_enabled_var') and not sub_row['escape_enabled_var'].get():
+            continue
         if sub_row['radar_var'].get() == slayer_label:
             targets.append({'idx': sub_idx, 'row': sub_row, 'reason': 'radar'})
 
-    if targets:
-        max_order = len(targets) - 1
-        for target in targets:
-            raw_order = _row_escape_order(target['row'])
-            target['order'] = max(0, min(raw_order, max_order))
-
-    targets.sort(key=lambda t: (int(t.get('order', 0)), int(t['idx'])))
+    targets.sort(key=lambda t: int(t['idx']))
     return targets
 
 
@@ -348,6 +336,7 @@ def _trigger_escape_group(
     *,
     attempt_num: int | None = None,
     max_attempts: int | None = None,
+    escape_delay_ms_bounds: tuple[int, int] | None = None,
 ) -> None:
     targets = _build_group_escape_targets(ui, slayer_idx, slayer_label)
     if not targets:
@@ -356,53 +345,147 @@ def _trigger_escape_group(
 
     ui._event_queue.put(('log', f'Escape FSM started for {len(targets)} target(s).'))
 
-    state_by_target: list[dict] = []
+    unresolved: list[dict] = []
+    unresolved_lock = threading.Lock()
+    workers: list[threading.Thread] = []
+
+    def _mark_unresolved(state_item: dict) -> None:
+        with unresolved_lock:
+            unresolved.append(state_item)
+
+    def _run_target_sequence(state_item: dict) -> None:
+        idx = int(state_item['idx'])
+        row = state_item['row']
+        pid = row.get('pid')
+        key_combo = str(state_item['key_combo']).strip()
+        if not pid or not key_combo:
+            _mark_unresolved(state_item)
+            return
+
+        try:
+            min_delay_ms, max_delay_ms = escape_delay_ms_bounds or _row_escape_delay_ms_bounds(row)
+        except Exception:
+            min_delay_ms, max_delay_ms = _row_escape_delay_ms_bounds(row)
+
+        map_pointer_override_by_pid_name: dict[tuple[int, str], list[int]] = {}
+        map_calibration_last_attempt_by_pid: dict[int, float] = {}
+        map_tab_last_sent_by_pid: dict[int, float] = {}
+
+        for attempt_index in (1, 2):
+            if stop_event.is_set():
+                _mark_unresolved(state_item)
+                return
+
+            hwnds: list[int] = []
+            try:
+                hwnds = list(ui._find_process_windows(int(pid)))
+            except Exception:
+                hwnds = []
+
+            if not hwnds:
+                ui._event_queue.put(('log', f'Character #{idx + 1}: no window handle found for PID {pid}.'))
+                _mark_unresolved(state_item)
+                return
+
+            if not ui._prime_process_window_click(hwnds, click_count_range=(5, 10)):
+                ui._event_queue.put(('log', f'Character #{idx + 1}: pre-trigger click burst failed for PID {pid}.'))
+                _mark_unresolved(state_item)
+                return
+
+            if stop_event.wait(random.uniform(min_delay_ms, max_delay_ms) / 1000.0):
+                _mark_unresolved(state_item)
+                return
+
+            send_ok = ui._send_key_combo_to_pid(int(pid), key_combo, prime_click=False)
+            if not send_ok:
+                ui._event_queue.put(
+                    (
+                        'log',
+                        f'Character #{idx + 1}: escape trigger failed on attempt {attempt_index}/2 for PID {pid}.',
+                    )
+                )
+                if attempt_index == 1:
+                    if stop_event.wait(8.0):
+                        _mark_unresolved(state_item)
+                        return
+                    continue
+                _mark_unresolved(state_item)
+                return
+
+            ui._event_queue.put(('triggered', {'idx': idx, 'pid': pid, 'key': key_combo}))
+            ui._event_queue.put(('retry_status', {'idx': idx, 'text': f'Escape attempt {attempt_index}/2 sent'}))
+            ui._event_queue.put(
+                (
+                    'log',
+                    f'Character #{idx + 1}: escape trigger sent on attempt {attempt_index}/2 for PID {pid}.',
+                )
+            )
+
+            if stop_event.wait(2.0):
+                _mark_unresolved(state_item)
+                return
+
+            map_value, map_reason = _sync_target_minimap_state(
+                ui,
+                stop_event,
+                state_item['target'],
+                map_pointer_override_by_pid_name,
+                map_calibration_last_attempt_by_pid,
+                map_tab_last_sent_by_pid,
+                allow_force_open=False,
+            )
+
+            if map_value == 0:
+                ui._event_queue.put(('log', f'Character #{idx + 1}: escape confirmed, minimap closed.'))
+                return
+
+            if map_value != 1:
+                ui._event_queue.put(
+                    (
+                        'log',
+                        f'Character #{idx + 1}: minimap check unavailable after escape attempt ({map_reason}).',
+                    )
+                )
+                _mark_unresolved(state_item)
+                return
+
+            ui._event_queue.put(('log', f'Character #{idx + 1}: minimap still open after attempt {attempt_index}/2.'))
+            if attempt_index == 1:
+                if stop_event.wait(8.0):
+                    _mark_unresolved(state_item)
+                    return
+                continue
+
+            _mark_unresolved(state_item)
+            return
+
+        _mark_unresolved(state_item)
+
     for target in targets:
-        idx = int(target['idx'])
         row = target['row']
-        key_combo = row['key_var'].get().strip()
+        key_combo = str(row['key_var'].get()).strip()
         pid = row.get('pid')
         if not key_combo or not pid:
             continue
 
-        state_by_target.append(
-            {
-                'target': target,
-                'idx': idx,
-                'pid': int(pid),
-                'key_combo': key_combo,
-                'map_pointer_override_by_pid_name': {},
-                'map_calibration_last_attempt_by_pid': {},
-                'map_tab_last_sent_by_pid': {},
-            }
+        state = {
+            'target': target,
+            'row': row,
+            'idx': int(target['idx']),
+            'key_combo': key_combo,
+        }
+
+        worker = threading.Thread(
+            target=_run_target_sequence,
+            args=(state,),
+            name=f'escape-target-{int(target["idx"]) + 1}',
+            daemon=True,
         )
+        workers.append(worker)
+        worker.start()
 
-    if not state_by_target:
-        ui._event_queue.put(('log', 'Escape FSM aborted: no valid PID/key targets.'))
-        return
-
-    unresolved = _run_escape_fsm_pass(
-        ui,
-        stop_event,
-        state_by_target,
-        max_attempts_per_target=5,
-        pass_index=1,
-    )
-
-    if unresolved and not stop_event.is_set():
-        ui._event_queue.put(
-            ('log', f'Escape FSM pass 1 unresolved targets={len(unresolved)}; waiting 10s before one retry pass.')
-        )
-        if stop_event.wait(10.0):
-            return
-
-        unresolved = _run_escape_fsm_pass(
-            ui,
-            stop_event,
-            unresolved,
-            max_attempts_per_target=5,
-            pass_index=2,
-        )
+    for worker in workers:
+        worker.join()
 
     if unresolved:
         ui._event_queue.put(('log', f'Escape FSM finished with {len(unresolved)} unresolved target(s).'))
@@ -421,54 +504,61 @@ def _run_escape_fsm_pass(
     if not states:
         return []
 
-    # Step 1: initial trigger for each character in order.
-    for idx_state, state in enumerate(states):
-        if stop_event.is_set():
-            return states
+    def _mark_unresolved(state_item: dict) -> None:
+        with unresolved_lock:
+            unresolved.append(state_item)
 
-        sent = _send_target_trigger_once(
-            ui,
-            stop_event,
-            int(state['idx']),
-            int(state['pid']),
-            str(state['key_combo']),
-        )
-        state['attempts_sent'] = 1 if sent else 0
+    def _run_target_fsm(state_item: dict) -> None:
+        if stop_event.is_set():
+            _mark_unresolved(state_item)
+            return
+
+        target = state_item['target']
+        idx = int(state_item['idx'])
+        pid = int(state_item['pid'])
+        key_combo = str(state_item['key_combo'])
+
+        # Each target window runs an independent trigger + map-close FSM.
+        sent = _send_target_trigger_once(ui, stop_event, idx, pid, key_combo)
+        attempts_sent = 1 if sent else 0
+        state_item['attempts_sent'] = attempts_sent
 
         if not sent:
             ui._event_queue.put(
                 (
                     'log',
                     (
-                        f'Character #{int(state["idx"]) + 1}: pass {pass_index} initial trigger failed '
-                        f'for PID {int(state["pid"])}.'
+                        f'Character #{idx + 1}: pass {pass_index} initial trigger failed '
+                        f'for PID {pid}.'
                     ),
                 )
             )
+            _mark_unresolved(state_item)
+            return
 
-        if idx_state < (len(states) - 1):
-            if stop_event.wait(random.uniform(0.06, 0.12)):
-                return states
+        ui._event_queue.put(
+            (
+                'log',
+                (
+                    f'Character #{idx + 1}: pass {pass_index} initial click+move sent; '
+                    'starting retry machine.'
+                ),
+            )
+        )
 
-    # Step 2: each target owns its own FSM (check map, retry until max attempts).
-    unresolved: list[dict] = []
-    for state in states:
-        if stop_event.is_set():
-            unresolved.append(state)
-            continue
-
-        target = state['target']
-        idx = int(state['idx'])
-        attempts_sent = int(state.get('attempts_sent', 0))
+        # Let the client consume the initial move input before the first map check.
+        if stop_event.wait(random.uniform(0.08, 0.16)):
+            _mark_unresolved(state_item)
+            return
 
         while not stop_event.is_set():
             map_value, map_reason = _sync_target_minimap_state(
                 ui,
                 stop_event,
                 target,
-                state['map_pointer_override_by_pid_name'],
-                state['map_calibration_last_attempt_by_pid'],
-                state['map_tab_last_sent_by_pid'],
+                state_item['map_pointer_override_by_pid_name'],
+                state_item['map_calibration_last_attempt_by_pid'],
+                state_item['map_tab_last_sent_by_pid'],
                 allow_force_open=False,
             )
 
@@ -483,7 +573,7 @@ def _run_escape_fsm_pass(
                             ),
                         )
                     )
-                break
+                return
 
             if attempts_sent >= max_attempts_per_target:
                 ui._event_queue.put(
@@ -491,22 +581,17 @@ def _run_escape_fsm_pass(
                         'log',
                         (
                             f'Character #{idx + 1}: pass {pass_index} still map={map_value} '
-                            f'after {attempts_sent}/{max_attempts_per_target} trigger attempt(s).'
+                            f'after {attempts_sent}/{max_attempts_per_target} trigger attempt(s). '
+                            f'(last_reason={map_reason})'
                         ),
                     )
                 )
-                unresolved.append(state)
-                break
+                _mark_unresolved(state_item)
+                return
 
-            sent = _send_target_trigger_once(
-                ui,
-                stop_event,
-                idx,
-                int(state['pid']),
-                str(state['key_combo']),
-            )
+            sent = _send_target_trigger_once(ui, stop_event, idx, pid, key_combo)
             attempts_sent += 1
-            state['attempts_sent'] = attempts_sent
+            state_item['attempts_sent'] = attempts_sent
 
             if not sent:
                 ui._event_queue.put(
@@ -519,10 +604,29 @@ def _run_escape_fsm_pass(
                     )
                 )
 
-            # Poll cadence requested: 10ms to 100ms.
+            # Per-target poll cadence: 10ms to 100ms.
             if stop_event.wait(random.uniform(0.01, 0.1)):
-                unresolved.append(state)
-                break
+                _mark_unresolved(state_item)
+                return
+
+        _mark_unresolved(state_item)
+
+    unresolved: list[dict] = []
+    unresolved_lock = threading.Lock()
+    workers: list[threading.Thread] = []
+
+    for state in states:
+        worker = threading.Thread(
+            target=_run_target_fsm,
+            args=(state,),
+            name=f'escape-target-{int(state["idx"]) + 1}-pass-{pass_index}',
+            daemon=True,
+        )
+        workers.append(worker)
+        worker.start()
+
+    for worker in workers:
+        worker.join()
 
     return unresolved
 
@@ -534,8 +638,22 @@ def _send_target_trigger_once(
     pid: int,
     key_combo: str,
 ) -> bool:
+    hwnds = []
+    try:
+        hwnds = list(ui._find_process_windows(pid))
+    except Exception:
+        hwnds = []
+
+    if hwnds:
+        if not ui._prime_process_window_click(hwnds):
+            ui._event_queue.put(('log', f'Character #{idx + 1}: pre-trigger walk prime failed for PID {pid}.'))
+        else:
+            ui._event_queue.put(('log', f'Character #{idx + 1}: pre-trigger walk sent for PID {pid}.'))
+        if stop_event.wait(random.uniform(0.05, 0.12)):
+            return False
+
     for send_attempt in range(1, 4):
-        send_ok = ui._send_key_combo_to_pid(pid, key_combo)
+        send_ok = ui._send_key_combo_to_pid(pid, key_combo, prime_click=False)
 
         if send_ok:
             if send_attempt > 1:
@@ -653,6 +771,7 @@ def _trigger_escape_target(
     attempt_num: int | None = None,
     max_attempts: int | None = None,
     apply_row_delay: bool = True,
+    escape_delay_ms_bounds: tuple[int, int] | None = None,
     run_followup_loop: bool = False,
 ) -> bool:
     idx = int(target['idx'])
@@ -669,10 +788,9 @@ def _trigger_escape_target(
         ui._event_queue.put(('retry_status', {'idx': idx, 'text': 'Retry: skipped (no PID attached)'}))
         return False
 
-    order_value = int(target.get('order', 0))
     delay_ms = 0
     if apply_row_delay:
-        min_delay_ms, max_delay_ms = _row_escape_delay_ms_bounds(row)
+        min_delay_ms, max_delay_ms = escape_delay_ms_bounds or _row_escape_delay_ms_bounds(row)
         delay_ms = random.randint(min_delay_ms, max_delay_ms)
         if delay_ms > 0 and stop_event.wait(delay_ms / 1000.0):
             return False
@@ -719,7 +837,7 @@ def _trigger_escape_target(
                 'log',
                 (
                     f'Character #{idx + 1}: triggered "{key_combo}" '
-                    f'(value={value} > max={threshold}, order={order_value}, delay={delay_ms}ms).'
+                    f'(value={value} > max={threshold}, delay={delay_ms}ms).'
                 ),
             ))
         else:
@@ -727,7 +845,7 @@ def _trigger_escape_target(
                 'log',
                 (
                     f'Character #{idx + 1}: triggered via radar "{slayer_label}" '
-                    f'(key={key_combo}, order={order_value}, delay={delay_ms}ms).'
+                    f'(key={key_combo}, delay={delay_ms}ms).'
                 ),
             ))
         return True
@@ -1000,6 +1118,7 @@ def _retry_group_by_minimap(
     *,
     max_attempts: int = 3,
     wait_seconds: float = 11.0,
+    escape_delay_ms_bounds: tuple[int, int] | None = None,
 ) -> None:
     targets = _build_group_escape_targets(ui, slayer_idx, slayer_label)
     if not targets:
@@ -1346,8 +1465,8 @@ def start_process_tower_scan(ui, idx: int) -> None:
         messagebox.showerror('No trigger key', 'Set a trigger key first using "Set Key".', parent=ui.root)
         return
 
-    order_value = _row_escape_order(row)
     min_delay_ms, max_delay_ms = _row_escape_delay_ms_bounds(row)
+    escape_delay_ms_bounds = (min_delay_ms, max_delay_ms)
 
     pid = row.get('pid')
     stop_ev = row['scan_stop']
@@ -1377,6 +1496,7 @@ def start_process_tower_scan(ui, idx: int) -> None:
             ui._slayer_label(idx),
             is_slayer,
             map_entries,
+            escape_delay_ms_bounds,
         ),
         daemon=True,
     )
@@ -1392,7 +1512,7 @@ def start_process_tower_scan(ui, idx: int) -> None:
         (
             f'Character #{idx + 1}: scan started '
             f'(SLDetection, max={threshold}, key={key_combo}, '
-            f'order={order_value}, delay={min_delay_ms}-{max_delay_ms}ms).'
+            f'delay={min_delay_ms}-{max_delay_ms}ms).'
         )
     )
 
@@ -1433,6 +1553,7 @@ def scan_loop(
     slayer_label: str = '',
     is_slayer: bool = False,
     map_entries: list[dict] | None = None,
+    escape_delay_ms_bounds: tuple[int, int] | None = None,
 ) -> None:
     last_triggered = 0.0
     cooldown = 3.0
@@ -1474,7 +1595,6 @@ def scan_loop(
                     if module_name and ui._get_module_base(handle, module_name) is None:
                         continue
 
-                    calibrated = _calibrate_map_pointer_offsets(ui, handle, candidate)
                     if calibrated is None:
                         continue
 
@@ -1581,19 +1701,8 @@ def scan_loop(
                     threshold,
                     attempt_num=1,
                     max_attempts=3,
+                    escape_delay_ms_bounds=escape_delay_ms_bounds,
                 )
-
-                if is_slayer and not stop_event.is_set():
-                    _retry_group_by_minimap(
-                        ui,
-                        stop_event,
-                        idx,
-                        slayer_label,
-                        int(value),
-                        threshold,
-                        max_attempts=3,
-                        wait_seconds=11.0,
-                    )
 
                 ui._event_queue.put(('process_scan_auto_stop', {'idx': idx}))
                 stop_event.set()
