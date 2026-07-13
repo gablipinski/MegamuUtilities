@@ -93,7 +93,7 @@
 
 - Add ghost close delay configuration in MonitorUI and process tower.
 
-## 1.1.11 (2026-07-07)
+## 1.1.11 (2026-07-13)
 
 - Enhance ActionController with modifier key handling and key combo methods; add process tower trigger test functionality in MonitorUI.
 
