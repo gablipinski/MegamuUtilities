@@ -1,8 +1,8 @@
 {
   "app_name": "Siegetower",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "publisher": "MegamuUtilities",
   "patch_notes": [
-    "Added import and export functionality for macro files in MacroUI."
+    "Add functionality to check if a repeat macro is running and improve macro execution handling."
   ]
 }

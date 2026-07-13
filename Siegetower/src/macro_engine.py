@@ -228,6 +228,10 @@ class MacroEngine:
         for stop_event in stop_events:
             stop_event.set()
 
+    def _is_repeat_macro_running(self, macro_name: str) -> bool:
+        with self._repeat_state_lock:
+            return macro_name in self._repeat_stop_events
+
     def _run_repeat_macro(
         self,
         macro: MacroDefinition,
@@ -407,16 +411,24 @@ class MacroEngine:
                 if macro is not None:
                     actions.append((macro_name, macro))
 
-            self._latched = matched
-
         with self._repeat_state_lock:
             stop_candidates = list(self._repeat_stop_events.items())
 
+        blocked_by_running: set[str] = set()
+
         for macro_name, macro in actions:
             if macro.repeat_while_held:
-                self._start_repeat_macro(macro)
+                started = self._start_repeat_macro(macro)
+                if not started and self._execution_lock.locked() and not self._is_repeat_macro_running(macro_name):
+                    blocked_by_running.add(macro_name)
             else:
+                if self._execution_lock.locked():
+                    blocked_by_running.add(macro_name)
+                    continue
                 self.trigger_macro(macro_name)
+
+        with self._input_state_lock:
+            self._latched = matched - blocked_by_running
 
         for macro_name, stop_event in stop_candidates:
             if macro_name in matched:

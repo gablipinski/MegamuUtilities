@@ -18,3 +18,7 @@
 
 - Added import and export functionality for macro files in MacroUI.
 
+## 1.0.3 (2026-07-13)
+
+- Add functionality to check if a repeat macro is running and improve macro execution handling.
+
