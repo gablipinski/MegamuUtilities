@@ -84,6 +84,9 @@ class MacroEngine:
         self._latched: set[str] = set()
         self._listener: keyboard.Listener | None = None
         self._mouse_listener: mouse.Listener | None = None
+        self._poll_thread: threading.Thread | None = None
+        self._poll_stop_event: threading.Event | None = None
+        self._input_state_lock = threading.RLock()
         self._execution_lock = threading.Lock()
         self._repeat_state_lock = threading.Lock()
         self._repeat_stop_events: dict[str, threading.Event] = {}
@@ -97,42 +100,48 @@ class MacroEngine:
 
     def set_macros(self, raw_macros: list[dict[str, object]]) -> None:
         self._stop_all_repeat_macros()
-        self._macros_by_name.clear()
-        for item in raw_macros:
-            name = str(item.get('name', '')).strip()
-            hotkey = str(item.get('hotkey', '')).strip()
-            repeat_while_held = bool(item.get('repeat_while_held', False))
-            steps_value = item.get('steps', [])
-            if not name or not hotkey or not isinstance(steps_value, list):
-                continue
+        with self._input_state_lock:
+            self._macros_by_name.clear()
+            for item in raw_macros:
+                name = str(item.get('name', '')).strip()
+                hotkey = str(item.get('hotkey', '')).strip()
+                repeat_while_held = bool(item.get('repeat_while_held', False))
+                steps_value = item.get('steps', [])
+                if not name or not hotkey or not isinstance(steps_value, list):
+                    continue
 
-            steps = [dict(step) for step in steps_value if isinstance(step, dict)]
-            trigger_kind, tokens, mouse_button = self._parse_binding(hotkey)
-            if not steps or (trigger_kind == 'keyboard' and not tokens) or (trigger_kind == 'mouse' and not mouse_button):
-                continue
+                steps = [dict(step) for step in steps_value if isinstance(step, dict)]
+                trigger_kind, tokens, mouse_button = self._parse_binding(hotkey)
+                if not steps or (trigger_kind == 'keyboard' and not tokens) or (trigger_kind == 'mouse' and not mouse_button):
+                    continue
 
-            self._macros_by_name[name] = MacroDefinition(
-                name=name,
-                hotkey_raw=hotkey,
-                trigger_kind=trigger_kind,
-                hotkey_tokens=tokens,
-                mouse_button=mouse_button,
-                repeat_while_held=repeat_while_held,
-                steps=steps,
-            )
+                self._macros_by_name[name] = MacroDefinition(
+                    name=name,
+                    hotkey_raw=hotkey,
+                    trigger_kind=trigger_kind,
+                    hotkey_tokens=tokens,
+                    mouse_button=mouse_button,
+                    repeat_while_held=repeat_while_held,
+                    steps=steps,
+                )
 
     def start(self) -> None:
         if self._listener is not None:
             return
 
-        self._pressed_keys.clear()
-        self._pressed_buttons.clear()
-        self._latched.clear()
+        with self._input_state_lock:
+            self._pressed_keys.clear()
+            self._pressed_buttons.clear()
+            self._latched.clear()
 
         self._listener = keyboard.Listener(on_press=self._on_press, on_release=self._on_release)
         self._listener.start()
         self._mouse_listener = mouse.Listener(on_click=self._on_mouse_click)
         self._mouse_listener.start()
+
+        self._poll_stop_event = threading.Event()
+        self._poll_thread = threading.Thread(target=self._poll_inputs_loop, daemon=True)
+        self._poll_thread.start()
         self._logger('Global hotkey listener started.', 'notification')
 
     def stop(self) -> None:
@@ -143,10 +152,17 @@ class MacroEngine:
         self._listener = None
         mouse_listener = self._mouse_listener
         self._mouse_listener = None
-        self._pressed_keys.clear()
-        self._pressed_buttons.clear()
-        self._latched.clear()
+        poll_stop_event = self._poll_stop_event
+        self._poll_stop_event = None
+        self._poll_thread = None
+        with self._input_state_lock:
+            self._pressed_keys.clear()
+            self._pressed_buttons.clear()
+            self._latched.clear()
         self._stop_all_repeat_macros()
+
+        if poll_stop_event is not None:
+            poll_stop_event.set()
 
         try:
             listener.stop()
@@ -350,13 +366,15 @@ class MacroEngine:
         if not key_name:
             return
 
-        self._pressed_keys.add(key_name)
+        with self._input_state_lock:
+            self._pressed_keys.add(key_name)
         self._handle_input_change()
 
     def _on_release(self, key: keyboard.Key | keyboard.KeyCode) -> None:
         key_name = self._key_to_name(key)
         if key_name:
-            self._pressed_keys.discard(key_name)
+            with self._input_state_lock:
+                self._pressed_keys.discard(key_name)
 
         self._handle_input_change()
 
@@ -370,40 +388,57 @@ class MacroEngine:
             return
 
         if pressed:
-            self._pressed_buttons.add(button_name)
+            with self._input_state_lock:
+                self._pressed_buttons.add(button_name)
         else:
-            self._pressed_buttons.discard(button_name)
+            with self._input_state_lock:
+                self._pressed_buttons.discard(button_name)
 
         self._handle_input_change()
 
     def _handle_input_change(self) -> None:
-        matched = self._matched_macros()
-        to_trigger = sorted(matched - self._latched)
-        for macro_name in to_trigger:
-            macro = self._macros_by_name.get(macro_name)
-            if macro is None:
-                continue
+        actions: list[tuple[str, MacroDefinition]] = []
+        stop_candidates: list[tuple[str, threading.Event]] = []
+        with self._input_state_lock:
+            matched = self._matched_macros()
+            to_trigger = sorted(matched - self._latched)
+            for macro_name in to_trigger:
+                macro = self._macros_by_name.get(macro_name)
+                if macro is not None:
+                    actions.append((macro_name, macro))
+
+            self._latched = matched
+
+        with self._repeat_state_lock:
+            stop_candidates = list(self._repeat_stop_events.items())
+
+        for macro_name, macro in actions:
             if macro.repeat_while_held:
                 self._start_repeat_macro(macro)
             else:
                 self.trigger_macro(macro_name)
 
-        for macro_name, stop_event in list(self._repeat_stop_events.items()):
-            if macro_name not in matched:
-                macro = self._macros_by_name.get(macro_name)
-                if macro is not None and self._is_macro_trigger_active(macro):
-                    continue
-                stop_event.set()
+        for macro_name, stop_event in stop_candidates:
+            if macro_name in matched:
+                continue
+            macro = self._macros_by_name.get(macro_name)
+            if macro is not None and self._is_macro_trigger_active(macro):
+                continue
+            stop_event.set()
 
-        self._latched = matched
+    def _poll_inputs_loop(self) -> None:
+        poll_stop = self._poll_stop_event
+        if poll_stop is None:
+            return
+
+        # Poll trigger state so brief/missed listener events do not block macro start.
+        while not poll_stop.wait(0.03):
+            self._handle_input_change()
 
     def _matched_macros(self) -> set[str]:
         matched: set[str] = set()
         for macro in self._macros_by_name.values():
-            if macro.trigger_kind == 'mouse':
-                if macro.mouse_button and macro.mouse_button in self._pressed_buttons:
-                    matched.add(macro.name)
-            elif macro.hotkey_tokens.issubset(self._pressed_keys):
+            if self._is_macro_trigger_active(macro):
                 matched.add(macro.name)
         return matched
 

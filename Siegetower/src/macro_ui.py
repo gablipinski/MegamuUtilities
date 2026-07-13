@@ -4,7 +4,7 @@ import queue
 import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 
 from pynput import keyboard, mouse
 
@@ -311,6 +311,20 @@ class MacroUI:
             command=self._load_macros,
         ).pack(side=tk.RIGHT, padx=(0, 8))
 
+        self._make_button(
+            title_row,
+            text='Open .siege',
+            width=14,
+            command=self._import_macros_file,
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
+        self._make_button(
+            title_row,
+            text='Save .siege',
+            width=14,
+            command=self._export_macros_file,
+        ).pack(side=tk.RIGHT, padx=(0, 8))
+
         state_row = tk.Frame(container, bg=self._colors['panel'])
         state_row.pack(fill=tk.X, pady=(10, 8))
 
@@ -517,6 +531,79 @@ class MacroUI:
             for macro in self._macros
             if macro.active
         ])
+
+    def _import_macros_file(self) -> None:
+        selected_path = filedialog.askopenfilename(
+            parent=self.root,
+            title='Open Macro File',
+            initialdir=str(DEFAULT_CONFIG_PATH.parent),
+            filetypes=[
+                ('Siegetower macro files', '*.siege'),
+                ('JSON files', '*.json'),
+                ('All files', '*.*'),
+            ],
+        )
+        if not selected_path:
+            return
+
+        source_path = Path(selected_path)
+        try:
+            loaded = load_macros(source_path)
+        except Exception as exc:
+            messagebox.showerror('Import failed', f'Could not read macro file:\n{source_path}\n\n{exc}', parent=self.root)
+            return
+
+        self._macros = [
+            WorkingMacro(
+                name=item.name,
+                hotkey=item.hotkey,
+                active=item.active,
+                steps=[dict(s) for s in item.steps],
+                repeat_while_held=item.repeat_while_held,
+            )
+            for item in loaded
+        ]
+        self._selected_macro_idx = None
+        self._save_macros()
+        self._apply_macros_to_engine()
+        self._refresh_macro_list()
+        self._append_log(f'Imported {len(self._macros)} macro(s) from {source_path}.', 'notification')
+
+    def _export_macros_file(self) -> None:
+        selected_path = filedialog.asksaveasfilename(
+            parent=self.root,
+            title='Save Macro File',
+            initialdir=str(DEFAULT_CONFIG_PATH.parent),
+            defaultextension='.siege',
+            filetypes=[
+                ('Siegetower macro files', '*.siege'),
+                ('JSON files', '*.json'),
+                ('All files', '*.*'),
+            ],
+        )
+        if not selected_path:
+            return
+
+        target_path = Path(selected_path)
+        if not target_path.suffix:
+            target_path = target_path.with_suffix('.siege')
+
+        try:
+            save_macros([
+                MacroConfig(
+                    name=macro.name,
+                    hotkey=macro.hotkey,
+                    active=macro.active,
+                    repeat_while_held=macro.repeat_while_held,
+                    steps=macro.steps,
+                )
+                for macro in self._macros
+            ], config_path=target_path)
+        except Exception as exc:
+            messagebox.showerror('Export failed', f'Could not save macro file:\n{target_path}\n\n{exc}', parent=self.root)
+            return
+
+        self._append_log(f'Exported {len(self._macros)} macro(s) to {target_path}.', 'notification')
 
     def _toggle_hotkeys(self) -> None:
         if self._engine.running:

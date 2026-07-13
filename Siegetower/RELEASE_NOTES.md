@@ -4,7 +4,7 @@
 
 - Initial release metadata scaffold.
 
-## 1.0.1 (2026-07-10)
+## 1.0.1 (2026-07-13)
 
 - Added a click binding to the root window to unfocus certain input widgets.
 - Replaced escape order with an escape enabled checkbox in the UI.
@@ -13,4 +13,8 @@
 - Improved the escape triggering mechanism with a focus priming click before sending key combos.
 - Refactored escape group triggering to handle delays and retries more effectively.
 - Enhanced logging for escape attempts and added handling for unresolved targets.
+
+## 1.0.2 (2026-07-13)
+
+- Added import and export functionality for macro files in MacroUI.
 
