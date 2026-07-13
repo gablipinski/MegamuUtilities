@@ -1,23 +1,9 @@
 {% extends "base.html" %}
 {% block content %}
-<section class="grid two-col">
+<section class="grid single-col">
     <div class="card">
         <h2>Welcome, {{ current_user.display_name }}</h2>
         <p>Flow: request product access, download installer after approval, then register machine ID and request a machine-bound license.</p>
-    </div>
-    <div class="card">
-        <h2>Request product access</h2>
-        <form method="post" action="/app/access-requests" class="stack-form">
-            <label>
-                <span>Product</span>
-                <select name="product_id" required>
-                    {% for product in products %}
-                        <option value="{{ product.id }}">{{ product.display_name }}</option>
-                    {% endfor %}
-                </select>
-            </label>
-            <button type="submit" class="button primary">Request access</button>
-        </form>
     </div>
 </section>
 
@@ -36,119 +22,6 @@
             <p class="muted">Copy the Machine ID from your app and paste it here.</p>
             <button type="submit" class="button primary">Add machine</button>
         </form>
-    </div>
-    <div class="card">
-        <h2>Request machine license</h2>
-        <form method="post" action="/app/requests" class="stack-form" id="license-request-form">
-            <label>
-                <span>Product</span>
-                <select name="product_id" id="license-request-product" required {% if not granted_product_ids %}disabled{% endif %}>
-                    {% for product in products %}
-                        {% if product.id in granted_product_ids %}
-                            <option value="{{ product.id }}" data-has-existing-license="{{ '1' if product.id in approved_product_ids else '0' }}">{{ product.display_name }}</option>
-                        {% endif %}
-                    {% endfor %}
-                </select>
-            </label>
-            <label>
-                <span>Machine</span>
-                <select name="machine_id_ref" required {% if not machines %}disabled{% endif %}>
-                    {% for machine in machines %}
-                        <option value="{{ machine.id }}">{{ machine.label }} · {{ machine.machine_id }}</option>
-                    {% endfor %}
-                </select>
-            </label>
-            <input type="hidden" name="replace_existing_license" id="replace-existing-license" value="false">
-            <button type="submit" class="button primary" {% if not machines or not granted_product_ids %}disabled{% endif %}>Request license</button>
-        </form>
-        {% if not granted_product_ids %}
-            <p class="muted">Request and get access approved first before submitting machine license requests.</p>
-        {% endif %}
-        {% if not machines %}
-            <p class="muted">Add at least one machine before requesting license.</p>
-        {% endif %}
-    </div>
-
-</section>
-
-<section class="grid two-col">
-
-    <div class="card">
-        <h2>Your machines</h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>Label</th>
-                    <th>Machine ID</th>
-                    <th>Created</th>
-                    <th>Action</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for machine in machines %}
-                    <tr>
-                        <td>{{ machine.label }}</td>
-                        <td>{{ machine.machine_id }}</td>
-                        <td>{{ machine.created_at.strftime('%Y-%m-%d') }}</td>
-                        <td>
-                            <form method="post" action="/app/machines/{{ machine.id }}/delete" class="inline-form" onsubmit="return confirm('Delete this PC? Existing issued licenses remain archived, but this PC will no longer be usable for new requests.');">
-                                <button type="submit" class="button danger">Delete</button>
-                            </form>
-                        </td>
-                    </tr>
-                {% else %}
-                    <tr><td colspan="4">No machines registered yet.</td></tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-
-    <div class="card">
-        <h2>Product access history</h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>Product</th>
-                    <th>Status</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for req in access_requests %}
-                    <tr>
-                        <td>{{ req.product.display_name }}</td>
-                        <td>{{ req.status }}</td>
-                    </tr>
-                {% else %}
-                    <tr><td colspan="2">No product access requests yet.</td></tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
-</section>
-
-<section class="grid two-col">
-    <div class="card">
-        <h2>Machine license request history</h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>Product</th>
-                    <th>Machine</th>
-                    <th>Status</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for req in requests %}
-                    <tr>
-                        <td>{{ req.product.display_name }}</td>
-                        <td>{{ req.machine.label }}</td>
-                        <td>{{ req.status }}</td>
-                    </tr>
-                {% else %}
-                    <tr><td colspan="3">No requests yet.</td></tr>
-                {% endfor %}
-            </tbody>
-        </table>
     </div>
 
     <div class="card">
@@ -205,6 +78,108 @@
                     </tr>
                 {% else %}
                     <tr><td colspan="2">No licenses issued yet.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="grid two-col">
+    <div class="card">
+        <h2>Access and license requests</h2>
+        <div class="grid two-col nested-grid">
+            <div class="subcard">
+                <h3>Request product access</h3>
+                <form method="post" action="/app/access-requests" class="stack-form">
+                    <label>
+                        <span>Product</span>
+                        <select name="product_id" required>
+                            {% for product in products %}
+                                <option value="{{ product.id }}">{{ product.display_name }}</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                    <button type="submit" class="button primary">Request access</button>
+                </form>
+            </div>
+
+            <div class="subcard">
+                <h3>Request machine license</h3>
+                <form method="post" action="/app/requests" class="stack-form" id="license-request-form">
+                    <label>
+                        <span>Product</span>
+                        <select name="product_id" id="license-request-product" required {% if not granted_product_ids %}disabled{% endif %}>
+                            {% for product in products %}
+                                {% if product.id in granted_product_ids %}
+                                    <option value="{{ product.id }}" data-has-existing-license="{{ '1' if product.id in approved_product_ids else '0' }}">{{ product.display_name }}</option>
+                                {% endif %}
+                            {% endfor %}
+                        </select>
+                    </label>
+                    <label>
+                        <span>Machine</span>
+                        <select name="machine_id_ref" required {% if not machines %}disabled{% endif %}>
+                            {% for machine in machines %}
+                                <option value="{{ machine.id }}">{{ machine.label }} · {{ machine.machine_id }}</option>
+                            {% endfor %}
+                        </select>
+                    </label>
+                    <input type="hidden" name="replace_existing_license" id="replace-existing-license" value="false">
+                    <button type="submit" class="button primary" {% if not machines or not granted_product_ids %}disabled{% endif %}>Request license</button>
+                </form>
+                {% if not granted_product_ids %}
+                    <p class="muted">Request and get access approved first before submitting machine license requests.</p>
+                {% endif %}
+                {% if not machines %}
+                    <p class="muted">Add at least one machine before requesting license.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="grid two-col">
+    <div class="card">
+        <h2>Product access history</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Product</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for req in access_requests %}
+                    <tr>
+                        <td>{{ req.product.display_name }}</td>
+                        <td>{{ req.status }}</td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="2">No product access requests yet.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="card">
+        <h2>Machine license request history</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Product</th>
+                    <th>Machine</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for req in requests %}
+                    <tr>
+                        <td>{{ req.product.display_name }}</td>
+                        <td>{{ req.machine.label }}</td>
+                        <td>{{ req.status }}</td>
+                    </tr>
+                {% else %}
+                    <tr><td colspan="3">No requests yet.</td></tr>
                 {% endfor %}
             </tbody>
         </table>
