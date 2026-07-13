@@ -22,3 +22,7 @@
 
 - Add functionality to check if a repeat macro is running and improve macro execution handling.
 
+## 1.0.4 (2026-07-13)
+
+- Implement queued macro triggers and improve execution handling.
+

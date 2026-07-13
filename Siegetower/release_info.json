@@ -1,8 +1,8 @@
 {
   "app_name": "Siegetower",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "publisher": "MegamuUtilities",
   "patch_notes": [
-    "Add functionality to check if a repeat macro is running and improve macro execution handling."
+    "Implement queued macro triggers and improve execution handling."
   ]
 }

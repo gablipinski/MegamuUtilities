@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 import ctypes
 import random
 import threading
@@ -87,6 +88,8 @@ class MacroEngine:
         self._poll_thread: threading.Thread | None = None
         self._poll_stop_event: threading.Event | None = None
         self._input_state_lock = threading.RLock()
+        self._trigger_queue_lock = threading.Lock()
+        self._queued_triggers: deque[str] = deque()
         self._execution_lock = threading.Lock()
         self._repeat_state_lock = threading.Lock()
         self._repeat_stop_events: dict[str, threading.Event] = {}
@@ -125,6 +128,9 @@ class MacroEngine:
                     steps=steps,
                 )
 
+        with self._trigger_queue_lock:
+            self._queued_triggers.clear()
+
     def start(self) -> None:
         if self._listener is not None:
             return
@@ -159,6 +165,8 @@ class MacroEngine:
             self._pressed_keys.clear()
             self._pressed_buttons.clear()
             self._latched.clear()
+        with self._trigger_queue_lock:
+            self._queued_triggers.clear()
         self._stop_all_repeat_macros()
 
         if poll_stop_event is not None:
@@ -183,11 +191,14 @@ class MacroEngine:
             return False
 
         if self._execution_lock.locked():
+            with self._trigger_queue_lock:
+                self._queued_triggers.append(macro.name)
+                queued_count = len(self._queued_triggers)
             self._logger(
-                f'Macro ignored: {macro.name} skipped because another macro is still running.',
-                'ignore',
+                f'Macro queued: {macro.name} will run after current macro (queue: {queued_count}).',
+                'notification',
             )
-            return False
+            return True
 
         origin = self._read_cursor_position()
         threading.Thread(target=self._run_macro_once, args=(macro, origin), daemon=True).start()
@@ -199,10 +210,7 @@ class MacroEngine:
                 return False
 
             if self._execution_lock.locked():
-                self._logger(
-                    f'Macro ignored: {macro.name} skipped because another macro is still running.',
-                    'ignore',
-                )
+                # Keep retrying from the polling loop while the trigger remains held.
                 return False
 
             stop_event = threading.Event()
@@ -228,10 +236,6 @@ class MacroEngine:
         for stop_event in stop_events:
             stop_event.set()
 
-    def _is_repeat_macro_running(self, macro_name: str) -> bool:
-        with self._repeat_state_lock:
-            return macro_name in self._repeat_stop_events
-
     def _run_repeat_macro(
         self,
         macro: MacroDefinition,
@@ -246,6 +250,7 @@ class MacroEngine:
                     origin,
                     release_unbalanced_keys=False,
                     carried_held_keys=held_keys_by_macro,
+                    drain_queued=False,
                 )
                 if stop_event.is_set():
                     break
@@ -275,6 +280,7 @@ class MacroEngine:
         *,
         release_unbalanced_keys: bool = True,
         carried_held_keys: set[str] | None = None,
+        drain_queued: bool = True,
     ) -> set[str]:
         held_keys_by_macro: set[str] = set(carried_held_keys or ())
         with self._execution_lock:
@@ -363,7 +369,32 @@ class MacroEngine:
                     held_keys_by_macro.clear()
                 self._release_input_safety()
 
+        if drain_queued:
+            self._drain_queued_trigger()
+
         return held_keys_by_macro
+
+    def _drain_queued_trigger(self) -> None:
+        if self._execution_lock.locked():
+            return
+
+        next_name = ''
+        with self._trigger_queue_lock:
+            while self._queued_triggers:
+                candidate = self._queued_triggers.popleft()
+                if candidate in self._macros_by_name:
+                    next_name = candidate
+                    break
+
+        if not next_name:
+            return
+
+        next_macro = self._macros_by_name.get(next_name)
+        if next_macro is None:
+            return
+
+        origin = self._read_cursor_position()
+        threading.Thread(target=self._run_macro_once, args=(next_macro, origin), daemon=True).start()
 
     def _on_press(self, key: keyboard.Key | keyboard.KeyCode) -> None:
         key_name = self._key_to_name(key)
@@ -401,34 +432,34 @@ class MacroEngine:
         self._handle_input_change()
 
     def _handle_input_change(self) -> None:
-        actions: list[tuple[str, MacroDefinition]] = []
+        repeat_actions: list[MacroDefinition] = []
+        one_shot_actions: list[str] = []
         stop_candidates: list[tuple[str, threading.Event]] = []
         with self._input_state_lock:
             matched = self._matched_macros()
             to_trigger = sorted(matched - self._latched)
-            for macro_name in to_trigger:
+
+            for macro_name in sorted(matched):
                 macro = self._macros_by_name.get(macro_name)
                 if macro is not None:
-                    actions.append((macro_name, macro))
+                    if macro.repeat_while_held:
+                        repeat_actions.append(macro)
+
+            for macro_name in to_trigger:
+                macro = self._macros_by_name.get(macro_name)
+                if macro is not None and not macro.repeat_while_held:
+                    one_shot_actions.append(macro_name)
+
+            self._latched = matched
 
         with self._repeat_state_lock:
             stop_candidates = list(self._repeat_stop_events.items())
 
-        blocked_by_running: set[str] = set()
+        for macro in repeat_actions:
+            self._start_repeat_macro(macro)
 
-        for macro_name, macro in actions:
-            if macro.repeat_while_held:
-                started = self._start_repeat_macro(macro)
-                if not started and self._execution_lock.locked() and not self._is_repeat_macro_running(macro_name):
-                    blocked_by_running.add(macro_name)
-            else:
-                if self._execution_lock.locked():
-                    blocked_by_running.add(macro_name)
-                    continue
-                self.trigger_macro(macro_name)
-
-        with self._input_state_lock:
-            self._latched = matched - blocked_by_running
+        for macro_name in one_shot_actions:
+            self.trigger_macro(macro_name)
 
         for macro_name, stop_event in stop_candidates:
             if macro_name in matched:
