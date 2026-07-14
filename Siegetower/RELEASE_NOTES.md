@@ -26,3 +26,7 @@
 
 - Implement queued macro triggers and improve execution handling.
 
+## 1.1.0 (2026-07-14)
+
+- Update version to 1.1.0 and add Windows tray support for macro management.
+

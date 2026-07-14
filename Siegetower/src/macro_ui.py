@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import queue
+import sys
+import ctypes
 import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,10 +46,13 @@ class MacroUI:
         self._font_ui = ('Segoe UI', 10)
         self._font_title = ('Segoe UI Semibold', 16)
 
-        self._event_queue: queue.Queue[tuple[str, str]] = queue.Queue()
+        self._event_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self._engine = MacroEngine(self._queue_log)
         self._macros: list[WorkingMacro] = []
         self._selected_macro_idx: int | None = None
+        self._tray_icon = None
+        self._tray_minimized = False
+        self._tray_quick_panel: tk.Toplevel | None = None
 
         self.root.title(f'{APP_NAME} v{APP_VERSION}')
         self.root.geometry('900x620')
@@ -59,9 +64,268 @@ class MacroUI:
         self._build_ui()
         self._load_macros()
         self._start_hotkeys()
+        self._setup_tray_support()
 
         self.root.after(120, self._drain_events)
         self.root.protocol('WM_DELETE_WINDOW', self._on_close)
+
+    def _setup_tray_support(self) -> None:
+        if sys.platform != 'win32':
+            return
+
+        try:
+            from windows_tray import WindowsTrayIcon
+        except Exception as exc:
+            self._append_log(f'Tray support unavailable: {exc}', 'ignore')
+            return
+
+        icon_path = Path(__file__).resolve().parent.parent / 'icons' / 'siegetower.ico'
+        self._tray_icon = WindowsTrayIcon(
+            icon_path=icon_path,
+            tooltip=f'{APP_NAME} v{APP_VERSION}',
+            on_single_click=lambda: self._event_queue.put(('tray_single_click', '')),
+            on_double_click=lambda: self._event_queue.put(('tray_double_click', '')),
+        )
+        self.root.bind('<Unmap>', self._on_root_unmap, add='+')
+
+    def _on_root_unmap(self, _event: tk.Event) -> None:
+        if self._tray_minimized:
+            return
+        if self.root.state() != 'iconic':
+            return
+        self._minimize_to_tray()
+
+    def _minimize_to_tray(self) -> None:
+        if self._tray_icon is None:
+            return
+        if not self._tray_icon.start():
+            self._append_log('Could not start tray icon.', 'ignore')
+            return
+
+        self._tray_minimized = True
+        self.root.withdraw()
+        self._append_log('Minimized to tray. Single-click tray icon for quick macro panel, double-click to restore.', 'notification')
+
+    def _restore_from_tray(self) -> None:
+        if not self._tray_minimized:
+            return
+
+        self._destroy_tray_quick_panel()
+        if self._tray_icon is not None:
+            self._tray_icon.stop()
+        self._tray_minimized = False
+
+        self.root.deiconify()
+        self.root.state('normal')
+        self.root.lift()
+        self.root.focus_force()
+        self._append_log('Restored from tray.', 'notification')
+
+    def _toggle_tray_quick_panel(self) -> None:
+        if not self._tray_minimized:
+            return
+        if self._tray_quick_panel is not None and self._tray_quick_panel.winfo_exists():
+            self._destroy_tray_quick_panel()
+            return
+        self._show_tray_quick_panel()
+
+    def _show_tray_quick_panel(self) -> None:
+        panel_width = 360
+        panel_height = 390
+
+        panel = tk.Toplevel(self.root)
+        panel.title(f'{APP_NAME} Quick Macros')
+        panel.configure(bg=self._colors['panel'])
+        panel.resizable(False, False)
+        panel.attributes('-topmost', True)
+
+        # Align popup to the bottom-right of the Windows work area (above taskbar).
+        x = max(0, int(self.root.winfo_screenwidth()) - panel_width)
+        y = max(0, int(self.root.winfo_screenheight()) - panel_height)
+        if sys.platform == 'win32':
+            class RECT(ctypes.Structure):
+                _fields_ = [
+                    ('left', ctypes.c_long),
+                    ('top', ctypes.c_long),
+                    ('right', ctypes.c_long),
+                    ('bottom', ctypes.c_long),
+                ]
+
+            rect = RECT()
+            SPI_GETWORKAREA = 0x0030
+            if ctypes.windll.user32.SystemParametersInfoW(SPI_GETWORKAREA, 0, ctypes.byref(rect), 0):
+                x = max(0, int(rect.right) - panel_width)
+                y = max(0, int(rect.bottom) - panel_height)
+
+        panel.geometry(f'{panel_width}x{panel_height}+{x}+{y}')
+
+        self._tray_quick_panel = panel
+
+        container = tk.Frame(
+            panel,
+            bg=self._colors['panel'],
+            padx=10,
+            pady=10,
+            highlightthickness=1,
+            highlightbackground=self._colors['border'],
+        )
+        container.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(
+            container,
+            text='Quick Macros',
+            bg=self._colors['panel'],
+            fg=self._colors['text'],
+            font=('Segoe UI Semibold', 11),
+            anchor='w',
+        ).pack(fill=tk.X)
+
+        tk.Label(
+            container,
+            text='Toggle configured macros:',
+            bg=self._colors['panel'],
+            fg=self._colors['muted'],
+            anchor='w',
+        ).pack(fill=tk.X, pady=(2, 6))
+
+        macro_shell = tk.Frame(container, bg=self._colors['panel'])
+        macro_shell.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
+
+        macro_canvas = tk.Canvas(
+            macro_shell,
+            bg=self._colors['input_bg'],
+            relief=tk.FLAT,
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=self._colors['border'],
+            highlightcolor=self._colors['accent'],
+        )
+        macro_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        macro_scroll = tk.Scrollbar(macro_shell, orient=tk.VERTICAL, command=macro_canvas.yview)
+        macro_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        macro_rows = tk.Frame(macro_canvas, bg=self._colors['input_bg'])
+        macro_rows_window = macro_canvas.create_window((0, 0), window=macro_rows, anchor='nw')
+
+        macro_rows.bind('<Configure>', lambda _e: macro_canvas.configure(scrollregion=macro_canvas.bbox('all')))
+        macro_canvas.bind('<Configure>', lambda e: macro_canvas.itemconfigure(macro_rows_window, width=e.width))
+        macro_canvas.configure(yscrollcommand=macro_scroll.set)
+
+        def _toggle_macro_from_tray(idx: int, active_var: tk.BooleanVar) -> None:
+            self._set_macro_active(idx, bool(active_var.get()))
+            _refresh_tray_checkbox_list()
+
+        def _refresh_tray_checkbox_list() -> None:
+            for child in macro_rows.winfo_children():
+                child.destroy()
+
+            if not self._macros:
+                tk.Label(
+                    macro_rows,
+                    text='No macros configured.',
+                    bg=self._colors['input_bg'],
+                    fg=self._colors['muted'],
+                    anchor='w',
+                ).pack(fill=tk.X, padx=8, pady=(8, 0))
+                return
+
+            for idx, macro in enumerate(self._macros):
+                row_bg = self._colors['input_bg']
+                row = tk.Frame(macro_rows, bg=row_bg)
+                row.pack(fill=tk.X)
+
+                active_var = tk.BooleanVar(value=macro.active)
+                checkbox = tk.Checkbutton(
+                    row,
+                    variable=active_var,
+                    command=lambda i=idx, v=active_var: _toggle_macro_from_tray(i, v),
+                    bg=row_bg,
+                    fg=self._colors['text'],
+                    activebackground=row_bg,
+                    activeforeground=self._colors['text'],
+                    selectcolor=self._colors['panel_alt'],
+                    highlightthickness=0,
+                    bd=0,
+                    padx=6,
+                    pady=2,
+                )
+                checkbox.pack(side=tk.LEFT)
+
+                suffix = ' (hold)' if macro.repeat_while_held else ''
+                text = f'{idx + 1}. {macro.name} [{macro.hotkey}] - {len(macro.steps)} step(s){suffix}'
+                tk.Label(
+                    row,
+                    text=text,
+                    bg=row_bg,
+                    fg=self._colors['text'],
+                    anchor='w',
+                ).pack(side=tk.LEFT, fill=tk.X, expand=True, pady=2)
+
+        _refresh_tray_checkbox_list()
+
+        actions = tk.Frame(container, bg=self._colors['panel'])
+        actions.pack(fill=tk.X)
+
+        tray_hotkeys_button = self._make_button(
+            actions,
+            text='Stop Hotkeys' if self._engine.running else 'Start Hotkeys',
+            width=14,
+            command=self._toggle_hotkeys_from_tray,
+            danger=self._engine.running,
+            success=not self._engine.running,
+        )
+        tray_hotkeys_button.pack(side=tk.LEFT)
+
+        def _refresh_tray_hotkey_button() -> None:
+            if self._engine.running:
+                tray_hotkeys_button.configure(
+                    text='Stop Hotkeys',
+                    bg=self._colors['danger'],
+                    activebackground=self._colors['danger_hover'],
+                    fg='#ffffff',
+                    activeforeground='#ffffff',
+                )
+            else:
+                tray_hotkeys_button.configure(
+                    text='Start Hotkeys',
+                    bg=self._colors['success'],
+                    activebackground='#1f8f58',
+                    fg='#ffffff',
+                    activeforeground='#ffffff',
+                )
+
+        tray_hotkeys_button.configure(command=lambda: self._toggle_hotkeys_from_tray(_refresh_tray_hotkey_button))
+
+        self._make_button(
+            actions,
+            text='Open App',
+            width=10,
+            command=self._restore_from_tray,
+        ).pack(side=tk.RIGHT)
+
+        panel.bind('<Escape>', lambda _e: self._destroy_tray_quick_panel())
+        panel.bind('<FocusOut>', lambda _e: self._destroy_tray_quick_panel())
+        panel.protocol('WM_DELETE_WINDOW', self._destroy_tray_quick_panel)
+        panel.focus_force()
+
+    def _destroy_tray_quick_panel(self) -> None:
+        panel = self._tray_quick_panel
+        self._tray_quick_panel = None
+        if panel is None:
+            return
+        try:
+            if panel.winfo_exists():
+                panel.destroy()
+        except Exception:
+            pass
+
+    def _toggle_hotkeys_from_tray(self, refresh_button=None) -> None:
+        self._toggle_hotkeys()
+        if callable(refresh_button):
+            try:
+                refresh_button()
+            except Exception:
+                pass
 
     def _set_window_icon(self) -> None:
         icon_path = Path(__file__).resolve().parent.parent / 'icons' / 'siegetower.png'
@@ -445,7 +709,14 @@ class MacroUI:
                 kind, message = self._event_queue.get_nowait()
             except queue.Empty:
                 break
-            self._append_log(message, kind)
+
+            if kind == 'tray_single_click':
+                self._toggle_tray_quick_panel()
+                continue
+            if kind == 'tray_double_click':
+                self._restore_from_tray()
+                continue
+            self._append_log(str(message), str(kind))
 
         self.root.after(120, self._drain_events)
 
@@ -1543,6 +1814,12 @@ class MacroUI:
         dialog.wait_window()
 
     def _on_close(self) -> None:
+        self._destroy_tray_quick_panel()
+        if self._tray_icon is not None:
+            try:
+                self._tray_icon.stop()
+            except Exception:
+                pass
         try:
             self._engine.stop()
         except Exception:
