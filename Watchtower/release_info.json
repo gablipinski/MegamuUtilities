@@ -1,8 +1,8 @@
 {
   "app_name": "Watchtower",
-  "version": "1.1.11",
+  "version": "1.1.12",
   "publisher": "Megamu Utilities",
   "patch_notes": [
-    "Enhance ActionController with modifier key handling and key combo methods; add process tower trigger test functionality in MonitorUI."
+    "Update escape delay handling in _trigger_escape_group function."
   ]
 }

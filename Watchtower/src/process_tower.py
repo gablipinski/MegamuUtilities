@@ -362,11 +362,6 @@ def _trigger_escape_group(
             _mark_unresolved(state_item)
             return
 
-        try:
-            min_delay_ms, max_delay_ms = escape_delay_ms_bounds or _row_escape_delay_ms_bounds(row)
-        except Exception:
-            min_delay_ms, max_delay_ms = _row_escape_delay_ms_bounds(row)
-
         map_pointer_override_by_pid_name: dict[tuple[int, str], list[int]] = {}
         map_calibration_last_attempt_by_pid: dict[int, float] = {}
         map_tab_last_sent_by_pid: dict[int, float] = {}
@@ -392,7 +387,23 @@ def _trigger_escape_group(
                 _mark_unresolved(state_item)
                 return
 
-            if stop_event.wait(random.uniform(min_delay_ms, max_delay_ms) / 1000.0):
+            try:
+                min_delay_ms, max_delay_ms = _row_escape_delay_ms_bounds(row)
+            except Exception:
+                min_delay_ms, max_delay_ms = escape_delay_ms_bounds or (500, 1000)
+
+            delay_ms = random.randint(min_delay_ms, max_delay_ms)
+            ui._event_queue.put(
+                (
+                    'log',
+                    (
+                        f'Character #{idx + 1}: waiting {delay_ms}ms before escape '
+                        f'(range {min_delay_ms}-{max_delay_ms}ms).'
+                    ),
+                )
+            )
+
+            if stop_event.wait(delay_ms / 1000.0):
                 _mark_unresolved(state_item)
                 return
 
