@@ -193,6 +193,10 @@ class MonitorUI:
         self._notification_history: list[dict[str, object]] = []
         self._notification_seq = 0
         self._notification_bell_button: tk.Button | None = None
+        self._silent_mode_button: tk.Button | None = None
+        self._silent_mode_enabled = False
+        self._silent_mode_lock = threading.Condition()
+        self._confirmation_dialog_hooks: dict[int, dict[str, object]] = {}
 
         self._load_app_icon()
         self._apply_app_icon(self.root)
@@ -647,6 +651,8 @@ class MonitorUI:
 
     def _on_root_focus(self, _event: tk.Event | None = None) -> None:
         """Re-raise active confirmation dialog when main window gains focus."""
+        if self._silent_mode_enabled:
+            return
         dlg = self._active_confirmation_dialog
         if dlg is None:
             return
@@ -680,6 +686,8 @@ class MonitorUI:
         dialog: tk.Misc,
     ) -> None:
         """Show a Windows notification and flash taskbar for confirmation."""
+        if self._silent_mode_enabled:
+            return
         body = message_text if len(message_text) <= 120 else (message_text[:117] + "...")
         ok, err = self._desktop_notifications.send_action(
             f"Approval needed for #{channel_name} — switch to Guardtower",
@@ -886,6 +894,8 @@ class MonitorUI:
         title: str = "Guardtower alert",
     ) -> None:
         """Show a Windows notification and flash taskbar to attract attention."""
+        if self._silent_mode_enabled:
+            return
         body = message_text if len(message_text) <= 120 else (message_text[:117] + "...")
         ok, err = self._desktop_notifications.send_action(
             f"{title} — switch to Guardtower",
@@ -915,6 +925,10 @@ class MonitorUI:
         timeout_s = 30.0
         if isinstance(timeout_obj, (int, float)):
             timeout_s = float(timeout_obj)
+
+        timeout_s = self._wait_until_silent_mode_off(timeout_s)
+        if timeout_s <= 0:
+            return {"approved": False, "message_text": message_text}
 
         trigger_obj = payload.get("trigger_message")
         trigger_message = str(trigger_obj) if isinstance(trigger_obj, str) else None
@@ -965,6 +979,92 @@ class MonitorUI:
             "message_text": str(result.get("message_text", message_text)),
         }
 
+    def _wait_until_silent_mode_off(self, timeout_s: float) -> float:
+        """Block caller thread while silent mode is enabled; return remaining timeout seconds."""
+        deadline = time.monotonic() + max(0.1, float(timeout_s))
+        with self._silent_mode_lock:
+            while self._silent_mode_enabled and not self._shutdown_event.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return 0.0
+                self._silent_mode_lock.wait(timeout=min(remaining, 0.25))
+        return max(0.0, deadline - time.monotonic())
+
+    def _set_silent_mode(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if self._silent_mode_enabled == enabled:
+            return
+
+        with self._silent_mode_lock:
+            self._silent_mode_enabled = enabled
+            self._silent_mode_lock.notify_all()
+
+        self._update_silent_mode_button()
+        if enabled:
+            self._apply_silent_mode_hide_open_dialogs()
+            self._append_system_log("Silent mode enabled - confirmation popups are paused", "notification")
+            return
+
+        self._apply_silent_mode_restore_open_dialogs()
+        self._append_system_log("Silent mode disabled - restoring active confirmation popups", "notification")
+
+    def _toggle_silent_mode(self) -> None:
+        self._set_silent_mode(not self._silent_mode_enabled)
+
+    def _update_silent_mode_button(self) -> None:
+        if self._silent_mode_button is None:
+            return
+        label = "Silent Mode: ON" if self._silent_mode_enabled else "Silent Mode: OFF"
+        self._silent_mode_button.configure(text=label)
+
+    def _register_confirmation_dialog_hooks(
+        self,
+        dialog: tk.Misc,
+        *,
+        deadline_monotonic: float,
+        hide_action,
+        show_action,
+        close_action,
+    ) -> None:
+        self._confirmation_dialog_hooks[id(dialog)] = {
+            "dialog": dialog,
+            "deadline": deadline_monotonic,
+            "hide": hide_action,
+            "show": show_action,
+            "close": close_action,
+        }
+
+    def _unregister_confirmation_dialog_hooks(self, dialog: tk.Misc) -> None:
+        self._confirmation_dialog_hooks.pop(id(dialog), None)
+
+    def _apply_silent_mode_hide_open_dialogs(self) -> None:
+        for hook in list(self._confirmation_dialog_hooks.values()):
+            hide_action = hook.get("hide")
+            if callable(hide_action):
+                try:
+                    hide_action()
+                except Exception:
+                    continue
+
+    def _apply_silent_mode_restore_open_dialogs(self) -> None:
+        now = time.monotonic()
+        for hook in list(self._confirmation_dialog_hooks.values()):
+            deadline = float(hook.get("deadline", 0.0))
+            if now >= deadline:
+                close_action = hook.get("close")
+                if callable(close_action):
+                    try:
+                        close_action(False, "timed out")
+                    except Exception:
+                        pass
+                continue
+            show_action = hook.get("show")
+            if callable(show_action):
+                try:
+                    show_action()
+                except Exception:
+                    continue
+
     def _show_send_confirmation_dialog(
         self,
         *,
@@ -980,7 +1080,7 @@ class MonitorUI:
     ) -> dict[str, object]:
         approved = {"value": False}
         approved_message = {"value": message_text}
-        timeout_ms = max(1000, int(timeout_s * 1000))
+        deadline_monotonic = time.monotonic() + max(0.1, float(timeout_s))
         remaining = {"sec": max(1, int(timeout_s))}
 
         dialog = tk.Toplevel(self.root)
@@ -1009,8 +1109,15 @@ class MonitorUI:
         )
 
         hidden = {"value": False}
+        closed = {"value": False}
 
         def _reopen_dialog_from_notification() -> None:
+            if self._silent_mode_enabled:
+                self._append_system_log(
+                    f"Silent mode is enabled - confirmation popup for #{channel_name} stays hidden.",
+                    "notification",
+                )
+                return
             if not bool(dialog.winfo_exists()):
                 return
             if hidden["value"]:
@@ -1200,6 +1307,7 @@ class MonitorUI:
         footer.pack(fill=tk.X, pady=(8, 0))
 
         timer_handle: dict[str, str | None] = {"id": None}
+        silent_hidden = {"value": False}
 
         def _hide_dialog() -> None:
             if not bool(dialog.winfo_exists()):
@@ -1211,7 +1319,34 @@ class MonitorUI:
                 "notification",
             )
 
+        def _hide_dialog_for_silent_mode() -> None:
+            if not bool(dialog.winfo_exists()):
+                return
+            if hidden["value"]:
+                return
+            hidden["value"] = True
+            silent_hidden["value"] = True
+            try:
+                dialog.withdraw()
+            except Exception:
+                return
+
+        def _show_dialog_after_silent_mode() -> None:
+            if not bool(dialog.winfo_exists()):
+                return
+            if not hidden["value"]:
+                return
+            hidden["value"] = False
+            silent_hidden["value"] = False
+            try:
+                dialog.deiconify()
+            except Exception:
+                pass
+            self._focus_confirmation_window(dialog)
+
         def _close(value: bool, reason: str) -> None:
+            if closed["value"]:
+                return
             if value and is_won_reply and name_var is not None:
                 chosen_name = name_var.get().strip()
                 if not chosen_name:
@@ -1221,6 +1356,7 @@ class MonitorUI:
             elif value:
                 approved_message["value"] = message_text
 
+            closed["value"] = True
             approved["value"] = value
             if timer_handle["id"] is not None:
                 try:
@@ -1229,18 +1365,25 @@ class MonitorUI:
                     pass
                 timer_handle["id"] = None
             self._active_confirmation_dialog = None
+            self._unregister_confirmation_dialog_hooks(dialog)
             self._set_confirmation_notification_status(notif_item_id, "approved" if value else "closed", reason)
             if dialog.winfo_exists():
                 dialog.destroy()
 
         def _tick() -> None:
-            remaining["sec"] -= 1
+            remaining_seconds = int(deadline_monotonic - time.monotonic())
+            remaining["sec"] = max(0, remaining_seconds)
             if remaining["sec"] <= 0:
                 countdown_var.set("Auto-cancel in 0s")
                 _close(False, "timed out")
                 return
             countdown_var.set(f"Auto-cancel in {remaining['sec']}s")
             timer_handle["id"] = dialog.after(1000, _tick)
+
+            if self._silent_mode_enabled and not hidden["value"]:
+                _hide_dialog_for_silent_mode()
+            elif (not self._silent_mode_enabled) and silent_hidden["value"]:
+                _show_dialog_after_silent_mode()
 
         self._make_button(footer, text="Send", width=12, command=lambda: _close(True, "sent"), accent=True).pack(side=tk.RIGHT)
         self._make_button(footer, text="Do Not Send", width=14, command=lambda: _close(False, "declined"), danger=True).pack(
@@ -1249,9 +1392,19 @@ class MonitorUI:
         )
         self._make_button(footer, text="Hide", width=10, command=_hide_dialog).pack(side=tk.RIGHT, padx=(0, 8))
 
+        self._register_confirmation_dialog_hooks(
+            dialog,
+            deadline_monotonic=deadline_monotonic,
+            hide_action=_hide_dialog_for_silent_mode,
+            show_action=_show_dialog_after_silent_mode,
+            close_action=_close,
+        )
+
+        if self._silent_mode_enabled:
+            _hide_dialog_for_silent_mode()
+
         dialog.protocol("WM_DELETE_WINDOW", _hide_dialog)
         timer_handle["id"] = dialog.after(1000, _tick)
-        dialog.after(timeout_ms, lambda: _close(False, "timed out"))
         self.root.wait_window(dialog)
         return {
             "approved": bool(approved["value"]),
@@ -1291,6 +1444,14 @@ class MonitorUI:
             command=self._open_notification_center,
         )
         self._notification_bell_button.pack(side=tk.RIGHT, padx=(0, 8))
+
+        self._silent_mode_button = self._make_button(
+            title_row,
+            text="Silent Mode: OFF",
+            width=16,
+            command=self._toggle_silent_mode,
+        )
+        self._silent_mode_button.pack(side=tk.RIGHT, padx=(0, 8))
 
         self._make_button(
             title_row,
@@ -2409,6 +2570,8 @@ class MonitorUI:
 
     def _on_close(self) -> None:
         self._shutdown_event.set()
+        with self._silent_mode_lock:
+            self._silent_mode_lock.notify_all()
         set_gui_hook(None)
 
         if self._runtime_loop is not None:
