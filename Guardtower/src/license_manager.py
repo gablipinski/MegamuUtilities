@@ -14,6 +14,7 @@ import base64
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import uuid
@@ -29,13 +30,13 @@ from cryptography.hazmat.primitives.asymmetric import padding
 # automatically patch this constant with the generated key.
 _PUBLIC_KEY_PEM = b"""\
 -----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqQUcCWKV2Gn3Rct64c0z
-rrXCKSiAQgqr9uBU/dZXYxZLkEzJvcjz0mMuUW+448GunftcOp079GMExFDZnMmv
-aYnnvM/o9lILtP0aCN4iT04bDj5HP9j/qQ33gM2h+jJKnKmUzO5TZiMfvfnukgBr
-y0CN7C9dzH69iL1m3vr/B3HB7UfULg8ccvpc7+qcKhLgLffR1tvBYx8Bn41hoQYa
-6Z2pQTdeQoo+8sJxv2SGYEKLMlrNEO9C/eSnpEu8t7IdlvN+7HXN2IP/Q091b4xw
-aBXitqDoeLtwYwOC0I5telUUOxD2x46dgA9W7EoKAknY1KkgdgD0l2VVYcLBrNEi
-kQIDAQAB
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAkYI6bvTfQY+4FlvU449I
+9h1aWc6iScLQnTqJowguGvvO/pbz48kOavGnJs1rZhuo+YwVOBNVd3GouihkvvHg
+9I9AhbhO/UGcPczL6qgheNQFovAV4WQ18A/098QBpamuW47IreT7OD5GF10Tn8vg
+0D97Vmq7WCCu3cwekAnPZA6skH2kVKusi5tGcWtkJz4hiw2KBMIeEKGcb1XsEHW1
+s115euyzvRJN+YQS9eZaiTTGg/tpkU6N1cwTN5EuC8sZ1R2Gb5OBReyvYkSNex2P
+r0TyeWfsflDuWyKxKCgXNego7k1X55UTwzGglwiK0J1O8ut/WEcNPdq51ua4TyZE
+WQIDAQAB
 -----END PUBLIC KEY-----
 """
 
@@ -48,8 +49,9 @@ def _is_packaged_runtime() -> bool:
 def get_license_path() -> Path:
     """Return the expected location of license.dat.
 
-    - Default       : %APPDATA%\\Guardtower\\license.dat
     - Override       : MEGAMU_LICENSE_PATH (file or directory)
+    - Windows default: %APPDATA%\\Guardtower\\license.dat
+    - Linux default  : ~/.config/Guardtower/license.dat
     """
     override = os.environ.get('MEGAMU_LICENSE_PATH', '').strip()
     if override:
@@ -59,10 +61,40 @@ def get_license_path() -> Path:
         override_path.parent.mkdir(parents=True, exist_ok=True)
         return override_path
 
-    appdata = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming'))
-    target_dir = appdata / 'Guardtower'
+    if sys.platform.startswith('linux'):
+        config_home = os.environ.get('XDG_CONFIG_HOME', str(Path.home() / '.config'))
+        target_dir = Path(config_home).expanduser() / 'Guardtower'
+    else:
+        appdata = Path(os.environ.get('APPDATA', Path.home() / 'AppData' / 'Roaming'))
+        target_dir = appdata / 'Guardtower'
+
     target_dir.mkdir(parents=True, exist_ok=True)
     return target_dir / 'license.dat'
+
+
+def find_license_file() -> Path | None:
+    """Find an existing license file in common locations for Linux and Windows."""
+    candidates = []
+
+    override = os.environ.get('MEGAMU_LICENSE_PATH', '').strip()
+    if override:
+        override_path = Path(override).expanduser()
+        if override_path.suffix.lower() != '.dat':
+            override_path = override_path / 'license.dat'
+        candidates.append(override_path)
+
+    candidates.extend([
+        get_license_path(),
+        Path.home() / '.config' / 'Guardtower' / 'license.dat',
+        Path.home() / 'Guardtower' / 'license.dat',
+        Path(__file__).resolve().parent.parent / 'license.dat',
+        Path(__file__).resolve().parent.parent / 'configs' / 'license.dat',
+    ])
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def _wmic(args: list[str]) -> str:
@@ -99,16 +131,28 @@ def validate_license(license_path: Path) -> tuple[bool, str]:
             'Run tools/generate_keys.py to set up signing keys before building.'
         )
 
-    if not license_path.exists():
-        machine_id = get_machine_id()
-        return False, (
-            f'License file not found.\n\n'
-            f'Your Machine ID:\n{machine_id}\n\n'
-            'Send this ID to the software distributor to receive your license.dat'
-        )
+    resolved_path = license_path
+    if not resolved_path.exists():
+        discovered = find_license_file()
+        if discovered is not None:
+            resolved_path = discovered
+        else:
+            machine_id = get_machine_id()
+            return False, (
+                'Activation required.\n\n'
+                f'License file not found.\n\n'
+                f'Expected location: {license_path}\n'
+                f'Your Machine ID:\n{machine_id}\n\n'
+                'Send this ID to the software distributor to receive your license.dat.\n'
+                'Once received, place it at the expected location above.'
+            )
+
+    if resolved_path != license_path and not license_path.exists():
+        license_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(resolved_path, license_path)
 
     try:
-        data = json.loads(license_path.read_text(encoding='utf-8'))
+        data = json.loads(resolved_path.read_text(encoding='utf-8'))
         machine_id: str = data.get('machine_id', '')
         issued_to: str = data.get('issued_to', '')
         expiry_str: str = data.get('expiry', '')

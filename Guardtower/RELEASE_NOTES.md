@@ -1,3 +1,5 @@
+# Guardtower Release Notes
+
 ﻿# Guardtower Release Notes
 
 ## 1.0.0 (2026-06-10)
@@ -62,3 +64,6 @@
 
 - Aadd registered machines table and delete functionality to dashboard.
 
+## 1.1.3 (2026-07-25)
+
+- Refactor notification handling and improve license file management for cross-platform compatibility

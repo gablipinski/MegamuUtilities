@@ -34,7 +34,6 @@ from config import BotConfig, load_config, resolve_default_config_path
 from console_log import set_gui_hook
 from license_manager import get_license_path, get_machine_id, validate_license
 from startup_logs import emit_startup_logs
-from windows_notifier import DesktopNotificationService
 
 GIVEAWAY_SESSION_DURATION_S = 300.0
 IDLE_ALERT_THRESHOLD_S = 3600.0
@@ -142,6 +141,11 @@ class MonitorUI:
         self._bot_args = args
 
         self.root = tk.Tk()
+        self.root.withdraw()
+        try:
+            self.root.option_add("*Font", self._font_ui)
+        except Exception:
+            pass
         self._colors = {
             "bg": "#111418",
             "panel": "#171b21",
@@ -185,7 +189,6 @@ class MonitorUI:
         self._system_log_lines: list[tuple[str, str]] = []
         self._multitwitch_url: str = "(no channels online)"
         self._channel_views: dict[str, ChannelView] = {}
-        self._desktop_notifications = DesktopNotificationService(app_id="Guardtower")
         self._active_confirmation_dialog: tk.Toplevel | None = None
         self._notification_center_window: tk.Toplevel | None = None
         self._notification_listbox: tk.Listbox | None = None
@@ -200,7 +203,6 @@ class MonitorUI:
 
         self._load_app_icon()
         self._apply_app_icon(self.root)
-        self.root.withdraw()
         if not self._check_license_startup():
             self.root.destroy()
             sys.exit(0)
@@ -219,7 +221,6 @@ class MonitorUI:
         self.root.geometry("1220x820")
         self.root.minsize(980, 620)
         self.root.configure(bg=self._colors["bg"])
-        self.root.option_add("*Font", self._font_ui)
 
         set_gui_hook(self._queue_log_event)
         self._start_runtime_thread()
@@ -234,6 +235,10 @@ class MonitorUI:
         self.root.mainloop()
 
     def _load_app_icon(self) -> None:
+        if sys.platform.startswith("linux"):
+            self._app_icon = None
+            return
+
         icons_dirs = []
         if getattr(sys, "frozen", False):
             icons_dirs.append(Path(sys.executable).resolve().parent / "icons")
@@ -685,22 +690,13 @@ class MonitorUI:
         message_text: str,
         dialog: tk.Misc,
     ) -> None:
-        """Show a Windows notification and flash taskbar for confirmation."""
+        """Record a confirmation notification in the app log and flash the window."""
         if self._silent_mode_enabled:
             return
-        body = message_text if len(message_text) <= 120 else (message_text[:117] + "...")
-        ok, err = self._desktop_notifications.send_action(
-            f"Approval needed for #{channel_name} — switch to Guardtower",
-            body,
-            action_label="Open Guardtower",
-            action=lambda: self.root.after(0, lambda: self._focus_confirmation_window(dialog)),
+        self._append_system_log(
+            f"#{channel_name}: approval needed — confirmation popup opened",
+            "notification",
         )
-        if not ok:
-            self._append_system_log(
-                f"#{channel_name}: failed to show confirmation notification ({err or 'unknown backend error'})",
-                "ignore",
-            )
-        # Flash taskbar regardless of toast result so app is always visible in taskbar.
         self._flash_taskbar()
 
     def _next_notification_id(self) -> str:
@@ -893,22 +889,13 @@ class MonitorUI:
         message_text: str,
         title: str = "Guardtower alert",
     ) -> None:
-        """Show a Windows notification and flash taskbar to attract attention."""
+        """Log an attention notification in the app and flash the window."""
         if self._silent_mode_enabled:
             return
-        body = message_text if len(message_text) <= 120 else (message_text[:117] + "...")
-        ok, err = self._desktop_notifications.send_action(
-            f"{title} — switch to Guardtower",
-            body,
-            action_label="Open Guardtower",
-            action=lambda: self.root.after(0, self._focus_confirmation_window),
+        self._append_system_log(
+            f"#{channel_name}: {title} — {message_text}",
+            "notification",
         )
-        if not ok:
-            self._append_system_log(
-                f"#{channel_name}: failed to show attention notification ({err or 'unknown backend error'})",
-                "ignore",
-            )
-        # Flash taskbar so Guardtower is always visible regardless of toast delivery.
         self._flash_taskbar()
 
     def request_send_confirmation(self, payload: dict[str, object]) -> dict[str, object]:
