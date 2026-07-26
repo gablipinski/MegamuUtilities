@@ -29,13 +29,13 @@ from cryptography.hazmat.primitives.asymmetric import padding
 # automatically patch this constant with the generated key.
 _PUBLIC_KEY_PEM = b"""\
 -----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqQUcCWKV2Gn3Rct64c0z
-rrXCKSiAQgqr9uBU/dZXYxZLkEzJvcjz0mMuUW+448GunftcOp079GMExFDZnMmv
-aYnnvM/o9lILtP0aCN4iT04bDj5HP9j/qQ33gM2h+jJKnKmUzO5TZiMfvfnukgBr
-y0CN7C9dzH69iL1m3vr/B3HB7UfULg8ccvpc7+qcKhLgLffR1tvBYx8Bn41hoQYa
-6Z2pQTdeQoo+8sJxv2SGYEKLMlrNEO9C/eSnpEu8t7IdlvN+7HXN2IP/Q091b4xw
-aBXitqDoeLtwYwOC0I5telUUOxD2x46dgA9W7EoKAknY1KkgdgD0l2VVYcLBrNEi
-kQIDAQAB
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzP87R2oCxRedatSNddN6
+MsS5z5/QSV/9S7oqmzaFgdairDsTH9hoVYJP6cslwAa+9cW+9vKGymnXZ56k3gk8
+HRgPrgWm+9s57rBx2WYXciKuOB/+rGEr2v76f+NPTHIlspbX3ugzXmsjb6KK9Mdx
+igjdI4geSykk3zkwjyTYdXFKuh1YrHgUC1zDOmU4psWj4oOeqo/1QymVKa12flZ9
+SGmeppwjI5Ya613CfK9D5h9ZJXt61hPVkPcb+r8HntHjkpIgCd7nEZSC3Z/sy2Ny
+ee8oKWa7GcHfdQnFU8+lyVAPkJFObK6bmipje6tXB8NI6v7P8x39F+EhfgFfF/RX
+rwIDAQAB
 -----END PUBLIC KEY-----
 """
 

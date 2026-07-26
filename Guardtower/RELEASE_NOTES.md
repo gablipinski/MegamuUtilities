@@ -58,7 +58,7 @@
 
 - Add trigger sender support to TwitchBot and UI components.
 
-## 1.1.2 (2026-07-23)
+## 1.1.2 (2026-07-26)
 
 - Aadd registered machines table and delete functionality to dashboard.
 
