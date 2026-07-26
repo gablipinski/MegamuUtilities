@@ -136,12 +136,7 @@ if __name__ == '__main__':
     _args = parse_args()
     if _args.no_gui:
         _args.gui = False
-
-    should_try_gui = _args.gui
-    if should_try_gui and sys.platform.startswith('linux'):
-        should_try_gui = True
-
-    if should_try_gui:
+    if _args.gui:
         try:
             from monitor_gui import run_gui
             run_gui(_args)
@@ -161,21 +156,16 @@ if __name__ == '__main__':
             input('Press Enter to exit...')
             sys.exit(1)
         except Exception as e:
-            if sys.platform.startswith('linux'):
-                log_line(f'GUI startup failed on Linux, falling back to console mode: {e}', 'ignore')
-                _args.gui = False
-            else:
-                log_line(f'GUI error: {e}', 'ignore')
-                _show_startup_error_dialog(
-                    'Guardtower - Startup Error',
-                    f'Unexpected startup error:\n{e}\n\nCheck your configuration and try again.',
-                )
-                import traceback
-                traceback.print_exc()
-                input('Press Enter to exit...')
-                sys.exit(1)
-        else:
-            sys.exit(0)
+            log_line(f'GUI error: {e}', 'ignore')
+            _show_startup_error_dialog(
+                'Guardtower - Startup Error',
+                f'Unexpected startup error:\n{e}\n\nCheck your configuration and try again.',
+            )
+            import traceback
+            traceback.print_exc()
+            input('Press Enter to exit...')
+            sys.exit(1)
+        sys.exit(0)
 
     _exit_code = 0
     try:

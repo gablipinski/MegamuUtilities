@@ -1,8 +1,8 @@
 {
   "app_name": "Guardtower",
-  "version": "1.1.3",
+  "version": "1.1.2",
   "publisher": "Megamu Utilities",
   "patch_notes": [
-    "Refactor notification handling and improve license file management for cross-platform compatibility"
+    "Aadd registered machines table and delete functionality to dashboard."
   ]
 }

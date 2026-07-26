@@ -147,8 +147,7 @@ def generate_license(
     print(f'     Expires     : {expiry_display}')
     print(f'     Control XLSX: {CONTROL_XLSX_PATH}')
     print('\n[>] Send this license.dat file to the user.')
-    print('    On Windows, place it in: %APPDATA%\\Guardtower\\license.dat')
-    print('    On Linux, place it in: ~/.config/Guardtower/license.dat')
+    print(f'    They must place it in: %APPDATA%\\Guardtower\\license.dat')
 
 
 def main() -> None:

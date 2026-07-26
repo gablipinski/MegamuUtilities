@@ -16,6 +16,7 @@ from activity_monitor import ChatActivityMonitor
 from chat_monitor import ChatMonitorLogger
 from console_log import log_line
 from config import BotConfig, load_channel_config
+from windows_notifier import WindowsNotifier
 
 
 class TwitchBot(commands.Cog):
@@ -48,6 +49,7 @@ class TwitchBot(commands.Cog):
         self.log_only_mode = bool(log_only_mode)
         self.enable_logging = bool(enable_logging)
         self.send_confirmation_callback = send_confirmation_callback
+        self.notifier = WindowsNotifier(config.notification)
         self.is_shutting_down = False
         self.SEND_CONFIRM_TIMEOUT_S: float = 30.0
         # Known online channels from GUI poller. None means status is unknown/unavailable.
@@ -575,11 +577,13 @@ class TwitchBot(commands.Cog):
         self._increment_channel_stat(channel_name, "wins")
 
         if self.config.notification.enabled and self.send_confirmation_callback is None:
-            log_line(
-                f"Notification: You won on #{channel_name}! Trigger sender: {sender}",
-                "notification",
+            self.notifier.send_notification(
                 channel_name,
+                f"You won on {channel_name}! Trigger sender: {sender}",
+                title="You won!",
                 account=self.account_name,
+                trigger_sender=sender,
+                launch_url=f"https://www.twitch.tv/{channel_name}",
             )
 
         default_won_reply = f"{channel_config.won_prefix}{self.account_nickname}"
