@@ -6,21 +6,23 @@ param(
     [switch]$Detach
 )
 
+$ErrorActionPreference = 'Stop'
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectDir = Split-Path -Parent $scriptDir
 
-Write-Host "🔐 Gatekeeper Startup Script" -ForegroundColor Cyan
-Write-Host "======================================" -ForegroundColor Cyan
-Write-Host ""
+Write-Host 'Gatekeeper Startup Script' -ForegroundColor Cyan
+Write-Host '======================================' -ForegroundColor Cyan
+Write-Host ''
 
 # Detect host MAC addresses
-Write-Host "📍 Detecting host MAC addresses..." -ForegroundColor Yellow
+Write-Host 'Detecting host MAC addresses...' -ForegroundColor Yellow
 $adapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' }
 
-if ($adapters.Count -eq 0) {
-    Write-Host "⚠️  No active network adapters found - MAC filtering disabled" -ForegroundColor Yellow
-    $enforceMAC = "0"
-    $allowedMACs = ""
+if (-not $adapters -or $adapters.Count -eq 0) {
+    Write-Host 'No active network adapters found - MAC filtering disabled' -ForegroundColor Yellow
+    $enforceMAC = '0'
+    $allowedMACs = ''
 } else {
     $macs = @()
     foreach ($adapter in $adapters) {
@@ -29,19 +31,25 @@ if ($adapters.Count -eq 0) {
             # Convert from Windows format (XX-XX-XX-XX-XX-XX) to standard format (XX:XX:XX:XX:XX:XX)
             $normalizedMac = $mac -replace '-', ':'
             $macs += $normalizedMac
-            Write-Host "  ✓ $($adapter.Name): $normalizedMac" -ForegroundColor Green
+            Write-Host ("  [OK] {0}: {1}" -f $adapter.Name, $normalizedMac) -ForegroundColor Green
         }
     }
-    
-    $enforceMAC = "1"
-    $allowedMACs = $macs -join ','
-    Write-Host "Allowed MACs: $allowedMACs" -ForegroundColor Green
+
+    if ($macs.Count -eq 0) {
+        $enforceMAC = '0'
+        $allowedMACs = ''
+        Write-Host 'No valid MAC addresses found - MAC filtering disabled' -ForegroundColor Yellow
+    } else {
+        $enforceMAC = '1'
+        $allowedMACs = $macs -join ','
+        Write-Host ("Allowed MACs: {0}" -f $allowedMACs) -ForegroundColor Green
+    }
 }
 
-Write-Host ""
+Write-Host ''
 
 # Create temporary .env file for this startup only
-$envFile = "$projectDir\.env"
+$envFile = Join-Path $projectDir '.env'
 $envContent = @"
 GATEKEEPER_ENFORCE_ADMIN_MAC=$enforceMAC
 GATEKEEPER_ADMIN_ALLOWED_MACS=$allowedMACs
@@ -55,33 +63,33 @@ GATEKEEPER_DEFAULT_LICENSE_DAYS=30
 "@
 
 Set-Content -Path $envFile -Value $envContent -Encoding UTF8
-Write-Host "Generated temporary .env with detected MACs" -ForegroundColor Green
+Write-Host 'Generated temporary .env with detected MACs' -ForegroundColor Green
 
-Write-Host ""
+Write-Host ''
 
 # Build and start Docker container
-$dockerArgs = @('compose', '-f', "$projectDir\docker-compose.yml")
+$dockerArgs = @('compose', '-f', (Join-Path $projectDir 'docker-compose.yml'))
 
 if ($Build) {
     $dockerArgs += @('up', '-d', '--build')
-    Write-Host "🐳 Building and starting Gatekeeper container..." -ForegroundColor Yellow
+    Write-Host 'Building and starting Gatekeeper container...' -ForegroundColor Yellow
 } else {
     if ($Detach) {
         $dockerArgs += @('up', '-d')
     } else {
         $dockerArgs += @('up')
     }
-    Write-Host "🐳 Starting Gatekeeper container..." -ForegroundColor Yellow
+    Write-Host 'Starting Gatekeeper container...' -ForegroundColor Yellow
 }
 
 & docker @dockerArgs
 
 if ($LASTEXITCODE -eq 0) {
-    Write-Host ""
-    Write-Host "✅ Gatekeeper is running!" -ForegroundColor Green
-    Write-Host "🌐 Access at: http://localhost:8000" -ForegroundColor Green
+    Write-Host ''
+    Write-Host 'Gatekeeper is running!' -ForegroundColor Green
+    Write-Host 'Access at: http://localhost:8000' -ForegroundColor Green
 } else {
-    Write-Host ""
-    Write-Host "❌ Failed to start Gatekeeper" -ForegroundColor Red
+    Write-Host ''
+    Write-Host 'Failed to start Gatekeeper' -ForegroundColor Red
     exit 1
 }
