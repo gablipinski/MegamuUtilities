@@ -29,6 +29,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $ProjectRoot    = Split-Path -Parent $PSScriptRoot
+$BrandingPath   = Join-Path (Split-Path -Parent $ProjectRoot) 'app_branding.json'
 $SyncReleaseScript = Join-Path $ProjectRoot 'scripts\sync_release.ps1'
 $VenvActivate   = Join-Path $ProjectRoot "venv\Scripts\Activate.ps1"
 $VenvPython     = Join-Path $ProjectRoot "venv\Scripts\python.exe"
@@ -169,6 +170,14 @@ if (Test-Path $SyncReleaseScript) {
 
 $AppMetadata = Get-AppMetadata -ReleaseInfoPath $ReleaseInfoPath
 $AppName = $AppMetadata.Name
+$BrandingKey = 'watchtower'
+if (Test-Path $BrandingPath) {
+    $branding = Get-Content -Raw -Path $BrandingPath | ConvertFrom-Json
+    $configuredName = $branding.$BrandingKey
+    if ($configuredName -is [string] -and -not [string]::IsNullOrWhiteSpace($configuredName)) {
+        $AppName = $configuredName.Trim()
+    }
+}
 $AppVersion = $AppMetadata.Version
 $AppPublisher = $AppMetadata.Publisher
 $WindowsVersion = Convert-ToWindowsVersion -Version $AppVersion
