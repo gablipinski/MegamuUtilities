@@ -16,7 +16,7 @@
 #define MyAppExeName   "Watchtower.exe"
 #endif
 #ifndef MyAppVersion
-#define MyAppVersion   "1.1.12"
+#define MyAppVersion   "1.1.13"
 #endif
 #ifndef MyAppPublisher
 #define MyAppPublisher "Megamu Utilities"
