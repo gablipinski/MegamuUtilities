@@ -10,7 +10,7 @@
 ; ============================================================================
 
 #ifndef MyAppName
-#define MyAppName      "Guardtower"
+#define MyAppName      "Vanguard"
 #endif
 #ifndef MyAppExeName
 #define MyAppExeName   "Guardtower.exe"

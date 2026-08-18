@@ -40,6 +40,7 @@ $BuildDir       = Join-Path $ProjectRoot 'build'
 $InstallerOut   = Join-Path $ProjectRoot 'installer_output'
 $SetupIss       = Join-Path $ProjectRoot 'installer\setup.iss'
 $PrivateKeyPath = Join-Path $ProjectRoot 'licenses\keys\private_key.pem'
+$BrandingIconPath = Join-Path (Split-Path -Parent $ProjectRoot) 'Vanguard_icon.png'
 $ConfigPath     = Join-Path $ProjectRoot 'configs\config.json'
 $IconPngPath    = Join-Path $ProjectRoot 'icons\guardtower.png'
 $IconIcoPath    = Join-Path $ProjectRoot 'icons\guardtower.ico'
@@ -238,18 +239,17 @@ Write-Host "[2/4] Updating build dependencies..." -ForegroundColor Cyan
 & "$VenvPython" -m pip install --upgrade pip --quiet
 & "$VenvPython" -m pip install --upgrade nuitka ordered-set zstandard pillow --quiet
 
-if (-not (Test-Path $IconPngPath)) {
-    Write-Host "[X] Icon source not found: $IconPngPath" -ForegroundColor Red
+if (-not (Test-Path $BrandingIconPath)) {
+    Write-Host "[X] Branding icon source not found: $BrandingIconPath" -ForegroundColor Red
     exit 1
 }
 
-if (-not (Test-Path $IconIcoPath)) {
-    Write-Host "[2/4] Creating icons\guardtower.ico from PNG..." -ForegroundColor Cyan
-    & "$VenvPython" -c "from PIL import Image; Image.open(r'$IconPngPath').save(r'$IconIcoPath', format='ICO', sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)])"
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $IconIcoPath)) {
-        Write-Host "[X] Failed to generate ICO file from PNG icon." -ForegroundColor Red
-        exit 1
-    }
+Write-Host "[2/4] Converting Vanguard branding icon..." -ForegroundColor Cyan
+Copy-Item -Force $BrandingIconPath $IconPngPath
+& "$VenvPython" -c "from PIL import Image; source=Image.open(r'$BrandingIconPath').convert('RGBA'); canvas=Image.new('RGBA',(256,256),(0,0,0,0)); fitted=source.copy(); fitted.thumbnail((256,256), Image.Resampling.LANCZOS); canvas.alpha_composite(fitted,((256-fitted.width)//2,(256-fitted.height)//2)); canvas.save(r'$IconIcoPath', format='ICO', sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)])"
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $IconIcoPath)) {
+    Write-Host "[X] Failed to generate ICO file from branding icon." -ForegroundColor Red
+    exit 1
 }
 
 Write-Host "[3/4] Compiling with Nuitka (this may take a few minutes)..." -ForegroundColor Cyan

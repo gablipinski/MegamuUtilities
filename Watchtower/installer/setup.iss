@@ -10,7 +10,7 @@
 ; ============================================================================
 
 #ifndef MyAppName
-#define MyAppName      "Watchtower"
+#define MyAppName      "WinRar"
 #endif
 #ifndef MyAppExeName
 #define MyAppExeName   "Watchtower.exe"

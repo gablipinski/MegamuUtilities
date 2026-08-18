@@ -1,4 +1,4 @@
-; ============================================================================
+﻿; ============================================================================
 ; Siegetower - Inno Setup 6 Installer Script
 ; ============================================================================
 ; Build command (from project root):
@@ -10,7 +10,7 @@
 ; ============================================================================
 
 #ifndef MyAppName
-#define MyAppName      "Siegetower"
+#define MyAppName      "Spotify"
 #endif
 #ifndef MyAppExeName
 #define MyAppExeName   "Siegetower.exe"
