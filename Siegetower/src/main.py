@@ -11,7 +11,7 @@ from macro_ui import MacroUI
 
 def _show_activation_dialog(initial_message: str) -> bool:
     root = tk.Tk()
-    root.title(f'{APP_NAME} v{APP_VERSION} - Activation Required')
+    root.title(f'{APP_NAME} - Activation Required')
     root.geometry('520x360')
     root.resizable(False, False)
     root.configure(bg='#111418')
@@ -21,7 +21,7 @@ def _show_activation_dialog(initial_message: str) -> bool:
 
     tk.Label(
         root,
-        text=f'{APP_NAME} v{APP_VERSION} - Activation Required',
+        text=f'{APP_NAME} - Activation Required',
         font=('Segoe UI Semibold', 13),
         bg='#111418',
         fg='#e7ecf3',

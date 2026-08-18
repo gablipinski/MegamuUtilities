@@ -84,7 +84,7 @@ class MonitorUI:
             self.root.destroy()
             sys.exit(0)
 
-        self.root.title(f'{APP_NAME} Controller v{APP_VERSION}')
+        self.root.title(APP_NAME)
         self.root.geometry('560x360')
         self.root.minsize(360, 320)
 
@@ -196,13 +196,21 @@ class MonitorUI:
         )
 
     def _load_app_icon(self) -> None:
-        icon_path = Path(__file__).resolve().parent.parent / 'icons' / 'watchtower.png'
-        if not icon_path.exists():
-            return
-        try:
-            self._app_icon = tk.PhotoImage(file=str(icon_path))
-        except Exception:
-            self._app_icon = None
+        icons_dirs = []
+        if getattr(sys, 'frozen', False) or '__compiled__' in globals():
+            icons_dirs.append(Path(sys.executable).resolve().parent / 'icons')
+        icons_dirs.append(Path(__file__).resolve().parent.parent / 'icons')
+
+        for icons_dir in icons_dirs:
+            icon_path = icons_dir / 'watchtower.png'
+            if not icon_path.exists():
+                continue
+            try:
+                self._app_icon = tk.PhotoImage(file=str(icon_path))
+                return
+            except Exception:
+                continue
+        self._app_icon = None
 
     def _apply_app_icon(self, window: tk.Misc) -> None:
         if self._app_icon is None:
@@ -354,7 +362,7 @@ class MonitorUI:
         machine_id = get_machine_id()
 
         dlg = tk.Toplevel(self.root)
-        dlg.title(f'{APP_NAME} v{APP_VERSION} - Activation Required')
+        dlg.title(f'{APP_NAME} - Activation Required')
         self._position_popup_at_main_window(dlg, '500x380')
         dlg.resizable(False, False)
         dlg.protocol('WM_DELETE_WINDOW', lambda: None)
@@ -372,7 +380,7 @@ class MonitorUI:
 
         tk.Label(
             dlg,
-            text=f'{APP_NAME} v{APP_VERSION} - Activation Required',
+            text=f'{APP_NAME} - Activation Required',
             font=self._font_title_sm,
             bg=self._colors['bg'],
             fg=self._colors['text'],
@@ -508,7 +516,7 @@ class MonitorUI:
 
         title = tk.Label(
             container,
-            text=f'{APP_NAME} v{APP_VERSION}',
+            text=APP_NAME,
             font=self._font_title,
             bg=self._colors['panel'],
             fg=self._colors['text'],

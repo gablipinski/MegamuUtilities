@@ -54,7 +54,7 @@ class MacroUI:
         self._tray_minimized = False
         self._tray_quick_panel: tk.Toplevel | None = None
 
-        self.root.title(f'{APP_NAME} v{APP_VERSION}')
+        self.root.title(APP_NAME)
         self.root.geometry('900x620')
         self.root.minsize(820, 560)
         self.root.configure(bg=self._colors['bg'])
@@ -82,7 +82,7 @@ class MacroUI:
         icon_path = Path(__file__).resolve().parent.parent / 'icons' / 'siegetower.ico'
         self._tray_icon = WindowsTrayIcon(
             icon_path=icon_path,
-            tooltip=f'{APP_NAME} v{APP_VERSION}',
+            tooltip=APP_NAME,
             on_single_click=lambda: self._event_queue.put(('tray_single_click', '')),
             on_double_click=lambda: self._event_queue.put(('tray_double_click', '')),
         )
@@ -328,14 +328,21 @@ class MacroUI:
                 pass
 
     def _set_window_icon(self) -> None:
-        icon_path = Path(__file__).resolve().parent.parent / 'icons' / 'siegetower.png'
-        if not icon_path.exists():
-            return
-        try:
-            self._window_icon = tk.PhotoImage(file=str(icon_path))
-            self.root.iconphoto(True, self._window_icon)
-        except Exception:
-            pass
+        icons_dirs = []
+        if getattr(sys, 'frozen', False) or '__compiled__' in globals():
+            icons_dirs.append(Path(sys.executable).resolve().parent / 'icons')
+        icons_dirs.append(Path(__file__).resolve().parent.parent / 'icons')
+
+        for icons_dir in icons_dirs:
+            icon_path = icons_dir / 'siegetower.png'
+            if not icon_path.exists():
+                continue
+            try:
+                self._window_icon = tk.PhotoImage(file=str(icon_path))
+                self.root.iconphoto(True, self._window_icon)
+                return
+            except Exception:
+                continue
 
     def run(self) -> None:
         self.root.mainloop()
@@ -545,7 +552,7 @@ class MacroUI:
 
         tk.Label(
             title_row,
-            text=f'{APP_NAME} v{APP_VERSION}',
+            text=APP_NAME,
             bg=self._colors['panel'],
             fg=self._colors['text'],
             font=self._font_title,

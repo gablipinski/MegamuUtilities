@@ -215,7 +215,7 @@ class MonitorUI:
         self._create_channel_cards()
         self._reorder_channel_cards(set())
 
-        self.root.title(f"{APP_NAME} Monitor v{APP_VERSION}")
+        self.root.title(APP_NAME)
         self.root.geometry("1220x820")
         self.root.minsize(980, 620)
         self.root.configure(bg=self._colors["bg"])
@@ -410,7 +410,7 @@ class MonitorUI:
         machine_id = get_machine_id()
 
         dialog = tk.Toplevel(self.root)
-        dialog.title(f"{APP_NAME} v{APP_VERSION} - Activation Required")
+        dialog.title(f"{APP_NAME} - Activation Required")
         dialog.geometry("480x340")
         dialog.resizable(False, False)
         dialog.protocol("WM_DELETE_WINDOW", lambda: None)
@@ -421,7 +421,7 @@ class MonitorUI:
 
         tk.Label(
             dialog,
-            text=f"{APP_NAME} v{APP_VERSION} - Activation Required",
+            text=f"{APP_NAME} - Activation Required",
             font=self._font_title_sm,
             bg=self._colors["bg"],
             fg=self._colors["text"],
@@ -1427,7 +1427,7 @@ class MonitorUI:
 
         tk.Label(
             title_row,
-            text=f"{APP_NAME} v{APP_VERSION}",
+            text=APP_NAME,
             bg=self._colors["panel"],
             fg=self._colors["text"],
             font=self._font_title,
