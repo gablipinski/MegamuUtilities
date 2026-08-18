@@ -15,6 +15,7 @@ $ErrorActionPreference = 'Stop'
 
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $ReleaseInfoPath = Join-Path $ProjectRoot 'release_info.json'
+$BrandingPath = Join-Path (Split-Path -Parent $ProjectRoot) 'app_branding.json'
 $AppVersionPath = Join-Path $ProjectRoot 'src\app_version.py'
 $SetupIssPath = Join-Path $ProjectRoot 'installer\setup.iss'
 $ReleaseNotesPath = Join-Path $ProjectRoot 'RELEASE_NOTES.md'
@@ -32,6 +33,14 @@ if (-not $release.app_name -or -not $release.version -or -not $release.publisher
 }
 
 $appName = [string]$release.app_name
+$brandingKey = 'guardtower'
+if (Test-Path $BrandingPath) {
+	$branding = Get-Content -Raw -Path $BrandingPath | ConvertFrom-Json
+	$configuredName = $branding.$brandingKey
+	if ($configuredName -is [string] -and -not [string]::IsNullOrWhiteSpace($configuredName)) {
+		$appName = $configuredName.Trim()
+	}
+}
 $version = [string]$release.version
 $publisher = [string]$release.publisher
 
