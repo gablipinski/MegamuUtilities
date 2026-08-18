@@ -1,8 +1,8 @@
 {
   "app_name": "Watchtower",
-  "version": "1.1.12",
+  "version": "1.1.13",
   "publisher": "Megamu Utilities",
   "patch_notes": [
-    "Update escape delay handling in _trigger_escape_group function."
+    "Pointer update after game update."
   ]
 }
