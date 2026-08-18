@@ -12,13 +12,15 @@
 #ifndef MyAppName
 #define MyAppName      "Watchtower"
 #endif
+#ifndef MyAppExeName
+#define MyAppExeName   "Watchtower.exe"
+#endif
 #ifndef MyAppVersion
 #define MyAppVersion   "1.1.12"
 #endif
 #ifndef MyAppPublisher
 #define MyAppPublisher "Megamu Utilities"
 #endif
-#define MyAppExeName   "Watchtower.exe"
 #define SourcePath     ".."
 
 [Setup]
@@ -85,3 +87,8 @@ begin
     );
   end;
 end;
+
+
+
+
+

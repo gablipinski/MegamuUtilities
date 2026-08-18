@@ -12,13 +12,15 @@
 #ifndef MyAppName
 #define MyAppName      "Siegetower"
 #endif
+#ifndef MyAppExeName
+#define MyAppExeName   "Siegetower.exe"
+#endif
 #ifndef MyAppVersion
 #define MyAppVersion   "1.0.0"
 #endif
 #ifndef MyAppPublisher
 #define MyAppPublisher "Megamu Utilities"
 #endif
-#define MyAppExeName   "Siegetower.exe"
 #define SourcePath     ".."
 
 [Setup]

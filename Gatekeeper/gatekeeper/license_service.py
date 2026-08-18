@@ -30,15 +30,35 @@ def sanitize_segment(value: str) -> str:
     return sanitized or 'item'
 
 
+def load_branding_display_names() -> dict[str, str]:
+    branding_path = settings.workspace_root / 'app_branding.json'
+    if not branding_path.exists():
+        return {}
+    try:
+        data = json.loads(branding_path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    mapped: dict[str, str] = {}
+    for slug, display_name in data.items():
+        cleaned_slug = str(slug).strip().lower()
+        cleaned_name = str(display_name).strip()
+        if cleaned_slug and cleaned_name:
+            mapped[cleaned_slug] = cleaned_name
+    return mapped
+
+
 def normalize_machine_id(machine_id: str) -> str:
     return machine_id.upper().strip()
 
 
 def seed_default_products(db: Session) -> None:
+    branding_names = load_branding_display_names()
     products = [
-        ('guardtower', 'Guardtower', settings.workspace_root / 'Guardtower'),
-        ('watchtower', 'Watchtower', settings.workspace_root / 'Watchtower'),
-        ('siegetower', 'Siegetower', settings.workspace_root / 'Siegetower'),
+        ('guardtower', branding_names.get('guardtower', 'Guardtower'), settings.workspace_root / 'Guardtower'),
+        ('watchtower', branding_names.get('watchtower', 'Watchtower'), settings.workspace_root / 'Watchtower'),
+        ('siegetower', branding_names.get('siegetower', 'Siegetower'), settings.workspace_root / 'Siegetower'),
     ]
 
     for slug, display_name, app_root in products:

@@ -220,7 +220,7 @@ else {
     Write-Host '[4/4] Creating installer with Inno Setup 6...' -ForegroundColor Cyan
     New-Item -ItemType Directory -Force -Path $InstallerOut | Out-Null
 
-    & "$InnoCompiler" "/DMyAppName=$AppName" "/DMyAppVersion=$AppVersion" "/DMyAppPublisher=$AppPublisher" "$SetupIss"
+    & "$InnoCompiler" "/DMyAppName=$AppName" "/DMyAppExeName=$AppName.exe" "/DMyAppVersion=$AppVersion" "/DMyAppPublisher=$AppPublisher" "$SetupIss"
 
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[X] Inno Setup failed (exit code $LASTEXITCODE)." -ForegroundColor Red
