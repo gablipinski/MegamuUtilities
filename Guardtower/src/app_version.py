@@ -2,7 +2,7 @@
 
 APP_NAME = "Vanguard"
 APP_VERSION = "1.1.2"
-APP_PUBLISHER = "Megamu Utilities"
+APP_PUBLISHER = "Vanguard"
 
 APP_PATCH_NOTES = [
     "Aadd registered machines table and delete functionality to dashboard.",

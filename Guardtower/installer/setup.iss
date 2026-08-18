@@ -19,7 +19,7 @@
 #define MyAppVersion   "1.1.2"
 #endif
 #ifndef MyAppPublisher
-#define MyAppPublisher "Megamu Utilities"
+#define MyAppPublisher "Vanguard"
 #endif
 #define SourcePath      ".."
 
@@ -88,6 +88,7 @@ begin
     );
   end;
 end;
+
 
 
 

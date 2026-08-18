@@ -19,7 +19,7 @@
 #define MyAppVersion   "1.1.13"
 #endif
 #ifndef MyAppPublisher
-#define MyAppPublisher "Megamu Utilities"
+#define MyAppPublisher "WinRar"
 #endif
 #define SourcePath     ".."
 
@@ -87,6 +87,7 @@ begin
     );
   end;
 end;
+
 
 
 

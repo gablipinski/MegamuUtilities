@@ -2,7 +2,7 @@
 
 APP_NAME = "WinRar"
 APP_VERSION = "1.1.13"
-APP_PUBLISHER = "Megamu Utilities"
+APP_PUBLISHER = "WinRar"
 
 APP_PATCH_NOTES = [
     "Pointer update after game update.",

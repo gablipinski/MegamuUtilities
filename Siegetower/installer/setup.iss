@@ -19,7 +19,7 @@
 #define MyAppVersion   "1.0.0"
 #endif
 #ifndef MyAppPublisher
-#define MyAppPublisher "Megamu Utilities"
+#define MyAppPublisher "Spotify"
 #endif
 #define SourcePath     ".."
 
@@ -82,3 +82,4 @@ begin
     );
   end;
 end;
+

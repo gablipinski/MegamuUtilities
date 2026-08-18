@@ -16,6 +16,7 @@ $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $ReleaseInfoPath = Join-Path $ProjectRoot 'release_info.json'
 $BrandingPath = Join-Path (Split-Path -Parent $ProjectRoot) 'app_branding.json'
 $AppVersionPath = Join-Path $ProjectRoot 'src\app_version.py'
+$SetupIssPath = Join-Path $ProjectRoot 'installer\setup.iss'
 $ReleaseNotesPath = Join-Path $ProjectRoot 'RELEASE_NOTES.md'
 
 if (-not (Test-Path $ReleaseInfoPath)) {
@@ -40,7 +41,7 @@ if (Test-Path $BrandingPath) {
     }
 }
 $version = [string]$release.version
-$publisher = [string]$release.publisher
+$publisher = $appName
 
 if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$') {
     Write-Host "[X] Invalid version format: $version" -ForegroundColor Red
@@ -81,6 +82,12 @@ $appVersionLines = @(
 
 $appVersionContent = $appVersionLines -join "`r`n"
 Set-Content -Path $AppVersionPath -Value $appVersionContent -Encoding UTF8
+
+if (Test-Path $SetupIssPath) {
+    $iss = Get-Content -Raw -Path $SetupIssPath
+    $iss = $iss -replace '(?m)^#define\s+MyAppPublisher\s+"[^"]+"', ('#define MyAppPublisher "' + $publisher + '"')
+    Set-Content -Path $SetupIssPath -Value $iss -Encoding UTF8
+}
 
 $today = Get-Date -Format 'yyyy-MM-dd'
 $entryLines = @(

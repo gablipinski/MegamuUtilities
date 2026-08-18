@@ -123,7 +123,7 @@ if (Test-Path $BrandingPath) {
     }
 }
 $AppVersion = $AppMetadata.Version
-$AppPublisher = $AppMetadata.Publisher
+$AppPublisher = $AppName
 $WindowsVersion = Convert-ToWindowsVersion -Version $AppVersion
 
 if (-not (Test-Path $VenvActivate)) {

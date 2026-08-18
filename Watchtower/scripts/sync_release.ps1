@@ -42,7 +42,7 @@ if (Test-Path $BrandingPath) {
     }
 }
 $version = [string]$release.version
-$publisher = [string]$release.publisher
+$publisher = $appName
 
 if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$') {
     Write-Host "[X] Invalid version format: $version" -ForegroundColor Red
