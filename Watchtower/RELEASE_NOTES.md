@@ -97,7 +97,7 @@
 
 - Enhance ActionController with modifier key handling and key combo methods; add process tower trigger test functionality in MonitorUI.
 
-## 1.1.12 (2026-07-26)
+## 1.1.12 (2026-08-17)
 
 - Update escape delay handling in _trigger_escape_group function.
 

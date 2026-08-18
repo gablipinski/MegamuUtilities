@@ -12,13 +12,15 @@
 #ifndef MyAppName
 #define MyAppName      "Guardtower"
 #endif
+#ifndef MyAppExeName
+#define MyAppExeName   "Guardtower.exe"
+#endif
 #ifndef MyAppVersion
 #define MyAppVersion   "1.1.2"
 #endif
 #ifndef MyAppPublisher
 #define MyAppPublisher "Megamu Utilities"
 #endif
-#define MyAppExeName    "Guardtower.exe"
 #define SourcePath      ".."
 
 [Setup]
@@ -86,3 +88,8 @@ begin
     );
   end;
 end;
+
+
+
+
+
