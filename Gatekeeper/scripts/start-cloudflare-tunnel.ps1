@@ -62,7 +62,8 @@ Write-Host "Quando conectar, procure pela URL https://<random>.trycloudflare.com
 Write-Host ""
 
 if ($runner -eq 'native') {
-    & $cloudflared.Source tunnel --url $tunnelUrl --no-autoupdate
+    # http2 avoids QUIC/UDP timeouts seen on some networks
+    & $cloudflared.Source tunnel --url $tunnelUrl --protocol http2 --no-autoupdate
 } else {
-    & docker run --rm -it cloudflare/cloudflared:latest tunnel --url $tunnelUrl --no-autoupdate
+    & docker run --rm -it cloudflare/cloudflared:latest tunnel --url $tunnelUrl --protocol http2 --no-autoupdate
 }
