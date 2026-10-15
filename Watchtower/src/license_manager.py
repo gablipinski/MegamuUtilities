@@ -31,13 +31,13 @@ from cryptography.hazmat.primitives.asymmetric import padding
 # ─────────────────────────────────────────────────────────────────────────────
 _PUBLIC_KEY_PEM = b"""\
 -----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtV0nkAqkeyZp3N7Aenen
-2Ajw1/XFnTpRGUIbwTgAd4qQ7Z+vzbwCYFGMrjCx+wjVRlgDDVUTpru3597lIzzN
-Uteu+ggYmfKXCWQnxlM+hcbnlt0Pu8Y2ohKgOmr+nIITUlkY7iUd/N+bAydzTeqt
-EBuoT/2JyvFaRR111Dkc1jbWKjkupmXlT9DFGZJcGxSYUQJhO7ucjVHdONAMaUww
-3W1Xmrvy+eCKAp1SLpJgue9jPX9bDkIOoeXlvxbVZBikhyxV8UeP+GVGzFwIY4vX
-qIse4LiWZ5djRjIWlhRzMxM+Yeha/x6CY7wE5/aY0uVFCDOu8rQ6Jj3elQwG2tKB
-JwIDAQAB
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxLZ+9ScaAT0NiYVG6PZY
+/R+FXRBES5A1nGnOC4S59q6CvEIFPZ9YeP9+5Rch9S09tNbckiz1Zo+3Wh0JtL7a
+xmD1Oo56diap4JXpTLFF1WLCAqvr0FzlaZRzuhKhrb8cYomk9gb6D30PF6u4Cxc7
+E+XI4Z5T7ewYipeo33phKcj06Lb1W3CnSxR8gJXyXvnZEW4wGr4oHTbnE0W/MQzr
+3nXw2uB+3/9fgypMvzEUcYgBv2W9aQeqrJG7pNMd9tVgvlsNmxRwl4u0/sbdxjIl
+SYAh7HCULMl+AUb2LZRwTAgTpudftRXxpQvzlsrD9WHOk6KsOGgF0+hznSHktt1B
+BQIDAQAB
 -----END PUBLIC KEY-----
 """
 

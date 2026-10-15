@@ -7,7 +7,7 @@
       "ignored_usernames": []
     }
   ],
-  "won_cooldown_s": 600.0,
+"won_cooldown_s": 600.0,
   "giveaway_end_after_win_s": 600.0,
   "activity_monitor": {
     "baseline_window_s": 150.0,
@@ -33,6 +33,51 @@
       "won_prefix": "!"
     },
     {
+      "name": "coka409",
+      "giveaway_triggers": [
+        "!coka"
+      ],
+      "giveaway_message": "!coka",
+      "delay_ms": [
+        0,
+        0
+      ],
+      "won_triggers": [
+        "Congratulations, {username}! You won the giveaway!"
+      ],
+      "won_prefix": ""
+    },
+    {
+      "name": "junyorrgames",
+      "giveaway_triggers": [
+        "!jg"
+      ],
+      "giveaway_message": "!jg",
+      "delay_ms": [
+        0,
+        0
+      ],
+      "won_triggers": [
+        "@{username} PARABÉNS VOCÊ GANHOU"
+      ],
+      "won_prefix": "!"
+    },
+    {
+      "name": "grayfoxcs",
+      "giveaway_triggers": [
+        "!gfx"
+      ],
+      "giveaway_message": "!gfx",
+      "delay_ms": [
+        0,
+        0
+      ],
+      "won_triggers": [
+        "Congratulations, {username}! You won the giveaway!"
+      ],
+      "won_prefix": ""
+    },
+    {
       "name": "shamen_",
       "giveaway_triggers": [
         "!shamen"
@@ -45,6 +90,17 @@
       "won_triggers": [
         "Congratulations, {username}! You won the giveaway!"
       ],
+      "won_prefix": ""
+    },
+    {
+      "name": "livemus2",
+      "giveaway_triggers": [],
+      "giveaway_message": "",
+      "delay_ms": [
+        5000,
+        15000
+      ],
+      "won_triggers": [],
       "won_prefix": ""
     },
     {
@@ -240,8 +296,10 @@
     },
     {
       "name": "AdhL_VN",
-      "giveaway_triggers": [],
-      "giveaway_message": "",
+      "giveaway_triggers": [
+        "!adh"
+      ],
+      "giveaway_message": "!adh",
       "delay_ms": [
         0,
         0
@@ -353,9 +411,9 @@
     {
       "name": "mamedegame",
       "giveaway_triggers": [
-        "#sorteio"
+        "#mamede"
       ],
-      "giveaway_message": "#sorteio",
+      "giveaway_message": "#mamede",
       "delay_ms": [
         0,
         0
@@ -383,9 +441,9 @@
     {
       "name": "ohbrunaoxdrj",
       "giveaway_triggers": [
-        "!bruxao"
+        "!zovao"
       ],
-      "giveaway_message": "!bruxao",
+      "giveaway_message": "!zovao",
       "delay_ms": [
         0,
         0
@@ -394,21 +452,6 @@
         "@{username} PARABÉNS VOCÊ GANHOU"
       ],
       "won_prefix": "!"
-    },
-    {
-      "name": "muniingg",
-      "giveaway_triggers": [
-        "!sorteo"
-      ],
-      "giveaway_message": "!sorteo",
-      "delay_ms": [
-        0,
-        0
-      ],
-      "won_triggers": [
-        "Congratulations, {username}! You won the giveaway!"
-      ],
-      "won_prefix": ""
     },
     {
       "name": "naitheboti",
@@ -543,7 +586,7 @@
       "won_triggers": [
         "{username} PARABÉNS VOCÊ GANHOU"
       ],
-      "won_prefix": ""
+      "won_prefix": "!"
     },
     {
       "name": "kenshinx",
@@ -558,19 +601,6 @@
       "won_triggers": [
         "Parabéns {username}, você ganhou o sorteio"
       ],
-      "won_prefix": ""
-    },
-    {
-      "name": "xallan92",
-      "giveaway_triggers": [
-        "!mafia"
-      ],
-      "giveaway_message": "!mafia",
-      "delay_ms": [
-        0,
-        0
-      ],
-      "won_triggers": [],
       "won_prefix": ""
     },
     {
@@ -694,21 +724,6 @@
       "won_prefix": ""
     },
     {
-      "name": "srochoa07",
-      "giveaway_triggers": [
-        "!8a"
-      ],
-      "giveaway_message": "!8a",
-      "delay_ms": [
-        0,
-        0
-      ],
-      "won_triggers": [
-        "Congratulations, {username}! You won the giveaway!"
-      ],
-      "won_prefix": ""
-    },
-    {
       "name": "alfefps",
       "giveaway_triggers": [
         "!alfe"
@@ -797,6 +812,21 @@
       "won_prefix": ""
     },
     {
+      "name": "iretley",
+      "giveaway_triggers": [
+        "!ret"
+      ],
+      "giveaway_message": "!ret",
+      "delay_ms": [
+        0,
+        0
+      ],
+      "won_triggers": [
+        "Congratulations, {username}! You won the giveaway!"
+      ],
+      "won_prefix": ""
+    },
+    {
       "name": "atso_gt",
       "giveaway_triggers": [
         "!atsogt"
@@ -822,7 +852,7 @@
         0
       ],
       "won_triggers": [
-        "@{username} PARABÉNS VOCÊ GANHOU"
+        "@{username} PARABÉNS VOCÊ"
       ],
       "won_prefix": "!"
     },
@@ -949,14 +979,16 @@
     {
       "name": "angeelpoower",
       "giveaway_triggers": [
-        ""
+        "!sorteo"
       ],
-      "giveaway_message": "",
+      "giveaway_message": "!sorteo",
       "delay_ms": [
         0,
         0
       ],
-      "won_triggers": [],
+      "won_triggers": [
+        "Congratulations, {username}! You won the giveaway!"
+      ],
       "won_prefix": ""
     },
     {
@@ -970,7 +1002,7 @@
         0
       ],
       "won_triggers": [
-        "Congratulations, {username}! You won the giveaway!"
+        "@{username} PARABÉNS VOCÊ GANHOU"
       ],
       "won_prefix": ""
     },
@@ -1048,41 +1080,11 @@
       "won_prefix": ""
     },
     {
-      "name": "itsviiictor",
-      "giveaway_triggers": [
-        "!sorteo"
-      ],
-      "giveaway_message": "!sorteo",
-      "delay_ms": [
-        0,
-        0
-      ],
-      "won_triggers": [
-        "Congratulations, {username}! You won the giveaway!"
-      ],
-      "won_prefix": ""
-    },
-    {
       "name": "iguardian_br",
       "giveaway_triggers": [
         "!guardian"
       ],
       "giveaway_message": "!guardian",
-      "delay_ms": [
-        0,
-        0
-      ],
-      "won_triggers": [
-        "Congratulations, {username}! You won the giveaway!"
-      ],
-      "won_prefix": ""
-    },
-    {
-      "name": "arpinaxx",
-      "giveaway_triggers": [
-        "!hhh"
-      ],
-      "giveaway_message": "!hhh",
       "delay_ms": [
         0,
         0
@@ -1229,32 +1231,13 @@
     },
     {
       "name": "lostsh0t",
-      "giveaway_triggers": [
-        "!sorteio"
-      ],
-      "giveaway_message": "!sorteio",
+      "giveaway_triggers": [],
+      "giveaway_message": "",
       "delay_ms": [
-        0,
-        0
+        5000,
+        15000
       ],
-      "won_triggers": [
-        "Congratulations, {username}! You won the giveaway!"
-      ],
-      "won_prefix": ""
-    },
-    {
-      "name": "thulives",
-      "giveaway_triggers": [
-        "!th"
-      ],
-      "giveaway_message": "!th",
-      "delay_ms": [
-        0,
-        0
-      ],
-      "won_triggers": [
-        "{username}! You won the giveaway"
-      ],
+      "won_triggers": [],
       "won_prefix": ""
     },
     {

@@ -101,7 +101,7 @@
 
 - Update escape delay handling in _trigger_escape_group function.
 
-## 1.1.13 (2026-08-18)
+## 1.1.13 (2026-10-15)
 
 - Pointer update after game update.
 

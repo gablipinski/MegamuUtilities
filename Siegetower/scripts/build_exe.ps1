@@ -8,6 +8,9 @@
     Step 2 - Install / upgrade build dependencies
     Step 3 - Compile src/main.py -> dist/Siegetower.exe (Nuitka)
     Step 4 - Create installer (only if installer/setup.iss exists and Inno Setup is installed)
+
+    Uses Nuitka's low-memory mode to reduce onefile compression memory usage.
+    The executable remains compressed, but may be larger than a default build.
 #>
 
 param(
@@ -183,6 +186,7 @@ Write-Host '[3/4] Compiling with Nuitka (this may take a few minutes)...' -Foreg
 & "$VenvPython" -m nuitka `
     --onefile `
     --standalone `
+    --low-memory `
     --assume-yes-for-downloads `
     --remove-output `
     --lto=no `
