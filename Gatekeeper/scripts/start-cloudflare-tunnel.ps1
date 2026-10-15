@@ -59,10 +59,22 @@ if (-not (Test-PortOpen -HostName $TargetHost -Port $Port)) {
 
 Write-Host "Iniciando tunnel... (Ctrl+C para encerrar)" -ForegroundColor Yellow
 Write-Host "Quando conectar, procure pela URL https://<random>.trycloudflare.com no log abaixo." -ForegroundColor DarkYellow
+Write-Host "Se o processo cair, ele sera reiniciado automaticamente." -ForegroundColor DarkYellow
 Write-Host ""
 
-if ($runner -eq 'native') {
-    & $cloudflared.Source tunnel --url $tunnelUrl --no-autoupdate
-} else {
-    & docker run --rm -it cloudflare/cloudflared:latest tunnel --url $tunnelUrl --no-autoupdate
+$restartCount = 0
+while ($true) {
+    if ($restartCount -gt 0) {
+        Write-Warning "cloudflared encerrou inesperadamente. Reiniciando (tentativa $restartCount)..."
+    }
+
+    if ($runner -eq 'native') {
+        # http2 avoids QUIC/UDP timeouts; edge-ip-version 4 avoids IPv6 path timeouts seen on this network
+        & $cloudflared.Source tunnel --url $tunnelUrl --protocol http2 --edge-ip-version 4 --no-autoupdate
+    } else {
+        & docker run --rm -it cloudflare/cloudflared:latest tunnel --url $tunnelUrl --protocol http2 --edge-ip-version 4 --no-autoupdate
+    }
+
+    $restartCount++
+    Start-Sleep -Seconds 2
 }
